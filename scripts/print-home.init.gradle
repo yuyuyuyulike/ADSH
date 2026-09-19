@@ -1,0 +1,4 @@
+gradle.projectsLoaded {
+    println "DSH_CHECK_GRADLE_USER_HOME=" + gradle.gradleUserHomeDir
+    println "DSH_CHECK_USER_HOME=" + System.getProperty("user.home")
+}
