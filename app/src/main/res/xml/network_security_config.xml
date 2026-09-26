@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  web_fetch 抓取的是「用户 / AI 指定的任意公网地址」，dsh 跑在 Node 上没有明文限制。
+  Android 从 targetSdk 28 起默认禁止明文 http，于是搜索结果里那些 http:// 链接
+  （例如 http://m.memuplay.com/...）会以
+  "CLEARTEXT communication to ... not permitted by network security policy" 失败 ——
+  表现就是「网页获取部分能用、部分不行」。
+  这里显式放开明文：地址仍然要过 SSRF 的公网校验（SsrfGuard），
+  与 dsh 的 web-fetch-http 一样只允许公网单播地址。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,6 @@
+t = open('build/tmp/dsh-system.txt').read()
+i = t.find('is the only tool')
+j = t.find('```ts')
+print('I', i, 'J', j, 'LEN', len(t))
+print('=====SECTION=====')
+print(t[i-40:j])

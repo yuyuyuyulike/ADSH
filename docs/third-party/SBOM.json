@@ -1,0 +1,69 @@
+{
+  "bomFormat": "ADSH-SBOM",
+  "specVersion": "1.0",
+  "generatedAt": "2026-09-14",
+  "project": "ADSH (Android DeepSeek Harness)",
+  "projectLicense": "MIT",
+  "distribution": "sideload / self-use / open source (not published to any app store)",
+  "components": [
+    {
+      "name": "termux-bootstrap",
+      "version": "bootstrap-2026.09.13-r1+apt.android-7",
+      "type": "runtime-bundle",
+      "license": "multiple (see THIRD_PARTY_NOTICES.md)",
+      "sourceUrl": "https://github.com/termux/termux-packages/releases/download/bootstrap-2026.09.13-r1%2Bapt.android-7/bootstrap-aarch64.zip",
+      "sha256": "dbf2805613ff2ace0b233c3b349e080bb0ff358f4ad64f4cca5966b27b93e7ee",
+      "sizeBytes": 32799409,
+      "vendoredAs": ["app/src/main/assets/bootstrap/usr.zip", "app/src/main/execLibs/arm64-v8a/*"]
+    },
+    {
+      "name": "ripgrep",
+      "version": "15.2.0",
+      "type": "binary",
+      "platform": "aarch64-unknown-linux-musl (static)",
+      "license": "MIT OR Unlicense",
+      "sourceUrl": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz",
+      "sha256": "800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915",
+      "sizeBytes": 4466000,
+      "vendoredAs": ["app/src/main/execLibs/arm64-v8a/librg.so"]
+    },
+    {
+      "name": "wang.harlon.quickjs:wrapper-android",
+      "version": "3.2.3",
+      "type": "maven-dependency",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/HarlonWang/quickjs-android"
+    },
+    {
+      "name": "androidx.compose / room / lifecycle / activity",
+      "version": "compose-bom 2026.08.00, room 2.8.4, lifecycle 2.11.0",
+      "type": "maven-dependency",
+      "license": "Apache-2.0",
+      "sourceUrl": "https://developer.android.com/jetpack"
+    },
+    {
+      "name": "org.jetbrains.kotlinx:kotlinx-serialization-json",
+      "version": "1.11.0",
+      "type": "maven-dependency",
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "dev.chrisbanes.haze",
+      "version": "2.0.0-beta02",
+      "type": "maven-dependency",
+      "license": "Apache-2.0",
+      "sourceUrl": "https://github.com/chrisbanes/haze"
+    },
+    {
+      "name": "com.termux.termux-app:terminal-view",
+      "version": "0.118.0",
+      "type": "maven-dependency",
+      "license": "Apache-2.0 (Termux app) / GPL-3.0 (terminal-emulator)",
+      "sourceUrl": "https://github.com/termux/termux-app"
+    }
+  ],
+  "notes": [
+    "GPL 组件清单与源码获取方式见 docs/THIRD_PARTY_NOTICES.md",
+    "所有二进制均由构建期脚本按 SHA-256 校验后拉取，运行期不下载任何可执行代码"
+  ]
+}

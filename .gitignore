@@ -1,0 +1,40 @@
+# 本地配置（不进版本库）
+local.properties
+keystore.properties
+*.jks
+*.keystore
+
+# 构建产物
+build/
+.gradle/
+.cxx/
+.kotlin/          # Kotlin 2.x 的会话缓存（每轮构建都会生成，没人引用）
+*.apk
+*.aab
+captures/
+
+# 大文件：由 scripts/fetch-tools.sh 与 PatchBootstrapTask 按 SHA 拉取
+assets-src/bootstrap/*.zip
+tools/prebuilt/
+app/src/main/execLibs/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# bootstrap 压缩包由 scripts/fetch-bootstrap.sh 生成（32MB，不进库）
+app/src/main/assets/bootstrap/*.zip
+
+# 逐轮验证时抓的整机截图（每张 3.6MB）：只把 README 用到的那几张留下，新抓的 PNG 不入库
+docs/screenshots/*.png
+
+.tmp/
+.transcript/
+
+# 发布产物：APK **不进版本库**（第六十三轮起）——
+# 44 MiB/版的大文件会让每次 push 都在半路被掐断（上行 13–33 KiB/s），改走 GitHub Release 资产，
+# README 的下载链接直接指 release。本地 dist/ 仍放当前那份，方便 adb 安装与上传。
+
+# 本机备份（不进入版本库）
+.backup/
