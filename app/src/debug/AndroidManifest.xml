@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 仅 debug 构建包含：技术自检页，导出以便 adb 直接拉起做回归 -->
+    <application>
+        <activity
+            android:name=".dev.DevCheckActivity"
+            android:exported="true"
+            android:label="ADSH DevCheck" />
+    </application>
+
+</manifest>

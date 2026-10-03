@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Exa 的 logomark（沙漏形，Exa 品牌页称之为 "the intersection of search and structure"）。
+  路径数据取自官方品牌资源里的 wordmark SVG（https://exa.ai/images/logo/exa-logo-blue.svg，
+  同一文件里的第一条 path 就是 logomark，viewBox 0 0 106.417 129；品牌页 https://exa.ai/brand
+  的 Figure 4 说明这个 mark 有两种配色：Exa blue 与白色）。
+  这里只取那条 path，`fillType="evenOdd"` 与原始 SVG 的 fill-rule 一致；颜色由调用方 tint
+  （品牌蓝 #1840ED）。
+  注意：这是 Exa 的商标图形，本地自用可以；若日后公开分发请自行确认商标授权
+  （与 ic_dsh_whale 同一个口径）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="13.2dp"
+    android:height="16dp"
+    android:viewportWidth="106.417"
+    android:viewportHeight="129">
+    <path
+        android:fillColor="#FF000000"
+        android:fillType="evenOdd"
+        android:pathData="M106.417,9.30741C106.417,9.57392 106.324,9.83227 106.155,10.0388L61.5395,64.5L106.155,118.96C106.324,119.166 106.417,119.425 106.417,119.691V127.843C106.417,128.482 105.897,129 105.255,129H1.16175C0.520132,129 0,128.482 0,127.843V1.15695C0,0.517982 0.520131,0 1.16174,0H105.255C105.897,0 106.417,0.517984 106.417,1.15695V9.30741ZM19.0364,116.382H87.6921L53.363,74.4795L19.0364,116.382ZM12.6699,104.192L40.1426,70.6585H12.6699V104.192ZM12.6699,58.0409H39.8964L12.6699,24.8064V58.0409ZM53.363,54.5193L87.6921,12.6176H19.0364L53.363,54.5193Z" />
+</vector>

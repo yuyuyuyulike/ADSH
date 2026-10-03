@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 浅色：edge-to-edge 下 windowBackground 会透到状态栏/导航栏区域，必须与 Compose 背景一致 -->
+    <style name="Theme.ADSH" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFFFFFFF</item>
+    </style>
+</resources>

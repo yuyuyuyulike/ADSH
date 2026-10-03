@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 并存版专用的应用名：桌面上两个图标要能一眼分辨（构建类型 side 的资源覆盖 main） -->
+    <string name="app_name">ADSH Side</string>
+</resources>
