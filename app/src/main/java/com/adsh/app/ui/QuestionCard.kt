@@ -153,7 +153,7 @@ internal fun QuestionCard(questions: List<Question>, onAnswer: (List<Answer>) ->
                 .fillMaxWidth()
                 .clip(cardShape)
                 .background(palette.inputMajor)
-                .border(0.5.dp, palette.borderL1, cardShape)
+                .border(DshSpacing.Hairline, palette.borderL1, cardShape)
                 .padding(bottom = DshSpacing.Xxl),
         ) {
             QuestionCardHeader(
@@ -195,7 +195,7 @@ internal fun QuestionCard(questions: List<Question>, onAnswer: (List<Answer>) ->
                                     .heightIn(min = 64.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(palette.bgModulePlatform)
-                                    .border(0.5.dp, palette.borderL4, RoundedCornerShape(10.dp))
+                                    .border(DshSpacing.Hairline, palette.borderL4, RoundedCornerShape(10.dp))
                                     .padding(horizontal = DshSpacing.Xxxl, vertical = DshSpacing.Xl),
                             ) {
                                 QuestionAnswerField(

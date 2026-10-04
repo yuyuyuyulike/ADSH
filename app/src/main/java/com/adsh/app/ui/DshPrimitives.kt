@@ -97,7 +97,7 @@ fun DshButton(
             .widthIn(min = minWidth)
             .clip(shape)
             .background(fill)
-            .then(if (kind == DshButtonKind.Outline) Modifier.border(0.5.dp, palette.borderL3, shape) else Modifier)
+            .then(if (kind == DshButtonKind.Outline) Modifier.border(DshSpacing.Hairline, palette.borderL3, shape) else Modifier)
             .dshClickable(enabled = enabled, interactionSource = interaction, onClick = onClick)
             .padding(horizontal = if (small) 10.dp else 14.dp),
         contentAlignment = Alignment.Center,
@@ -159,7 +159,7 @@ fun DshCheckbox(checked: Boolean, onCheckedChange: (Boolean) -> Unit, enabled: B
             .size(size)
             .clip(RoundedCornerShape(4.dp))
             .background(if (checked) palette.labelPrimary else Color.Transparent)
-            .border(0.5.dp, if (checked) palette.labelPrimary else palette.borderL4, RoundedCornerShape(4.dp))
+            .border(DshSpacing.Hairline, if (checked) palette.labelPrimary else palette.borderL4, RoundedCornerShape(4.dp))
             .clickable(enabled = enabled) { onCheckedChange(!checked) },
         contentAlignment = Alignment.Center,
     ) {

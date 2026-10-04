@@ -165,7 +165,7 @@ internal fun RailAskQuestionCard(card: AskCard, modifier: Modifier = Modifier) {
             .padding(start = DshSpacing.Md, top = DshSpacing.Md, bottom = DshSpacing.Md)
             .clip(shape)
             .background(palette.codeBlock)
-            .border(0.5.dp, palette.borderL2, shape)
+            .border(DshSpacing.Hairline, palette.borderL2, shape)
             // dsh 的 .card{max-height:360px; overflow-y:auto}：题多了在卡片内部滚，
             // 不去撑会话的滚动条
             .heightIn(max = 360.dp)

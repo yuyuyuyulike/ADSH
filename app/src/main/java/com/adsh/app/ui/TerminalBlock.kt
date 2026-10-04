@@ -97,7 +97,7 @@ internal fun RailTerminalBlock(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(palette.codeBlock)
-            .border(0.5.dp, palette.borderL1, RoundedCornerShape(12.dp)),
+            .border(DshSpacing.Hairline, palette.borderL1, RoundedCornerShape(12.dp)),
     ) {
         // 横幅（dsh 的 .header：padding 9px 14px 9px 30px 沟槽，点在最左 8px 处）
         Row(
@@ -172,7 +172,7 @@ internal fun RailTerminalBlock(
             }
         }
         if (bodyVisible) {
-            HorizontalDivider(thickness = 0.5.dp, color = palette.borderL2)
+            HorizontalDivider(thickness = DshSpacing.Hairline, color = palette.borderL2)
             if (outputBlank) {
                 Text(
                     text = "无输出",

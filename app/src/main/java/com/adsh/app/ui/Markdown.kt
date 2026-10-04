@@ -295,7 +295,7 @@ private fun MdBlockView(block: MdBlock, style: MarkdownStyle, compact: Boolean) 
                 color = style.color,
             )
         }
-        MdBlock.Rule -> HorizontalDivider(thickness = 0.5.dp, color = palette.borderL2)
+        MdBlock.Rule -> HorizontalDivider(thickness = DshSpacing.Hairline, color = palette.borderL2)
         is MdBlock.Image -> MdImage(block, style)
     }
 }
@@ -625,7 +625,7 @@ private fun MdTableRow(
         }
     }
     HorizontalDivider(
-        thickness = 0.5.dp,
+        thickness = DshSpacing.Hairline,
         color = if (header) palette.borderL3 else palette.borderL2,
     )
 }

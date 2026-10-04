@@ -424,7 +424,7 @@ private fun DrawerSearchField(
             .fillMaxWidth()
             .height(30.dp)
             .clip(RoundedCornerShape(10.dp))
-            .border(0.5.dp, palette.borderL4, RoundedCornerShape(10.dp))
+            .border(DshSpacing.Hairline, palette.borderL4, RoundedCornerShape(10.dp))
             // 落在搜索框这一块里的那一下不许冒到抽屉背景去（dsh 的「搜索根之内不收起」）：
             // 放大镜周边的留白也算搜索框自己的一部分。
             .dshClickable(interactionSource = dshInteraction()) {}
@@ -612,7 +612,7 @@ private fun RenameDialog(
                     .fillMaxWidth()
                     .height(44.dp)
                     .clip(RoundedCornerShape(22.dp))
-                    .border(0.5.dp, palette.borderL4, RoundedCornerShape(22.dp))
+                    .border(DshSpacing.Hairline, palette.borderL4, RoundedCornerShape(22.dp))
                     .padding(horizontal = DshSpacing.Section, vertical = 11.dp),
             )
         },
@@ -743,7 +743,7 @@ private fun NewConversationButton(onClick: () -> Unit) {
             .height(38.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(palette.buttonElevated)
-            .border(0.5.dp, palette.borderL3, RoundedCornerShape(12.dp))
+            .border(DshSpacing.Hairline, palette.borderL3, RoundedCornerShape(12.dp))
             .dshClickable(interactionSource = dshInteraction(), onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,

@@ -307,7 +307,7 @@ private fun TextPreview(path: String) {
                 fontSize = 11.sp,
                 color = palette.labelTertiary,
             )
-            HorizontalDivider(thickness = 0.5.dp, color = palette.borderL3)
+            HorizontalDivider(thickness = DshSpacing.Hairline, color = palette.borderL3)
         }
         // dsh 的 .dhJKeW_body：等宽、white-space: pre、横向滚动（不折行），这样代码对齐才正常
         SelectionContainer {
@@ -439,7 +439,7 @@ private fun PdfPreview(path: String) {
                 )
             }
         }
-        HorizontalDivider(thickness = 0.5.dp, color = palette.borderL3)
+        HorizontalDivider(thickness = DshSpacing.Hairline, color = palette.borderL3)
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = DshSpacing.Xxxl, vertical = DshSpacing.Xl),
             verticalAlignment = Alignment.CenterVertically,

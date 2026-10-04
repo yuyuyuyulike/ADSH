@@ -172,7 +172,7 @@ private fun UserImageAttachment(
     }
     val frame = Modifier
         .clip(RoundedCornerShape(16.dp))
-        .border(0.5.dp, palette.borderL2, RoundedCornerShape(16.dp))
+        .border(DshSpacing.Hairline, palette.borderL2, RoundedCornerShape(16.dp))
         .background(palette.selector)
         // 点一下打开原图预览（dsh 的 lightbox：缩略图 → 原图）
         .dshClickable(interactionSource = dshInteraction()) { ImagePreviewState.open(attachment.path) }
@@ -238,7 +238,7 @@ private fun UserFileCard(attachment: com.adsh.app.core.agent.UserAttachment) {
             .width(240.dp)
             .heightIn(min = 64.dp)
             .clip(RoundedCornerShape(16.dp))
-            .border(0.5.dp, palette.borderL2, RoundedCornerShape(16.dp))
+            .border(DshSpacing.Hairline, palette.borderL2, RoundedCornerShape(16.dp))
             .background(palette.inputMajor)
             .padding(horizontal = DshSpacing.Xxxl, vertical = DshSpacing.Xl),
         verticalAlignment = Alignment.CenterVertically,

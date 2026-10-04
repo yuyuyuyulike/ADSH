@@ -96,7 +96,7 @@ internal fun TodoDock(conversationId: Long?, todos: List<TodoItem>) {
             .padding(bottom = DshSpacing.Lg)
             .clip(RoundedCornerShape(12.dp))
             .background(palette.tip)
-            .border(0.5.dp, palette.borderL1, RoundedCornerShape(12.dp))
+            .border(DshSpacing.Hairline, palette.borderL1, RoundedCornerShape(12.dp))
             // 收起时整条与目标横窗一样高（36dp）：dsh 的 body 上下各 6px 内边距，
             // 手机上比目标条高一截，所以纵向内边距去掉，展开时再给列表补 6dp
             .padding(horizontal = DshSpacing.Xxxl),

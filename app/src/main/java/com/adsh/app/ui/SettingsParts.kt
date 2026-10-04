@@ -75,7 +75,7 @@ internal fun SettingsCard(
         color = background ?: Color.Transparent,
         contentColor = palette.labelPrimary,
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(0.5.dp, palette.borderL4),
+        border = BorderStroke(DshSpacing.Hairline, palette.borderL4),
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(content = content)
@@ -233,7 +233,7 @@ internal fun DshTag(text: String, tone: TagTone = TagTone.Neutral) {
         TagTone.Quiet -> Color.Transparent
         TagTone.Outline -> Color.Transparent
     }
-    val border = if (tone == TagTone.Outline) BorderStroke(0.5.dp, palette.borderL4) else null
+    val border = if (tone == TagTone.Outline) BorderStroke(DshSpacing.Hairline, palette.borderL4) else null
     val color = when (tone) {
         TagTone.Neutral -> palette.labelSecondary
         TagTone.Quiet -> palette.labelTertiary
@@ -319,7 +319,7 @@ internal fun DshInput(
             .heightIn(min = minHeight)
             .clip(RoundedCornerShape(8.dp))
             .background(palette.bgLayer1)
-            .border(0.5.dp, if (invalid) palette.errorLabel else palette.borderL4, RoundedCornerShape(8.dp))
+            .border(DshSpacing.Hairline, if (invalid) palette.errorLabel else palette.borderL4, RoundedCornerShape(8.dp))
             .padding(horizontal = DshSpacing.Xxxl, vertical = DshSpacing.Lg),
         decorationBox = { innerTextField ->
             Box {
@@ -447,7 +447,7 @@ internal fun SecondaryButton(text: String, enabled: Boolean = true, small: Boole
             .height(if (small) 28.dp else 36.dp)
             .clip(shape)
             .background(if (pressed && enabled) palette.hover else Color.Transparent)
-            .border(0.5.dp, palette.borderL3, shape)
+            .border(DshSpacing.Hairline, palette.borderL3, shape)
             .dshClickable(enabled = enabled, interactionSource = interaction, onClick = onClick)
             .padding(horizontal = if (small) 10.dp else 14.dp),
         contentAlignment = Alignment.Center,

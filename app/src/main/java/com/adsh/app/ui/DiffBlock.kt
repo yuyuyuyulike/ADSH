@@ -207,7 +207,7 @@ internal fun RailDiffBlock(rows: List<DiffRow>, modifier: Modifier = Modifier) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(palette.codeBlock)
-            .border(0.5.dp, palette.borderL1, RoundedCornerShape(12.dp)),
+            .border(DshSpacing.Hairline, palette.borderL1, RoundedCornerShape(12.dp)),
     ) {
         // 横幅（dsh 的 CodeToolbar / CodeCard 的 .header：padding 10px 18px 8px 22px）
         Row(

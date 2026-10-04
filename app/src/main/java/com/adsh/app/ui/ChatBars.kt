@@ -79,7 +79,7 @@ internal fun RoundRailButton(
             .size(34.dp)
             .clip(RoundedCornerShape(100.dp))
             .background(palette.menu)
-            .border(0.5.dp, palette.borderL3, RoundedCornerShape(100.dp))
+            .border(DshSpacing.Hairline, palette.borderL3, RoundedCornerShape(100.dp))
             .dshClickable(interactionSource = dshInteraction()) { onClick() },
         contentAlignment = Alignment.Center,
     ) {
@@ -105,7 +105,7 @@ internal fun BackToBottomButton(onClick: () -> Unit) {
             .size(34.dp)
             .clip(RoundedCornerShape(100.dp))
             .background(palette.menu)
-            .border(0.5.dp, palette.borderL3, RoundedCornerShape(100.dp))
+            .border(DshSpacing.Hairline, palette.borderL3, RoundedCornerShape(100.dp))
             .dshClickable(interactionSource = dshInteraction()) { onClick() },
         contentAlignment = Alignment.Center,
     ) {

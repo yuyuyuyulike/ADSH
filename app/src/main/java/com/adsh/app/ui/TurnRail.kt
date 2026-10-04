@@ -118,7 +118,7 @@ fun TurnFoldRow(
             )
             RailChevron(open = open)
         }
-        HorizontalDivider(thickness = 0.5.dp, color = palette.borderL2)
+        HorizontalDivider(thickness = DshSpacing.Hairline, color = palette.borderL2)
     }
 }
 
@@ -800,7 +800,7 @@ private fun RailSubCalls(
                 // 竖线画在 margin 的边界上（= 本 Column 的 0 点），**不是** padding 之后。
                 // 这里原先写的是 Offset(-8dp)：drawBehind 的 0 点已经在外层 padding(start=22dp)
                 // 之内，再左移 8dp 就把线画到了 14dp 处，比 dsh 的 22px 偏左了整整 8px。
-                val width = 0.5.dp.toPx()
+                val width = DshSpacing.Hairline.toPx()
                 drawRect(
                     color = border,
                     topLeft = Offset(0f, 0f),
@@ -864,7 +864,7 @@ private fun RailImageGallery(images: List<com.adsh.app.core.agent.ToolImage>, co
             }
             val frame = Modifier
                 .clip(RoundedCornerShape(16.dp))
-                .border(0.5.dp, palette.borderL2, RoundedCornerShape(16.dp))
+                .border(DshSpacing.Hairline, palette.borderL2, RoundedCornerShape(16.dp))
                 .background(palette.selector)
                 .dshClickable(interactionSource = dshInteraction()) { ImagePreviewState.open(attachment.path) }
             if (multiple) {
@@ -908,11 +908,11 @@ private fun RailIoCard(input: String?, output: String?, error: Boolean) {
             .padding(start = DshSpacing.Md)
             .clip(RoundedCornerShape(12.dp))
             .background(palette.codeBlock)
-            .border(0.5.dp, palette.borderL1, RoundedCornerShape(12.dp)),
+            .border(DshSpacing.Hairline, palette.borderL1, RoundedCornerShape(12.dp)),
     ) {
         if (input != null) RailIoSection("输入", input, error = false)
         if (input != null && output != null) {
-            HorizontalDivider(thickness = 0.5.dp, color = palette.borderL2)
+            HorizontalDivider(thickness = DshSpacing.Hairline, color = palette.borderL2)
         }
         output?.let { RailIoSection("输出", it, error = error) }
     }

@@ -139,7 +139,7 @@ private fun FileTreePanel(rootPath: String, onOpenFile: (String) -> Unit) {
             }
             ToolIconButton(DshIcons.Refresh, "刷新") { refreshTick++ }
         }
-        HorizontalDivider(thickness = 0.5.dp, color = palette.borderL3)
+        HorizontalDivider(thickness = DshSpacing.Hairline, color = palette.borderL3)
 
         val failure = error
         if (failure != null) {
@@ -273,7 +273,7 @@ fun FileWorkspacePanel(rootPath: String, tabs: List<String>, activeIndex: Int, o
                 )
             }
         }
-        HorizontalDivider(thickness = 0.5.dp, color = palette.borderL3)
+        HorizontalDivider(thickness = DshSpacing.Hairline, color = palette.borderL3)
         val file = tabs.getOrNull(activeIndex - 1)
         if (file == null) {
             FileTreePanel(rootPath = rootPath, onOpenFile = onOpenFile)

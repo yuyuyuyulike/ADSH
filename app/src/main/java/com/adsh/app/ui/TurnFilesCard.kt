@@ -57,7 +57,7 @@ private fun CardTile(content: @Composable () -> Unit) {
         modifier = Modifier
             .size(CARD_TILE_DP)
             .clip(RoundedCornerShape(12.dp))
-            .border(0.5.dp, palette.borderL1, RoundedCornerShape(12.dp))
+            .border(DshSpacing.Hairline, palette.borderL1, RoundedCornerShape(12.dp))
             .background(tile),
         contentAlignment = Alignment.Center,
     ) {
@@ -135,7 +135,7 @@ fun TurnFilesCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .border(0.5.dp, palette.borderL2, RoundedCornerShape(16.dp))
+            .border(DshSpacing.Hairline, palette.borderL2, RoundedCornerShape(16.dp))
             .background(palette.inputMajor),
     ) {
         Row(
@@ -179,7 +179,7 @@ fun TurnFilesCard(
             }
         }
         if (!headerOnly) {
-            HorizontalDivider(thickness = 0.5.dp, color = palette.borderL2)
+            HorizontalDivider(thickness = DshSpacing.Hairline, color = palette.borderL2)
             shown.forEach { row ->
                 Row(
                     modifier = Modifier
@@ -211,7 +211,7 @@ fun TurnFilesCard(
                 }
             }
             if (foldable) {
-                HorizontalDivider(thickness = 0.5.dp, color = palette.borderL2)
+                HorizontalDivider(thickness = DshSpacing.Hairline, color = palette.borderL2)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

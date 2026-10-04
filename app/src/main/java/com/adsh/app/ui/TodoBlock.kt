@@ -197,7 +197,7 @@ internal fun RailTodoCard(card: TodoCard, modifier: Modifier = Modifier) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(palette.codeBlock)
-            .border(0.5.dp, palette.borderL1, RoundedCornerShape(12.dp)),
+            .border(DshSpacing.Hairline, palette.borderL1, RoundedCornerShape(12.dp)),
     ) {
         if (card.caption.isNotEmpty()) {
             Text(
@@ -242,7 +242,7 @@ private fun TodoItemRow(item: TodoCardItem, divider: Boolean) {
         if (divider) {
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = DshSpacing.Section),
-                thickness = 0.5.dp,
+                thickness = DshSpacing.Hairline,
                 color = palette.borderL2,
             )
         }
@@ -334,7 +334,7 @@ private fun TodoUnchangedRow(count: Int, open: Boolean, onToggle: () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
         HorizontalDivider(
             modifier = Modifier.padding(horizontal = DshSpacing.Section),
-            thickness = 0.5.dp,
+            thickness = DshSpacing.Hairline,
             color = palette.borderL2,
         )
         Row(

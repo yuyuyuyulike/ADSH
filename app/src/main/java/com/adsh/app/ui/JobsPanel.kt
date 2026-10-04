@@ -478,7 +478,7 @@ private fun KillButton(armed: Boolean, failed: Boolean, onArm: () -> Unit, onCon
                 .size(20.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .background(palette.menu)
-                .border(0.5.dp, palette.borderL2, RoundedCornerShape(6.dp))
+                .border(DshSpacing.Hairline, palette.borderL2, RoundedCornerShape(6.dp))
                 .dshClickable(interactionSource = interaction, onClick = onArm),
             contentAlignment = Alignment.Center,
         ) {

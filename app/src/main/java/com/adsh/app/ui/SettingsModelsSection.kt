@@ -420,7 +420,7 @@ internal fun ModelCatalogEditor(
                     Modifier
                         .fillMaxWidth()
                         .clip(entryShape)
-                        .border(0.5.dp, palette.borderL4, entryShape)
+                        .border(DshSpacing.Hairline, palette.borderL4, entryShape)
                         .padding(DshSpacing.Lg),
                 ) {
                     Row(
@@ -526,7 +526,7 @@ internal fun AddModelButton(onClick: () -> Unit) {
             .height(28.dp)
             .clip(shape)
             .background(if (pressed) palette.hover else Color.Transparent)
-            .border(0.5.dp, palette.borderL3, shape)
+            .border(DshSpacing.Hairline, palette.borderL3, shape)
             .dshClickable(interactionSource = interaction, onClick = onClick)
             .padding(horizontal = DshSpacing.Xxl),
         contentAlignment = Alignment.Center,

@@ -437,7 +437,7 @@ private fun androidx.compose.foundation.layout.RowScope.ThemeCubeView(
                 },
             )
             .border(
-                width = 0.5.dp,
+                width = DshSpacing.Hairline,
                 color = if (selected) NEUTRAL_BLUISH_400 else palette.borderL4,
                 shape = RoundedCornerShape(20.dp),
             )
