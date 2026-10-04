@@ -16,6 +16,9 @@ import com.adsh.app.core.llm.ChatEvent
 import com.adsh.app.core.llm.LlmClient
 import com.adsh.app.core.llm.SessionStats
 import com.adsh.app.core.workspace.WorkspaceManager
+import com.adsh.app.island.IslandController
+import com.adsh.app.island.islandWaitingOf
+import com.adsh.app.island.islandWorkOf
 import com.adsh.app.runtime.termux.TermuxRuntime
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -24,6 +27,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -1745,5 +1749,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 "information into a single consolidated summary under the same structure.",
         ).joinToString("\n")
 
+    }
+
+    /**
+     * 灵动岛：界面状态 → 岛的那一帧（见 island/IslandStatus.kt 的 [islandWorkOf]）。
+     *
+     * 放在**类的最末尾**：Kotlin 的 init 块与属性初始化按声明顺序执行，而这里要读的
+     * [question] / [approval] 是类中部才声明的 —— 放到前面会读到还没初始化的 null。
+     *
+     * [IslandController.sync] 顺带负责「从没有在跑变成有在跑」那一下把前台服务拉起来：
+     * 保活只在 agent 干活期间，用户口径是「干完一起停」（收尾在 IslandService 里）。
+     */
+    init {
+        viewModelScope.launch {
+            combine(state, question, approval) { snapshot, asking, approving ->
+                islandWorkOf(snapshot, islandWaitingOf(asking, approving))
+            }
+                // 状态每秒变好几次，但岛只关心「哪一格 + 哪三行」：一样就不往下传
+                .distinctUntilChanged()
+                .collect { work -> IslandController.sync(getApplication(), work) }
+        }
     }
 }

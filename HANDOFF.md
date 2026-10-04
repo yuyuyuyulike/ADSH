@@ -10,7 +10,7 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 - 工作区：`D:\WSN2005\Android1\App\ADSH`。dsh 的参考源码在 `D:\tmpdsh-work`（**不要删**：里面的
   `spec-ui.md` / `spec-log.md` 是展示层的规格依据），解包产物与 `asar-tool.js` 在 `D:\tmp`。
 
-## 当前状态（2026-10-03；**已发布** 0.1.9 / code 11，**开发中** 0.2.0 / code 12）
+## 当前状态（2026-10-04；**已发布** 0.2.0 / code 12，**开发中** 0.2.1 / code 13）
 
 - **仓库**：历史在第 104 / 107 / 121 / 124 轮各压平过一次，最后一次压平之后又线性累积了 111 个提交
   （R0 起）；**远端 `main` 停在 `08dbb09`，那之后的 28 个提交只在本地**（见文末版本块）。
@@ -24,7 +24,7 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
   同一把签名，`install -r` 可互相覆盖且不动数据。要出 0.2.0 的发布包：
   `:app:assembleRelease` → `app/build/outputs/apk/release/app-release.apk` → 覆盖 `dist/`。
   release 包不可调试（`run-as` 会被拒）—— 要拉库 / 进沙箱 / 看 logcat 就装 debug 包。
-- **验证基线**：单测 **800 全过**（每次提交都重跑；第二阶段起恢复为默认门禁，见上面「第二阶段」一节，逐条数字看 R 表）。第 117 轮起按用户要求**不再跑测试**，只保证编译通过、
+- **验证基线**：单测 **824 全过**（每次提交都重跑；第二阶段起恢复为默认门禁，见上面「第二阶段」一节，逐条数字看 R 表）。第 117 轮起按用户要求**不再跑测试**，只保证编译通过、
   装机启动无 FATAL；这一轮起如果删了测试侧的代码或改了断言，至少把 `:app:compileDebugUnitTestKotlin` 跑过。
 
 ## 第二阶段（代码熵减，进行中）
@@ -147,6 +147,8 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 
 | R87 | **用户点名的三件事**：①抽屉动画时长 **130 → 112ms**（只改 `DRAWER_SLIDE_MS`，曲线仍是 `LinearEasing` 不缓动）；②**模型重连向 dsh 靠齐**：UI 按 dsh 的 `ConnectionIndicator.module.css` 逐条重画（28dp 高 / 8dp 圆角 / 左右 8dp / 图标与文案 4dp / 12px·500 字 / warning 与 success 两套底色 + 同色 20% 描边 / 淡入淡出 150ms / 连接中用 dsh 的 `StateDot`、断开用刷新、已恢复用对勾 / **文案自己写着动作**、点接在文案后且宽度固定 1em），机制上补上 dsh 有而 ADSH 没有的那条 —— **`setNetworkAvailable`：断网挂起自动重试（不再盲目退避）、网络回来立刻重来且退避归零**，界面从此「断开」与「连接中」是两个状态；③**附件导入 UI**：图片只显示缩略图（去掉文件名）、叉压在图的右上角；文件卡片＝类型图标（复用文件浏览的 `FileTypeIcon`）+ 文件名 + 大小 + 右上角深色圆形叉徽标（照 DeepSeek app 的卡片）；④版本 **0.2.0 → 0.2.1（code 12 → 13）** | **熵减**：`StateDot` 从 `TerminalBlock` 提出来共用（新 `ui/DshStateDot.kt`）；**三份大小文案合成一份** `ui/FileSizeText.kt`（dsh 的规则：<10 一位小数、≥10 取整、数字与单位之间无空格）—— `DocumentPreview` 的私有 `formatSize`、`UserMessages` 的同名私有函数、附件卡片三处都改用它（后者还撞了签名）；删掉 14 行因搬家失效的 import；**反向验证 3 处变异全响**（断网挂起条件反转 → `awaitNetworkHoldsUntilTheNetworkComesBack` 失败；大小文案退回带空格 → `FileSizeTextTest` 失败；临时态漏掉断开 → `ConnectionStateTest` 失败）；**803 → 811 全绿**（+8 例）；真机：**设备这会儿没连上，`dist/ADSH-0.2.1-debug.apk` 还没装**（装上要验的是：断网时连接条显示「连接已断开，点此重试」而不是转圈，网络回来立刻恢复） |
 
+| R88 | **用户点名的四件事（第 179 轮）**：①抽屉动画 **112 → 120ms**（只改 DRAWER_SLIDE_MS 一个常量，曲线仍是 LinearEasing 不缓动）；②**灵动岛（新功能，用户口径「后台保活机制」）**：五格状态（思考 / #代码 / ask_user / 输出中 / 已结束）由纯函数 islandWorkOf 从 ChatUiState 推出来（优先级：等用户 > 工具在跑 > 工具参数在流 > 思考 > 输出 > 刚起；展开态取最后三行、只看尾巴 2000 字符），宿主是新前台服务 IslandService（通知渠道 adsh-island、常驻低优先级通知、只在 agent 干活期间跑；跑完显示「已结束」1.2s → 演退场 320ms → stopSelf），窗口是 TYPE_APPLICATION_OVERLAY 悬浮窗（要 SYSTEM_ALERT_WINDOW），只在 App 退到后台时挂（AppVisibility 用 ActivityLifecycleCallbacks 计数前后台）；③**设置-功能页的权限卡**：四项（所有文件访问 / 电池优化 / 悬浮窗 / 通知）状态读系统真值、点一下跳对应系统页面（每档都有回落：单应用页 → 总列表页 → 应用信息页），从系统页回来 ON_RESUME 重算；按用户口径**不带小字介绍**（CardFrame 的 description 改成可空） | **形态与动效按用户第二轮口径重做**（第一版被否：「展开不是这样的、位置与大小也不对、动效一抽一抽、水平长度不该跟着文案变、结束后收起不丝滑」）：收起固定 **150×37dp** 胶囊（宽度不跟文案变）→ 点一下**同一块面**长成 300dp 卡片（宽 / 高 / 圆角一起走临界弹簧），展开块**固定三行槽位**（行数怎么变、块高都不变），思考与 #代码 两格带流光（与对话里扫光同周期 3.0s、同 ease-out，扫的是字面本身而不是盖一层底色），出现 / 退场是缩放 + 淡入淡出、窗口等动画演完才摘；**三条真机结论写进 KDoc**：(a) TYPE_APPLICATION_OVERLAY 那条线在状态栏之下 —— **触摸归 SystemUI**（点上去毫无反应）、**绘制也在 SystemUI 之下**：用户手机开着热点时，MIUI 自己的灵动岛正压在这个位置，我们的胶囊被整个盖住、点一下展开的是 MIUI 的热点卡片（真机截图确认）。于是位置的最终口径是**状态栏正下方 2dp**（整枚胶囊都在自己的窗口里、点得到，也不跟系统自己的岛打架），想更贴挖孔就只改 PILL_TOP_BIAS_DP 一个数（负值往上，代价是露出多少就只能点多少）；(b) 无 Activity 的浮窗里 **Compose 的 clickable 不触发**（事件确实进了本进程 ViewRootImpl），改成根 View（IslandRootView）的 dispatchTouchEvent 直接吃掉；(c) 通知只在文案变化时 notify —— 每帧一次 IPC 是「一抽一抽」的来源之一。**811 → 824 全绿**（+13 例 island/IslandStatusTest：五格优先级、工具跑完不再算工具、参数在流算工具、等待压过一切、只留最后三行非空、长行裁剪、只看尾巴、提问通道优先、批准显示等批准的工具名）；权限卡四项状态用 adb 逐条对过系统真值（cmd appops SYSTEM_ALERT_WINDOW / MANAGE_EXTERNAL_STORAGE、dumpsys deviceidle whitelist、通知开关）；岛的真机实测过：真发一轮 → 退到后台出现、回前台隐藏、dumpsys 里 isForeground=true / foregroundId=1717、通知渠道 adsh-island、收起态与「已结束」截图核对过；**这一版（固定宽 + 一块面变形 + 压状态栏中间 + 丝滑进出）只编译 + 装机，观感由用户自测**；本轮按用户要求**不跑死代码扫描、不做熵减** |
+
 **第二阶段踩到的八条方法论**（下一步会话直接用，别再交一遍学费）：
 
 1. **审计报告的关键字计数不可直接当待办**。那一轮外部审计给出的五条里，三条经核实不成立：
@@ -255,7 +257,8 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
   3. 资产用 `gh release upload v0.2.0-20261003 dist/ADSH-0.2.0-release.apk --clobber`
      —— **绝对不要 `gh release edit`**：0.2.0 的说明是**用户自己在网页上改过的**
      （标题改成了「## ADSH 0.2.0（第二阶段）」、加了「用户协议」等），clobber 只换资产、不动说明。
-- **当前门禁基线 803 全绿**；设备上装的是 `0.2.0` release 包（`run-as` 会被拒，
+- **当前门禁基线 824 全绿**（R87 811 → R88 824）；设备上装的是 **0.2.1-debug（code 13）**；
+  再往前那一次装的是 `0.2.0` release 包（`run-as` 会被拒，
   要调试就装 `dist/ADSH-0.2.0-debug.apk`）。
 ## 一百多轮做了什么（阶段总结）
 

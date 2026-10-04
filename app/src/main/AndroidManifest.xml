@@ -7,6 +7,16 @@
 
     <!-- 侧载自用：需要真实 POSIX 路径让 shell 操作用户目录（SAF 的 URI 权限对 shell 无效） -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- Android 10 及以下：共享存储走运行时权限（10 起上面那条接管；maxSdkVersion 让它不在新系统上出现） -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+
+    <!-- 灵动岛（agent 干活时屏幕顶部那枚胶囊）：画在别的应用上面 = 悬浮窗权限 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- 后台保活：agent 那一轮跑到一半时不许被系统收走 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 电池优化白名单（国产 ROM 上不做这一项，前台服务照样会被清） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:allowBackup="false"
@@ -29,6 +39,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 灵动岛的宿主前台服务：agent 在跑时把进程钉住，同时挂那块悬浮窗 -->
+        <service android:name=".island.IslandService" android:exported="false" />
     </application>
 
 </manifest>

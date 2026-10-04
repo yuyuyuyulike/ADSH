@@ -114,12 +114,17 @@ internal fun DisclosureCard(
     }
 }
 
-/** 卡片的头部（dsh 的 .header）：图标 + 名称 + 说明 + 未保存标签 + 倒角 */
+/**
+ * 卡片的头部（dsh 的 .header）：图标 + 名称 + 说明 + 未保存标签 + 倒角。
+ *
+ * [description] 可以留空（「权限」卡按用户口径**不带小字介绍**）—— 留空时那一行整块不画，
+ * 否则会留下一条 20sp 的空行，看着像卡片被压扁了。
+ */
 @Composable
 internal fun CardFrame(
     icon: ImageVector,
     title: String,
-    description: String,
+    description: String = "",
     open: Boolean,
     dirty: Boolean,
     onClick: () -> Unit,
@@ -140,7 +145,9 @@ internal fun CardFrame(
         Icon(icon, contentDescription = null, tint = palette.labelSecondary, modifier = Modifier.size(16.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(DshSpacing.Md)) {
             Text(title, fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.SemiBold, color = palette.labelPrimary)
-            Text(description, fontSize = 13.sp, lineHeight = 20.sp, color = palette.labelTertiary)
+            if (description.isNotEmpty()) {
+                Text(description, fontSize = 13.sp, lineHeight = 20.sp, color = palette.labelTertiary)
+            }
         }
         if (dirty) DshTag("未保存")
         Icon(

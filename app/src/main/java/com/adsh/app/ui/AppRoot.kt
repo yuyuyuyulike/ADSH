@@ -462,7 +462,7 @@ private const val SLIDE_MS = 220
  * 它是这套动画**唯一该调的旋钮**（第 82–85 轮把弹簧、缓动曲线、手势初速度都试过并被否掉，
  * 详见 DrawerSettle.kt 与 settleDrawer 的注释）：觉得还慢就调小这个数，别的别动。
  */
-private const val DRAWER_SLIDE_MS = 112
+private const val DRAWER_SLIDE_MS = 120
 /**
  * 覆盖层里的一层：进入时从右边滑进来，退场时原路滑回右边；被上面那层盖住时只保留组合、
  * 不测量也不绘制（见 `placed`）。

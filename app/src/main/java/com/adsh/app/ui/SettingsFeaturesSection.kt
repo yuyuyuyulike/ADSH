@@ -72,6 +72,8 @@ internal fun FeaturesSection(settings: SettingsStore) {
         TerminalPlugin(settings)
         AgentLoopPlugin(settings)
         WebSearchPlugin(settings)
+        // 权限卡（用户口径：adsh 所有文件 / 电池优化 / 悬浮窗 / 通知 的快捷入口）
+        PermissionsCard()
     }
 }
 
