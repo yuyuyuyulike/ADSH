@@ -13,11 +13,13 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 
 /**
- * 设置页「权限」卡里的四项（用户在第 179 轮定下口径：通知 / 电池优化 / 自启动 / 所有文件访问）。
+ * 设置页「权限」卡里的三项（第 181 轮现状：通知 / 电池优化 / 所有文件访问）。
  *
- * 这四项凑在一起不是随手挑的：它们是「前台服务 + 灵动岛」这条保活链路在国产 ROM（HyperOS /
+ * 这三项凑在一起不是随手挑的：它们是「前台服务 + 灵动岛」这条保活链路在国产 ROM（HyperOS /
  * MIUI / EMUI / ColorOS）上能否活下来的一组开关 —— 缺一个，agent 那一轮就可能在后台被清掉。
- * 原来那项「悬浮窗」已经撤掉：岛现在由 MIUI 自己画（媒体/焦点通知），不再需要 SYSTEM_ALERT_WINDOW。
+ *
+ * 撤掉的两项：**悬浮窗**（岛现在由系统自己画，不再需要 SYSTEM_ALERT_WINDOW）、
+ * **自启动**（用户第 180 轮口径「去掉吧，不需要」；顺带 MIUI 也不给读取口，行里只能写「去设置」）。
  */
 internal enum class AppPermission(val label: String) {
 
@@ -32,8 +34,9 @@ internal enum class AppPermission(val label: String) {
 }
 
 /**
- * 这一项现在的状态：true = 已授权、false = 未授权、**null = 系统没有可读的开关**（自启动就是这种，
- * MIUI 不对外暴露）。null 时卡片上写「去设置」而不是编一个状态出来 —— 界面不许撒谎。
+ * 这一项现在的状态：true = 已授权、false = 未授权、**null = 系统没有可读的开关**。
+ * null 时卡片上写「去设置」而不是编一个状态出来 —— 界面不许撒谎（当前三项都读得到真值，
+ * 这一档留给以后加进来的厂商私有开关）。
  */
 internal fun permissionStatus(context: Context, permission: AppPermission): Boolean? = when (permission) {
     AppPermission.NOTIFICATION -> NotificationManagerCompat.from(context).areNotificationsEnabled()

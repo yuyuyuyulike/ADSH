@@ -32,6 +32,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 private const val CHANNEL_ID = "adsh-island"
+
+/** 通知重发的最小间隔（约 5 次/秒）：正文流式期间既跟得上，又不会每帧一次 IPC */
+private const val NOTIFY_MIN_INTERVAL_MS = 200L
 private const val NOTIFICATION_ID = 1717
 private const val SESSION_TAG = "adsh-island"
 
@@ -53,9 +56,14 @@ internal const val ACTION_STOP = "com.adsh.app.island.STOP"
  *  - **MIUI 焦点通知**（miui.focus.param，从系统自己的热点通知 dump 出来的那套）：真机上 MIUI 不画
  *    （多半要业务白名单），用户实测「没有灵动岛了」→ 撤回媒体路线。
  *
- * 下一步想走的是 **Android 16 的实况窗（Live Updates）**：ProgressStyle + setRequestPromotedOngoing，
- * 需要先在本机 SDK 里核对着两个 API 的名字（这一轮的 javap 探针把 platforms 路径写错了，没探到），
- * 核对完再上；拿不准就还是这条媒体路线兜底。
+ * 下一步想走的是 **Android 16 的实况窗（Live Updates）**：API 名字已经在真机上核对完了 ——
+ * 本机 SDK 是 `platforms/android-37.0`（不是 android-37），javap 确认
+ * `Notification$ProgressStyle`（setProgress / setProgressPoints / setProgressSegments /
+ * setProgressIndeterminate / setStyledByProgress）、`Notification$Builder
+ * .setRequestPromotedOngoing` / `.setShortCriticalText`、
+ * `NotificationManager.canPostPromotedNotifications` 都在。要上就得先做设备实验：
+ * API 36+ 且 `canPostPromotedNotifications()` 为真时改走实况窗（可能多出一条通知、
+ * 也可能 MIUI 根本不 promote），拿不准就还是这条媒体路线兜底。
  */
 class IslandService : Service() {
 
@@ -68,10 +76,21 @@ class IslandService : Service() {
     private var watching = false
     private var dwelling: Job? = null
 
-    /** 上一次写进通知栏的那一格：文案没变就不重复 notify（每帧一次 IPC 是真会掉帧的） */
-    private var notified: String? = null
+    /**
+     * 上一次写进通知栏的那一份内容（格子 + 最新一行）与它的时刻。
+     *
+     * 键里**带上那一行正文**：通知栏那一条（以及按通知取文案的 ROM）显示的就是它 ——
+     * 只按格子去重的话，一轮里标题从「思考」变成「输出中」之后整段正文都不再刷新，
+     * 用户看到的就停在那一刻。真机上 MIUI 的媒体大卡读的是 **MediaSession 元数据**（那份每帧都
+     * 更新，见 [updateSession]），这一条是给通知栏本身与别的 ROM 兜底的。
+     * 流式正文每帧都在变，所以还加了一个最小间隔（[NOTIFY_MIN_INTERVAL_MS]，约 5 次/秒）：
+     * 既不卡也不糊。
+     */
+    private var notifiedKey: String? = null
+    private var notifiedAt = 0L
+    private var notifyJob: Job? = null
 
-    /** 每一格一张小图（192px，五张封顶） */
+    /** 每一格一张小图（256px，五张封顶） */
     private val artCache = HashMap<IslandPhase, Bitmap>()
 
     override fun onCreate() {
@@ -83,6 +102,8 @@ class IslandService : Service() {
                 override fun onStop() = IslandBus.requestStop()
                 override fun onPause() = IslandBus.requestStop()
             })
+            // 点岛上那一格（以及媒体卡上的封面）= 回 App 接着看。不给的话系统点开的是空的媒体页
+            setSessionActivity(openAppIntent(this@IslandService))
             isActive = true
         }
     }
@@ -144,12 +165,38 @@ class IslandService : Service() {
     private fun apply(work: IslandWork) {
         display.value = work
         val label = phaseLabel(work.phase)
-        val art = artFor(work.phase)
-        updateSession(label, work.lines.firstOrNull().orEmpty(), work.phase != IslandPhase.DONE, art)
-        if (label == notified) return
-        notified = label
+        val line = work.lines.firstOrNull().orEmpty()
+        updateSession(label, line, work.phase != IslandPhase.DONE, artFor(work.phase))
+        publish(work)
+    }
+
+    /**
+     * 通知的节流重发（见 [notifiedKey]）：内容变了才发，最短间隔 [NOTIFY_MIN_INTERVAL_MS]。
+     *
+     * 排在后面的那一发**发的是当时最新的一帧**（不是排队时那一帧）：一轮结束时最后那几行
+     * 一定落在屏幕上，而中间那些帧该丢就丢 —— 通知栏不是逐帧播放器。
+     */
+    private fun publish(work: IslandWork) {
+        val key = phaseLabel(work.phase) + "\u0000" + work.lines.firstOrNull().orEmpty()
+        if (key == notifiedKey || notifyJob != null) return
+        val wait = NOTIFY_MIN_INTERVAL_MS - (System.currentTimeMillis() - notifiedAt)
+        if (wait <= 0L) {
+            notifyNow(work, key)
+            return
+        }
+        notifyJob = scope.launch {
+            delay(wait)
+            notifyJob = null
+            val latest = display.value ?: return@launch
+            notifyNow(latest, phaseLabel(latest.phase) + "\u0000" + latest.lines.firstOrNull().orEmpty())
+        }
+    }
+
+    private fun notifyNow(work: IslandWork, key: String) {
+        notifiedKey = key
+        notifiedAt = System.currentTimeMillis()
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, notification(this, work, session?.sessionToken, art))
+            .notify(NOTIFICATION_ID, notification(this, work, session?.sessionToken, artFor(work.phase)))
     }
 
     /**
@@ -163,6 +210,10 @@ class IslandService : Service() {
             .putString(MediaMetadata.METADATA_KEY_TITLE, title)
             .putString(MediaMetadata.METADATA_KEY_ARTIST, text)
             .putString(MediaMetadata.METADATA_KEY_ALBUM, "ADSH")
+            // 系统卡（以及实况窗那一类）优先读 DISPLAY_* 这一对：不给的话有的 ROM 会去翻
+            // ALBUM / ALBUM_ARTIST，展开后副标题就成了「ADSH」
+            .putString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE, title)
+            .putString(MediaMetadata.METADATA_KEY_DISPLAY_SUBTITLE, text)
         if (art != null) {
             metadata.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, art)
             metadata.putBitmap(MediaMetadata.METADATA_KEY_ART, art)
@@ -188,15 +239,31 @@ class IslandService : Service() {
      * 颜色一变，用户在岛上一眼能看出 agent 是不是卡在等他。
      */
     private fun artFor(phase: IslandPhase): Bitmap? = artCache.getOrPut(phase) {
-        val size = 192
+        val size = 256
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        paint.color = Color.BLACK
-        canvas.drawRoundRect(RectF(0f, 0f, size.toFloat(), size.toFloat()), 44f, 44f, paint)
+        val tint = phaseTint(phase)
+        val full = size.toFloat()
+        val radius = full * 0.24f
+        // 「需要你」与「已结束」两格用同色系的暗底（不是纯黑）：状态栏里那一下就"亮"起来，
+        // 剩下三格（等模型 / 在跑）保持纯暗底 + 白环 —— 一眼分得出「它在干活」和「它在等我」
+        val emphasized = phase == IslandPhase.ASK || phase == IslandPhase.DONE
+        paint.style = Paint.Style.FILL
+        paint.color = if (emphasized) blend(PLATE_COLOR, tint, 0.22f) else PLATE_COLOR
+        canvas.drawRoundRect(RectF(0f, 0f, full, full), radius, radius, paint)
+        // 环：同色描边。系统把封面裁成圆角方或圆形都还看得见
+        val stroke = full * 0.035f
+        val ring = RectF(stroke, stroke, full - stroke, full - stroke)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = stroke * 2f
+        paint.color = tint
+        paint.alpha = if (emphasized) 220 else 110
+        canvas.drawRoundRect(ring, radius, radius, paint)
+        // 中间还是那只鲸，按格着色
         ContextCompat.getDrawable(this, R.drawable.ic_launcher_foreground)?.let { whale ->
-            whale.colorFilter = PorterDuffColorFilter(phaseTint(phase), PorterDuff.Mode.SRC_IN)
-            val inset = size / 6
+            whale.colorFilter = PorterDuffColorFilter(tint, PorterDuff.Mode.SRC_IN)
+            val inset = size / 5
             whale.setBounds(inset, inset, size - inset, size - inset)
             whale.draw(canvas)
         }
@@ -220,14 +287,7 @@ private fun notification(
 ): Notification {
     val label = work?.let { phaseLabel(it.phase) } ?: "准备中"
     val text = work?.lines?.firstOrNull().orEmpty()
-    val open = PendingIntent.getActivity(
-        context,
-        0,
-        Intent(context, MainActivity::class.java).addFlags(
-            Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP,
-        ),
-        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-    )
+    val open = openAppIntent(context)
     val stop = PendingIntent.getService(
         context,
         1,
@@ -258,6 +318,29 @@ private fun notification(
         .setCategory(Notification.CATEGORY_TRANSPORT)
     if (art != null) builder.setLargeIcon(art)
     return builder.build()
+}
+
+/** 点岛 / 点通知回 App（媒体会话的 sessionActivity 与通知的 contentIntent 共用同一个） */
+private fun openAppIntent(context: Context): PendingIntent = PendingIntent.getActivity(
+    context,
+    0,
+    Intent(context, MainActivity::class.java).addFlags(
+        Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP,
+    ),
+    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+)
+
+/** 那一格的底色（近黑偏蓝，和 App 的深色底一个调） */
+private const val PLATE_COLOR = 0xFF0E1116.toInt()
+
+/** 两色按 [ratio]（0..1）混一点对方进去 —— 给「强调格」的暗底用 */
+private fun blend(base: Int, other: Int, ratio: Float): Int {
+    fun channel(shift: Int): Int {
+        val a = (base shr shift) and 0xFF
+        val b = (other shr shift) and 0xFF
+        return (a + (b - a) * ratio).toInt().coerceIn(0, 255)
+    }
+    return Color.argb(255, channel(16), channel(8), channel(0))
 }
 
 /** 通知渠道：低优先级、无声、无角标 —— 它是「保活声明 + 岛的载体」，不是要打扰用户的消息 */
