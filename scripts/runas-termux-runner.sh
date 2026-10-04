@@ -35,7 +35,11 @@ export TERMUX_APP_PID=$$ TERMUX_APK_RELEASE=GITHUB TERMUX_IS_DEBUGGABLE_BUILD=1
 export TERMUX__PREFIX="$P" TERMUX__HOME="$H" TERMUX__ROOTFS=/data/data/com.termux/files
 export DPKG_ADMINDIR="$P/var/lib/dpkg"
 export PWD=/storage/emulated/0/1/App ADSH_WORKSPACE=/storage/emulated/0/1/App
-NL=/data/app/~~0Fxzh2fwK4JL5YvpwxS4DQ==/com.termux-UK7saVuZK0xhN3SPs8GOSg==/lib/arm64
+# 原生库目录**每次重装都会换哈希**（~~xxx==），写死过一次就再也跑不起来（第 185 轮踩到：
+# 重装后 $PREFIX/bin/bash 还指着旧的 lib 目录，exec 直接 "No such file or directory"）。
+# 从 bash 这个软链反推最稳：App 的 bootstrap 每次都把它指到当前 nativeLibraryDir。
+NL="$(dirname "$(readlink -f "$P/bin/bash")")"
+[ -x "$NL/libadshfence.so" ] || { echo "找不到原生库目录（bash -> $NL）"; exit 1; }
 export LD_PRELOAD="$NL/libadshfence.so $P/lib/libtermux-exec-ld-preload.so"
 export ADSH_FENCE_MODE="$MODE"
 if [ "$MODE" = "workspace-write" ]; then

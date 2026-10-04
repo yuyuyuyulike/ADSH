@@ -120,16 +120,17 @@ object ToolSdk {
      *  2. 拒绝标记、升级流程、以及「试着跑一下是安全的」那句全部**上移到跨工具规则段**
      *     （PromptAssembler.workingRules）：dsh 在 bash / edit / write 三处逐字复制同一段规则
      *     （审查报告 R-1），这里只留「这个工具是什么、返回什么」；
-     *  3. 输出上限写实：ADSH 的收集器**头尾都留**、每路默认 64 KB（dsh 只留尾部，但它另有 spill
-     *     文件兜住头部；这里没有），所以正文里说明「掐掉的那一段会就地标出来」。
+     *
+     * 输出那一句与 dsh **逐字一致**（第 185 轮改回来的）：Long output is truncated to its tail; the
+     * full output is saved to a file whose path is reported when available. —— 第 105 轮曾改成
+     * 「头尾都留」，那是因为当时没有 spill 文件；第 185 轮补上 spill 之后，工具说明与实现
+     * （[com.adsh.app.runtime.termux.OutputCollector] + [com.adsh.app.core.jobs.Spill]）都回到 dsh。
      */
     const val BASH_DESCRIPTION: String =
         "Execute a bash command (`bash -c`) and return its stdout/stderr. Each call runs in a fresh " +
             "shell: no state (cwd, variables, functions) persists between calls — pass `workdir` " +
-            "instead of using `cd`. Long output is capped per stream: the head and the tail are both " +
-            "kept (64 KB by default, a quarter of it at the front) and the elided middle is marked " +
-            "in place, so an error printed first and a summary printed last are both still visible; " +
-            "the stream is flagged `truncated`."
+            "instead of using `cd`. Long output is truncated to its tail; the full output is saved to " +
+            "a file whose path is reported when available."
 
     /** dsh-tool-todo 的 DESCRIPTION_HEAD / DESCRIPTION_PARALLEL / DESCRIPTION_SINGLE / DESCRIPTION_TAIL */
     private const val TODO_HEAD =

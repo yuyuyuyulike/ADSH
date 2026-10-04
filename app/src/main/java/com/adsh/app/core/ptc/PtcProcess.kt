@@ -77,9 +77,10 @@ internal object PtcProcess {
                 kill = { session.kill() },
             )) {
                 PtcWaitOutcome.Finished -> session.result()
+                // 到点被杀：**已经打印的内容照样带走**（dsh 的 log 帧是边打印边回的，见 PtcWorkerService）
                 PtcWaitOutcome.TimedOut -> CodeRunResult(
                     valueJson = null,
-                    logs = emptyList(),
+                    logs = session.streamedLogs(),
                     // dsh 的失败信封逐字：kind = timeout、message = "execution deadline reached (Nms)"
                     error = "execution deadline reached (" + timeoutMs + "ms)",
                     durationMs = System.currentTimeMillis() - started,
@@ -87,7 +88,7 @@ internal object PtcProcess {
                 )
                 PtcWaitOutcome.Cancelled -> CodeRunResult(
                     valueJson = null,
-                    logs = emptyList(),
+                    logs = session.streamedLogs(),
                     error = "已停止",
                     durationMs = System.currentTimeMillis() - started,
                     failureKind = "abort",
@@ -116,6 +117,12 @@ internal object PtcProcess {
 
         private val startedAt = System.currentTimeMillis()
         private val resultRef = AtomicReference<CodeRunResult?>(null)
+
+        /**
+         * worker 边跑边回的日志（dsh 的 log 帧）。收帧线程写、主流程读，所以是同步列表。
+         * 到点被杀 / worker 崩了时，这份就是模型唯一拿得到的「已经打印了什么」。
+         */
+        private val liveLogs = java.util.Collections.synchronizedList(ArrayList<String>())
         private val pid = AtomicInteger(-1)
         private val channelName = "adsh.ptc." + Process.myPid() + "." + channelSeq.incrementAndGet()
 
@@ -210,6 +217,10 @@ internal object PtcProcess {
                 enqueue(frame)
                 true
             }
+            PtcProtocol.TYPE_LOG -> {
+                PtcProtocol.text(frame, PtcProtocol.FIELD_TEXT)?.let { liveLogs += it }
+                true
+            }
             PtcProtocol.TYPE_DONE -> {
                 resultRef.set(readResult(frame))
                 hasResult.set(true)
@@ -265,7 +276,8 @@ internal object PtcProcess {
             val error = frame[PtcProtocol.FIELD_ERROR] as? JsonObject
             return CodeRunResult(
                 valueJson = PtcProtocol.text(frame, PtcProtocol.FIELD_VALUE),
-                logs = PtcProtocol.strings(frame, PtcProtocol.FIELD_LOGS),
+                // done 帧带的是完整列表；它缺席（或为空）时用边跑边收的那份
+                logs = PtcProtocol.strings(frame, PtcProtocol.FIELD_LOGS).ifEmpty { streamedLogs() },
                 error = PtcProtocol.text(error, PtcProtocol.FIELD_MESSAGE),
                 durationMs = PtcProtocol.long(frame, PtcProtocol.FIELD_DURATION_MS)
                     ?: (System.currentTimeMillis() - startedAt),
@@ -277,12 +289,15 @@ internal object PtcProcess {
         /** 阻塞到结果：调用方（[awaitPtcWorker]）已经确认它回来了，这里只是取出来 */
         fun result(): CodeRunResult = resultRef.get() ?: exit("PTC 结果没回来")
 
+        /** 已经打印出来的那些行（dsh 的 captured output：失败信封里也带上） */
+        fun streamedLogs(): List<String> = synchronized(liveLogs) { liveLogs.toList() }
+
         /** 通道没给出结果时的收尾信封：kind 取通道断掉的方式，message 取 dsh 的原文 */
         fun exit(fallback: String): CodeRunResult {
             val kind = endKind ?: "worker-exit"
             return CodeRunResult(
                 valueJson = null,
-                logs = emptyList(),
+                logs = streamedLogs(),
                 error = endMessage ?: fallback,
                 durationMs = System.currentTimeMillis() - startedAt,
                 failureKind = kind,

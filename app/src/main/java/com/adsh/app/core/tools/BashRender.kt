@@ -2,6 +2,9 @@ package com.adsh.app.core.tools
 
 import com.adsh.app.core.agent.NO_OUTPUT
 import com.adsh.app.runtime.termux.ExecResult
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * `bash` 结果正文的渲染（dsh 的 renderResult）—— 原先埋在 [BashTool] 里的一个私有函数、零用例，
@@ -71,3 +74,24 @@ internal fun renderBash(result: ExecResult, stdout: String, stderr: String, stop
 internal fun bashStatusMarker(body: String): String? = body.lineSequence()
     .map { it.trim() }
     .lastOrNull { it.startsWith(EXIT_CODE_PREFIX) || it.startsWith(TIMED_OUT_PREFIX) }
+
+/**
+ * dsh 的 `streamText`（dsh-tool-bash/lib/index.js 的 render 区段，文案逐字）：这一路
+ * **丢过字节**时才补一行提示，把全文 spill 文件的路径交给模型 —— 头部不再是「静默丢弃」，
+ * 而是换了个地方等它来读（`[output truncated; full output: <路径>]`，没有路径就是 `(unavailable)`）。
+ *
+ * @param truncated 这一路在内存里丢过字节（环淘汰掉了，或者尾部截断了）
+ * @param spillPath 全文落盘的路径
+ */
+internal fun streamText(text: String, truncated: Boolean, spillPath: String?): String {
+    if (!truncated) return text
+    return text + "\n[output truncated; full output: " + (spillPath ?: "(unavailable)") + "]"
+}
+
+/** dsh 的 canonicalBashResult：每一路输出是 `{text, truncated, spillPath?}`（路径只在有时出现） */
+internal fun streamValue(text: String, truncated: Boolean, spillPath: String?): JsonObject =
+    buildJsonObject {
+        put("text", text)
+        put("truncated", truncated)
+        spillPath?.let { put("spillPath", it) }
+    }

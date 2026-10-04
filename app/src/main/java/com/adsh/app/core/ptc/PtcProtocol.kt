@@ -33,6 +33,10 @@ internal object PtcProtocol {
     const val TYPE_REPLY = "reply"
     const val TYPE_DONE = "done"
 
+    /** worker → 宿主：一行程序输出（dsh 的 `{type:"log", text}`，边打印边送） */
+    const val TYPE_LOG = "log"
+    const val FIELD_TEXT = "text"
+
     const val FIELD_PID = "pid"
     const val FIELD_PROGRAM = "program"
     const val FIELD_TOOLS = "tools"

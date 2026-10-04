@@ -113,6 +113,7 @@ class PtcWorkerService : Service() {
                     invoke = { name, args -> callHost(channel, false, name, args) },
                     invokeAll = { payload -> callHost(channel, true, "", payload) },
                     timeoutMs = timeoutMs,
+                    onLog = { line -> sendLog(channel, line) },
                 )
             } catch (t: Throwable) {
                 CodeRunResult(
@@ -143,6 +144,21 @@ class PtcWorkerService : Service() {
             put(PtcProtocol.FIELD_LOGS, buildJsonArray { result.logs.forEach { add(it) } })
             put(PtcProtocol.FIELD_DURATION_MS, result.durationMs)
             put(PtcProtocol.FIELD_TOOL_CALLS, result.toolCalls)
+        }
+
+        /**
+         * 一行程序输出**立刻**送回宿主（dsh 的 `{type:"log", text}`）：到点被杀时宿主手里
+         * 已经有它了 —— 之前日志只随 `done` 一帧回来，程序一被杀就全丢（第 185 轮实测）。
+         */
+        private fun sendLog(channel: PtcChannel, line: String) {
+            runCatching {
+                channel.send(
+                    buildJsonObject {
+                        put(PtcProtocol.TYPE, PtcProtocol.TYPE_LOG)
+                        put(PtcProtocol.FIELD_TEXT, line)
+                    },
+                )
+            }
         }
 
         /** 同步 RPC：把一次 tools.x() 交给宿主跑，拿到信封再继续（引擎线程在这里阻塞） */

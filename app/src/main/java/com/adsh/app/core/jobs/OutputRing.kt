@@ -30,6 +30,14 @@ internal class OutputRing {
 
     private val chunks = ArrayList<RingChunk>()
 
+    /**
+     * **每一路**输出累计的字节数（stdout / stderr 分开算）。
+     *
+     * 为什么要它（第 185 轮）：dsh 的收集器是**一路一个**（`OutputCollector(stream, label)`），
+     * 每条流各自判「有没有越过内存上限」；ADSH 的环把两路混在一个列表里，所以判据改成按 channel 记账。
+     */
+    private val channelTotals = HashMap<Jobs.Channel?, Int>()
+
     /** 当前还在环里的字节数 */
     var retained = 0
         private set
@@ -49,9 +57,31 @@ internal class OutputRing {
         chunks += RingChunk(total, text, bytes, channel, gapBefore)
         total += bytes
         retained += bytes
+        channelTotals[channel] = (channelTotals[channel] ?: 0) + bytes
         trim(cap)
         return true
     }
+
+    /** 某一路输出**累计**追加过多少字节（不是环里还剩多少） */
+    fun totalOf(channel: Jobs.Channel?): Int = channelTotals[channel] ?: 0
+
+    /** 某一路输出此刻还留在环里的字节数 */
+    fun retainedOf(channel: Jobs.Channel?): Int =
+        chunks.filter { it.channel == channel }.sumOf { it.bytes }
+
+    /** 某一路输出**已经在内存里丢过字节**（dsh 收集器的 dropped 就是这一路自己的账） */
+    fun droppedOf(channel: Jobs.Channel?): Boolean = totalOf(channel) > retainedOf(channel)
+
+    /**
+     * 某一路输出此刻还留在环里的字节（原样编码）。
+     *
+     * spill 第一次落盘时要把「已经收在内存里的那些块」补写进文件（dsh 的
+     * `for (const prior of this.chunks) writeSync(fd, prior)`）—— 触发点是内存上限
+     * （默认 64 KB），而环的保留上限至少是它的 4 倍（见 Tools.startBashJob 的 retainBytes），
+     * 所以那一刻这一路一个字节都还没被淘汰，补写进去的就是完整的开头。
+     */
+    fun bytesOf(channel: Jobs.Channel?): List<ByteArray> =
+        chunks.filter { it.channel == channel }.map { it.text.toByteArray(Charsets.UTF_8) }
 
     /**
      * 裁到 [cap] 字节：先从头部**整块**丢（只有一块时不再丢，留给下面那一步处理），

@@ -6,6 +6,7 @@ import com.adsh.app.core.agent.imageBounds
 import com.adsh.app.core.agent.requestImageDimensions
 import com.adsh.app.core.agent.toolImageEnvelope
 import com.adsh.app.core.jobs.Jobs
+import com.adsh.app.core.jobs.Spill
 import com.adsh.app.core.workspace.Workspace
 import com.adsh.app.runtime.termux.ExecResult
 import com.adsh.app.runtime.termux.OutputCap
@@ -510,10 +511,9 @@ object BashTool : Tool {
                 )
             }
         }
-        // 截断的说明**就在正文里**（收集器在掐掉的那一段的位置插了一行标记，见 OutputCollector）：
-        // 头 + 尾都在，丢的是哪一段不再靠 footer 猜
-        val stdout = clean(result.output, ctx)
-        val stderr = clean(result.stderr, ctx)
+        // 与注册表那条路同一份渲染：只留尾部，丢过字节就补 dsh 那行「全文在哪」
+        val stdout = streamText(clean(result.output, ctx), result.truncated, result.spillPath)
+        val stderr = streamText(clean(result.stderr, ctx), result.stderrTruncated, result.stderrSpillPath)
         val value = buildJsonObject {
             put("kind", "foreground")
             put("exitCode", if (result.timedOut) JsonNull else JsonPrimitive(result.exitCode))
@@ -521,14 +521,8 @@ object BashTool : Tool {
             put("timedOut", result.timedOut)
             put("aborted", false)
             put("timeoutMs", timeout)
-            put("stdout", buildJsonObject {
-                put("text", result.output)
-                put("truncated", result.truncated)
-            })
-            put("stderr", buildJsonObject {
-                put("text", result.stderr)
-                put("truncated", result.stderrTruncated)
-            })
+            put("stdout", streamValue(stdout, result.truncated, result.spillPath))
+            put("stderr", streamValue(stderr, result.stderrTruncated, result.stderrSpillPath))
         }
         // dsh 的 bash：非零退出**不是**工具错误（isError = false），模型自己看 [exit code: N] 决定怎么办
         // 正文渲染（含状态标记的互斥规则）在 BashRender.kt
@@ -585,6 +579,9 @@ private fun startBashJob(
         owner = ctx.conversationId,
         retainBytes = retain,
         hold = foreground,
+        // 全文 spill（dsh 的 OutputCollector）：越过内存上限就落盘，模型可以自己 read 回来
+        spillDir = Spill.directory(ctx.runtime.tmpDir()),
+        outputLimitBytes = ctx.bashMaxOutputBytes,
     ) { handle ->
         val spawned = runCatching {
             runtime.spawn(command, workdir, fence.takeIf { it.isNotEmpty() }, separateStreams = true)
@@ -679,7 +676,7 @@ private suspend fun waitForeground(ctx: ToolContext, started: StartedBash, timeo
     }
     if (!view.status.terminal) {
         val read = Jobs.read(started.id, owner)
-        val output = renderJobDelta(read.chunks, read.lossy)
+        val output = renderJobDelta(read.chunks, read.lossy, read.job.spillPaths)
         val value = buildJsonObject {
             put("kind", "promoted")
             put("jobId", started.id)
@@ -714,14 +711,19 @@ private fun foregroundResult(
 ): ToolResult {
     val rawOut = read.chunks.filter { it.channel != Jobs.Channel.STDERR }.joinToString("") { it.text }
     val rawErr = read.chunks.filter { it.channel == Jobs.Channel.STDERR }.joinToString("") { it.text }
-    val (stdout, outTruncated) = OutputCap.cap(clean(rawOut, ctx), ctx.bashMaxOutputBytes)
-    val (stderr, errTruncated) = OutputCap.cap(clean(rawErr, ctx), ctx.bashMaxOutputBytes)
-    val truncated = outTruncated || read.lossy
+    // 只留尾部（dsh 的 tail-keep）：环里保留的是上限的 4 倍，模型看到的是最后 bashMaxOutputBytes
+    val (outTail, outCapped) = OutputCap.tail(clean(rawOut, ctx), ctx.bashMaxOutputBytes)
+    val (errTail, errCapped) = OutputCap.tail(clean(rawErr, ctx), ctx.bashMaxOutputBytes)
+    // 每一路各自判「有没有丢过字节」：环里被淘汰的（droppedOf）或这一步截掉的（capped）
+    val outTruncated = outCapped || Jobs.Channel.STDOUT in read.droppedChannels
+    val errTruncated = errCapped || Jobs.Channel.STDERR in read.droppedChannels
+    val stdout = streamText(outTail, outTruncated, read.job.stdoutSpillPath)
+    val stderr = streamText(errTail, errTruncated, read.job.stderrSpillPath)
     val result = ExecResult(
         exitCode = exitCode,
         output = stdout,
         timedOut = false,
-        truncated = truncated,
+        truncated = outTruncated || errTruncated,
         durationMs = 0,
         stderr = stderr,
         stderrTruncated = errTruncated,
@@ -734,14 +736,8 @@ private fun foregroundResult(
         put("timedOut", false)
         put("aborted", false)
         put("timeoutMs", timeoutMs)
-        put("stdout", buildJsonObject {
-            put("text", stdout)
-            put("truncated", truncated)
-        })
-        put("stderr", buildJsonObject {
-            put("text", stderr)
-            put("truncated", errTruncated)
-        })
+        put("stdout", streamValue(stdout, outTruncated, read.job.stdoutSpillPath))
+        put("stderr", streamValue(stderr, errTruncated, read.job.stderrSpillPath))
     }
     return ToolResult.Ok(renderBash(result, stdout, stderr, stopped), value)
 }

@@ -20,10 +20,14 @@ private const val WAIT_MAX_MS = 600_000L
 
 /**
  * 一次消费读的正文（dsh 的 renderModelDelta）：与前台结果**同形** —— stdout、一个 [stderr] 段；
- * 掉字节（游标落在保留窗口之前，或生产者在块上打了 gap）时补 dsh 的丢弃提示。
- * ADSH 没有 spill 文件，所以「完整输出在哪」永远是 (unavailable)。
+ * 掉字节（游标落在保留窗口之前，或生产者在块上打了 gap）时补 dsh 的丢弃提示，
+ * 并把**全文 spill 文件的路径**一起给出来（第 185 轮补上 spill 之前这里永远是 (unavailable)）。
  */
-internal fun renderJobDelta(chunks: List<Jobs.Chunk>, lossy: Boolean): String {
+internal fun renderJobDelta(
+    chunks: List<Jobs.Chunk>,
+    lossy: Boolean,
+    spillPaths: List<String> = emptyList(),
+): String {
     val visible = chunks.filter { it.channel != Jobs.Channel.LOG }
     val out = visible.filter { it.channel != Jobs.Channel.STDERR }.joinToString("") { it.text }
     val err = visible.filter { it.channel == Jobs.Channel.STDERR }.joinToString("") { it.text }
@@ -31,7 +35,9 @@ internal fun renderJobDelta(chunks: List<Jobs.Chunk>, lossy: Boolean): String {
     var body = out + if (err.isNotEmpty()) separator + "[stderr]\n" + err else ""
     if (!lossy && visible.none { it.gapBefore }) return body
     if (body.isNotEmpty() && !body.endsWith("\n")) body += "\n"
-    return body + "[some output was dropped from memory; full output: (unavailable)]"
+    // dsh 原文：没有路径时才是 (unavailable)，有 spill 就把路径列出来（多路用逗号连）
+    val where = if (spillPaths.isEmpty()) "(unavailable)" else spillPaths.joinToString(", ")
+    return body + "[some output was dropped from memory; full output: " + where + "]"
 }
 
 /** 前台命令超时转后台时模型看到的正文（dsh-tool-bash 的 renderPromoted，逐字） */
@@ -100,7 +106,7 @@ object JobOutputTool : Tool {
         } catch (t: Throwable) {
             return ToolResult.Error(t.message ?: "job read failed")
         }
-        val delta = renderJobDelta(read.chunks, read.lossy)
+        val delta = renderJobDelta(read.chunks, read.lossy, read.job.spillPaths)
         // dsh 的 readBody：终局结果（值型任务）接在 delta 后面，只给一次
         val text = if (read.result == null) {
             delta

@@ -2,10 +2,18 @@ package com.adsh.app.runtime.termux
 
 import android.content.Context
 import android.system.Os
+import com.adsh.app.core.jobs.Spill
 import android.system.OsConstants
 import java.io.File
 import java.io.InputStream
 import java.util.concurrent.TimeUnit
+
+/** 一条流的收尾（dsh 的 `OutputCollector.finalize()`）：内存尾部 + 是否丢过字节 + 全文路径 */
+data class Collected(
+    val text: String,
+    val truncated: Boolean,
+    val spillPath: String? = null,
+)
 
 /** 一次非交互命令的执行结果 */
 data class ExecResult(
@@ -22,6 +30,12 @@ data class ExecResult(
      */
     val stderr: String = "",
     val stderrTruncated: Boolean = false,
+    /**
+     * stdout 全文 spill 文件的路径（dsh 的 canonicalBashResult.stdout.spillPath）：
+     * 内存里只留尾部，全文在这里；模型可以自己 read 回来。
+     */
+    val spillPath: String? = null,
+    val stderrSpillPath: String? = null,
     /** 本次调用的超时上限（dsh 的输出里会回显 [timed out after Nms]） */
     val timeoutMs: Long = 0,
     /**
@@ -401,9 +415,15 @@ class TermuxRuntime(private val context: Context) {
     ): ExecResult {
         val started = System.currentTimeMillis()
         val shell = spawn(command, workspaceRoot, extraEnv, separateStreams)
-        val collector = OutputCollector(shell.stdout, maxOutputBytes)
+        // 每路输出一个收集器（dsh 也是一路一个），各自往同一个每进程私有目录里 spill 全文
+        val spillDir = Spill.directory(tmpDir())
+        val collector = OutputCollector(shell.stdout, maxOutputBytes, Spill(spillDir, "stdout"))
         // 分开捕获时必须同时把另一条流读干，否则管道写满会卡住子进程
-        val errCollector = if (separateStreams) OutputCollector(shell.stderr, maxOutputBytes) else null
+        val errCollector = if (separateStreams) {
+            OutputCollector(shell.stderr, maxOutputBytes, Spill(spillDir, "stderr"))
+        } else {
+            null
+        }
         var finished = false
         var cancelled = false
         if (cancel == null) {
@@ -434,15 +454,19 @@ class TermuxRuntime(private val context: Context) {
         errCollector?.join(1000)
         shell.dispose()
         val exit = if (finished) shell.exitValue() else -1
+        val out = collector.finalize()
+        val err = errCollector?.finalize()
         return ExecResult(
             exitCode = exit,
-            output = collector.text(),
+            output = out.text,
             // 中断也走「没等到进程结束」这条分支，但不算超时：界面/模型要看到的是「已停止」
             timedOut = !finished && !cancelled,
-            truncated = collector.truncated,
+            truncated = out.truncated,
             durationMs = System.currentTimeMillis() - started,
-            stderr = errCollector?.text().orEmpty(),
-            stderrTruncated = errCollector?.truncated == true,
+            stderr = err?.text.orEmpty(),
+            stderrTruncated = err?.truncated == true,
+            spillPath = out.spillPath,
+            stderrSpillPath = err?.spillPath,
             timeoutMs = timeoutMs,
             cancelled = cancelled,
         )
@@ -527,56 +551,40 @@ class TermuxRuntime(private val context: Context) {
          * 取一个 ≥ 0.119.0 的语义化值：低于它 termux-tools 会走旧 App 的兼容分支。
          */
         const val TERMUX_VERSION = "0.119.0"
-
         /** 安装来源，对齐 Termux 的 TERMUX_APP__APK_RELEASE（GITHUB / F_DROID / GOOGLE_PLAY） */
         const val APK_RELEASE = "GITHUB"
     }
 }
 
 /**
- * 读取子进程输出并限流，避免 OOM 与上下文爆炸。
+ * 读取子进程输出并限流 —— dsh `dsh-subprocess-local/lib/output.js` 的 `OutputCollector`。
  *
- * **头 + 尾**（第 105 轮按测试 agent 的实测报告改）：dsh 的输出收集器
- * （dsh-subprocess-local 的 OutputCollector）是一个按字节滑动的窗口，只保留**尾部**
- * （"Tail-keep rationale (pi/OpenCode): errors and final results cluster at the end of command
- * output; the spill file covers the head."）—— 那条理由的前提是 **dsh 另有 spill 文件兜住头部**，
- * 而 ADSH 没有落盘，头部就是真的丢了。
+ * dsh 的口径（第 185 轮补齐 spill 之后逐条对齐）：
+ *  - **内存里只留尾部**（Collect mode keeps the last `maxBytes` of a stream in memory）——
+ *    理由写在 dsh 的类注释里：errors and final results cluster at the end of command output；
+ *  - 越过内存上限就开一个 **spill 文件把完整流写进去**（the spill file covers the head），
+ *    于是「开头那段错误」不再丢，而是换了个地方等模型来读；
+ *  - 正文只在真的丢过字节时才补一行 dsh 原文的提示（见 BashRender 的调用点）：
+ *    `[output truncated; full output: <路径>]`。
  *
- * 报告里那次代价很典型：`apt install chromium` 失败（`E: Unable to correct problems, you have
- * held broken packages.` 在最前面），尾部却全是 `Setting up lld ...` 之类的正常噪音 ——
- * 只看返回值会得出「装成功了」，而它根本没装上。对 apt / make / pip / terraform 这类
- * 「错误先出、成功噪音在后」的工具全都成立。
- *
- * 现在的策略：**头部保留 [HEAD_SHARE] 那一段、尾部保留其余**，中间被掐掉的部分在正文里
- * 用一行标记说明（`[output truncated: N bytes elided in the middle]`）—— 两头都在，
- * 丢的是哪一段也不再靠猜。
- *
- * 之前还有过一版「填满就不再往后写」（= 只保留头部）：5 万行日志时被丢掉的恰恰是最后那段异常，
- * 与工具说明里的 "truncated to its tail" 正好相反。
+ * 第 105 轮这里曾经改成「头 16 KB + 尾 48 KB、中间插一行省略标记」：那是 spill 缺失时的权宜
+ * （不落盘就只能两头都留一点）。第 185 轮补上 spill 之后，回到 dsh 的形状。
  */
 internal class OutputCollector(
     stream: InputStream,
     maxBytes: Int,
+    /** 全文落盘（null = 只留内存尾部）；见 [com.adsh.app.core.jobs.Spill] */
+    private val spill: Spill? = null,
 ) {
-    /** 上限至少 1 字节，避免配置成 0 时在 append 里算出负长度 */
+    /** 内存尾部上限（至少 1 字节，避免配置成 0 时在 append 里算出负长度） */
     private val limit = maxBytes.coerceAtLeast(1)
 
-    /** 头部窗口：上限的四分之一，最多 [HEAD_MAX_BYTES]（默认 64 KB ⇒ 16 KB 头 / 48 KB 尾） */
-    private val headLimit = (limit / OutputCap.HEAD_SHARE_DIVISOR)
-        .coerceIn(1, minOf(OutputCap.HEAD_MAX_BYTES, limit))
-
-    /** 尾部窗口：剩下的都给它 */
-    private val tailLimit = (limit - headLimit).coerceAtLeast(1)
-
-    private val head = ByteArray(headLimit)
-    private var headLength = 0
-
-    /** 尾部用环形缓冲：窗口满了之后，最老的字节被新字节覆盖 */
-    private val tail = ByteArray(tailLimit)
+    /** 尾部用环形缓冲：窗口满了之后，最老的字节被新字节覆盖（dsh 的 chunks 滑动窗口） */
+    private val tail = ByteArray(limit)
     private var tailLength = 0
     private var tailWrite = 0
 
-    /** 从流里读到的总字节数（用来算中间掐掉多少） */
+    /** 从流里读到的总字节数 */
     private var total = 0L
 
     @Volatile var truncated = false
@@ -595,39 +603,46 @@ internal class OutputCollector(
         }
     }.apply { isDaemon = true; start() }
 
+    /**
+     * dsh 的 `OutputCollector.push`，顺序逐条对齐：
+     *  ① 先累计总字节（spill 判据用的是**含本块**的总数）；
+     *  ② 越过内存上限（或已经在写盘）就把这一块交给 spill —— 第一次会把已经收在内存里的块补上；
+     *  ③ 再进内存尾部，超了就从最老的字节开始丢。
+     */
     private fun append(chunk: ByteArray, n: Int) {
-        total += n
-        var offset = 0
-        // ① 先填头部窗口（一次就填满，之后再也不动它）
-        if (headLength < headLimit) {
-            val take = minOf(headLimit - headLength, n)
-            System.arraycopy(chunk, 0, head, headLength, take)
-            headLength += take
-            offset = take
+        val next = total + n
+        val overflows = tailLength + n > limit
+        val sink = spill
+        if (sink != null && (overflows || sink.active)) {
+            sink.spill(next, retained(), chunk.copyOf(n))
         }
-        // ② 剩下的进尾部环形窗口；一旦有字节进不了头部，这次读取就是「被截断过」的
-        if (offset < n) {
-            writeTail(chunk, offset, n - offset)
-            truncated = true
-        }
+        total = next
+        writeTail(chunk, 0, n)
+        if (overflows) truncated = true
+    }
+
+    /** 此刻内存尾部里的字节（按最老到最新） */
+    private fun retained(): List<ByteArray> {
+        val bytes = linearTail()
+        return if (bytes.isEmpty()) emptyList() else listOf(bytes)
     }
 
     private fun writeTail(chunk: ByteArray, offset: Int, count: Int) {
-        if (count >= tailLimit) {
-            // 一个块就比尾部窗口还大：只留它自己的尾巴
-            System.arraycopy(chunk, offset + count - tailLimit, tail, 0, tailLimit)
-            tailLength = tailLimit
+        if (count >= limit) {
+            // 一个块就比内存上限还大：只留它自己的尾巴
+            System.arraycopy(chunk, offset + count - limit, tail, 0, limit)
+            tailLength = limit
             tailWrite = 0
             return
         }
         var src = offset
         var remaining = count
         while (remaining > 0) {
-            val space = tailLimit - tailWrite
+            val space = limit - tailWrite
             val take = minOf(space, remaining)
             System.arraycopy(chunk, src, tail, tailWrite, take)
-            tailWrite = (tailWrite + take) % tailLimit
-            tailLength = minOf(tailLimit, tailLength + take)
+            tailWrite = (tailWrite + take) % limit
+            tailLength = minOf(limit, tailLength + take)
             src += take
             remaining -= take
         }
@@ -635,37 +650,31 @@ internal class OutputCollector(
 
     fun join(millis: Long) = thread.join(millis)
 
-    fun text(): String {
-        val headBytes: ByteArray
-        val tailBytes: ByteArray
-        val elided: Long
-        synchronized(this) {
-            // 头部末尾那个多字节字符可能被切断：整个丢掉（不然解码出 U+FFFD）
-            val headEnd = OutputCap.safeHeadLength(head, headLength)
-            headBytes = head.copyOf(headEnd)
-            tailBytes = linearTail()
-            elided = (total - headEnd - tailBytes.size).coerceAtLeast(0)
-        }
-        // 尾部开头那个字节同样可能落在某个多字节字符中间：跳过续字节（10xxxxxx）
-        val start = OutputCap.safeTailStart(tailBytes)
-        val headText = String(headBytes, 0, headBytes.size, Charsets.UTF_8)
-        val tailText = String(tailBytes, start, tailBytes.size - start, Charsets.UTF_8)
-        if (elided <= 0L) return headText + tailText
-        return headText +
-            (if (headText.isEmpty() || headText.endsWith("\n")) "" else "\n") +
-            "[output truncated: " + elided + " bytes elided in the middle]\n" +
-            tailText
+    /**
+     * 收尾（dsh 的 `finalize()`）：封住 spill 文件，交出**内存尾部的文本**、是否丢过字节、
+     * 以及全文的落盘路径。文本开头若落在某个多字节字符中间就跳过续字节（10xxxxxx），
+     * 免得模型看到一个半个汉字。
+     */
+    fun finalize(): Collected {
+        spill?.seal()
+        val bytes = linearTail()
+        val start = OutputCap.safeTailStart(bytes)
+        return Collected(
+            text = String(bytes, start, bytes.size - start, Charsets.UTF_8),
+            truncated = truncated,
+            spillPath = spill?.path,
+        )
     }
 
     /** 环形缓冲拉直成「从最老到最新」的字节数组 */
     private fun linearTail(): ByteArray {
         if (tailLength == 0) return ByteArray(0)
         val out = ByteArray(tailLength)
-        if (tailLength < tailLimit) {
+        if (tailLength < limit) {
             System.arraycopy(tail, 0, out, 0, tailLength)
             return out
         }
-        val first = tailLimit - tailWrite
+        val first = limit - tailWrite
         System.arraycopy(tail, tailWrite, out, 0, first)
         System.arraycopy(tail, 0, out, first, tailWrite)
         return out
@@ -674,44 +683,17 @@ internal class OutputCollector(
 }
 
 /**
- * 输出截断的**唯一一份**口径：头 + 尾，中间就地标出省略了多少字节。
+ * 输出截断的**唯一一份**口径：**只留尾部**（dsh 的 tail-keep），全文在 spill 文件里。
  *
- * 为什么头尾都要（第 105 轮按实测报告改，见 HANDOFF.md）：dsh 的输出收集器只留尾部 ——
- * 前提是它另有 spill 文件兜住头部；ADSH 从不落盘，头部丢了就是真丢了（`apt install` 的
- * `E: ...` 在最前面、尾部全是 `Setting up ...` 的噪音，只看尾部会以为装成功了）。所以：
+ * dsh 的理由（output.js 的类注释）：errors and final results cluster at the end of command
+ * output; the spill file covers the head. —— 两句话是一体的：**尾部进上下文、头部进文件**。
+ * 第 105 轮只抄了后半句的一半（没有 spill 却只留尾部），于是改成「头 + 尾、中间插一行省略标记」；
+ * 第 185 轮补上 spill 之后回到 dsh 的形状：
  *  - 前台命令（[OutputCollector]）与后台任务的读（job_output、前台转后台的种子读）**同一份实现**；
- *  - 头占上限的 1/4（最多 16 KB），尾占其余；标记是**就地插入**的，模型看得到丢的是哪一段。
+ *  - 正文尾部超限就取 UTF-8 安全的最后一段（切点落在续字节上要往后跳，别切出半个汉字）；
+ *  - 提示只在**真的丢过字节**时补一行，文案是 dsh 原文（见 BashRender 的调用点）。
  */
 internal object OutputCap {
-    /** 头部窗口占上限的几分之一 */
-    const val HEAD_SHARE_DIVISOR = 4
-
-    /** 头部窗口的字节上限（默认 64 KB 上限 ⇒ 16 KB；上限更小时按比例缩） */
-    const val HEAD_MAX_BYTES = 16 * 1024
-
-    /**
-     * 头部窗口的**字符完整结尾**：末尾若是一个不完整的多字节序列，就退到它的起始字节之前。
-     * 返回可以安全解码的长度。
-     */
-    fun safeHeadLength(bytes: ByteArray, length: Int): Int {
-        if (length == 0) return 0
-        var i = length - 1
-        var back = 0
-        while (i >= 0 && back < 3 && (bytes[i].toInt() and 0xC0) == 0x80) {
-            i--
-            back++
-        }
-        if (i < 0) return 0
-        val lead = bytes[i].toInt() and 0xFF
-        val need = when {
-            lead < 0x80 -> 1
-            lead and 0xE0 == 0xC0 -> 2
-            lead and 0xF0 == 0xE0 -> 3
-            lead and 0xF8 == 0xF0 -> 4
-            else -> 1
-        }
-        return if (i + need <= length) length else i
-    }
 
     /** 尾部窗口的起点：首字节若落在某个多字节字符中间，就跳过续字节（10xxxxxx） */
     fun safeTailStart(bytes: ByteArray, from: Int = 0): Int {
@@ -721,25 +703,15 @@ internal object OutputCap {
     }
 
     /**
-     * 头 + 尾地截断一段文本（超过 [maxBytes] 才动它）。
-     * @return 截断后的文本与「这次真的截断了」的标记
+     * 只留尾部的截断（超过 [maxBytes] 才动它）。
+     * @return 截断后的文本与「这次真的丢了字节」的标记
      */
-    fun cap(text: String, maxBytes: Int): Pair<String, Boolean> {
+    fun tail(text: String, maxBytes: Int): Pair<String, Boolean> {
         val limit = maxBytes.coerceAtLeast(1)
         val raw = text.toByteArray(Charsets.UTF_8)
         if (raw.size <= limit) return text to false
-        val headLimit = (limit / HEAD_SHARE_DIVISOR).coerceIn(1, minOf(HEAD_MAX_BYTES, limit))
-        val headEnd = safeHeadLength(raw, headLimit)
-        val start = safeTailStart(raw, raw.size - (limit - headEnd))
-        val headText = String(raw, 0, headEnd, Charsets.UTF_8)
-        val tailText = String(raw, start, raw.size - start, Charsets.UTF_8)
-        val elided = raw.size - headEnd - (raw.size - start)
-        val body = buildString {
-            append(headText)
-            if (headText.isNotEmpty() && !headText.endsWith("\n")) append('\n')
-            append("[output truncated: ").append(elided).append(" bytes elided in the middle]\n")
-            append(tailText)
-        }
-        return body to true
+        val start = safeTailStart(raw, raw.size - limit)
+        return String(raw, start, raw.size - start, Charsets.UTF_8) to true
     }
 }
+

@@ -512,9 +512,10 @@ class PromptAssemblerTest {
                 count(system, "named in the runtime context"),
             )
             assertEquals(
+                // 第 185 轮：文案换成 dsh 原文（Long output is truncated to its tail; …），仍然是「只讲一次」
                 "the truncation mechanism belongs to the bash description only (" + mode + ")",
                 1,
-                count(system.lowercase(), "capped per stream"),
+                count(system.lowercase(), "truncated to its tail"),
             )
             assertEquals(
                 "the escalation note points at the rules instead of restating them (" + mode + ")",

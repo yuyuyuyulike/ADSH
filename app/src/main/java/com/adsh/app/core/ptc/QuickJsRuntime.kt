@@ -52,6 +52,12 @@ class QuickJsRuntime {
         invokeAll: (payloadJson: String) -> String,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         maxLogLines: Int = MAX_LOG_LINES,
+        /**
+         * 每打印一行就回调一次 —— dsh 的 log 帧（process.js 的 `LogBuffer` → `{type:"log", text}`）。
+         * 宿主据此**边跑边收**：到点被杀时，已经打印的内容仍然在宿主手里（第 185 轮，
+         * 之前日志只随 done 一帧回来，程序一被杀就全丢）。
+         */
+        onLog: ((String) -> Unit)? = null,
         cancel: (() -> Boolean)? = null,
     ): CodeRunResult {
         val started = System.currentTimeMillis()
@@ -66,10 +72,10 @@ class QuickJsRuntime {
         engine.setMaxStackSize(256 * 1024)
         engine.setMemoryLimit(64 * 1024 * 1024)
         engine.setConsole(object : QuickJSContext.Console {
-            override fun log(info: String?) = addLog(logs, info, maxLogLines)
-            override fun info(info: String?) = addLog(logs, info, maxLogLines)
-            override fun warn(info: String?) = addLog(logs, info, maxLogLines)
-            override fun error(info: String?) = addLog(logs, info, maxLogLines)
+            override fun log(info: String?) = addLog(logs, info, maxLogLines, onLog)
+            override fun info(info: String?) = addLog(logs, info, maxLogLines, onLog)
+            override fun warn(info: String?) = addLog(logs, info, maxLogLines, onLog)
+            override fun error(info: String?) = addLog(logs, info, maxLogLines, onLog)
         })
 
         try {
@@ -208,9 +214,12 @@ class QuickJsRuntime {
         }
     }
 
-    private fun addLog(logs: MutableList<String>, info: String?, cap: Int) {
+    /** 收一行控制台输出：进结果列表（有上限），同时**立刻**推给宿主（dsh 的 log 帧） */
+    private fun addLog(logs: MutableList<String>, info: String?, cap: Int, onLog: ((String) -> Unit)?) {
         if (logs.size >= cap) return
-        logs += (info ?: "")
+        val line = info ?: ""
+        logs += line
+        runCatching { onLog?.invoke(line) }
     }
 
     companion object {
@@ -307,14 +316,18 @@ class QuickJsRuntime {
                 name: name,
                 raw: raw,
                 then: function (resolve, reject) {
-                  globalThis.__adsh_cancel(handle);
-                  /* 返回一个**真正的 Promise**。dsh 里 tools.x() 就是 Promise，模型会写
-                     `tools.x({...}).then(f).catch(g)`；以前 then 什么都不返回，`.catch` 立刻炸在
-                     "not a function" 上，看起来像这个工具不存在（第 91 轮真机实测，报告 B1 的另一半）。
-                     thenable 协议本身不要求返回什么，所以 await / Promise.all 的行为不变。 */
+                  /* 第 185 轮：这一次调用**推迟到本轮微任务**再发出去（合并见 __adsh_drain）。
+                     以前 then 是同步发起的（__adsh_call__ 当场阻塞到工具跑完），于是
+                     `Promise.all([tools.a().then(f), tools.b().then(g)])` 里第二个 tools.b()
+                     要等第一个跑完才被创建 —— 实测 3 × web_fetch(delay/2) 串行 7.2s，
+                     而提示词写着 safe calls run concurrently。推迟之后，同一个 tick 里 then 过的
+                     handle 合并成**一次** __adsh_callAll__，调度器就能让读类真正重叠。
+                     返回一个**真正的 Promise**（dsh 里 tools.x() 本来就是 Promise，模型会写
+                     `tools.x({...}).then(f).catch(g)`，见第 91 轮实测报告 B1）。 */
                   var p = new Promise(function (res, rej) {
-                    try { res(globalThis.__adsh_parse(__adsh_call__(name, raw), name)); }
-                    catch (e) { rej(e); }
+                    handle.__resolve = res;
+                    handle.__reject = rej;
+                    globalThis.__adsh_schedule(handle);
                   });
                   return p.then(resolve, reject);
                 },
@@ -345,7 +358,46 @@ class QuickJsRuntime {
               globalThis.__adsh_cancel(handle);
               return globalThis.__adsh_parse(raw, handle.name);
             };
+            /* 本轮微任务里要兑现的 handle（第 185 轮）：同一个 tick 里 then 过的调用合并成一次 */
+            globalThis.__adsh_deferred = [];
+            globalThis.__adsh_scheduled = false;
+            globalThis.__adsh_schedule = function (handle) {
+              if (globalThis.__adsh_deferred.indexOf(handle) < 0) globalThis.__adsh_deferred.push(handle);
+              if (globalThis.__adsh_scheduled) return;
+              globalThis.__adsh_scheduled = true;
+              Promise.resolve().then(function () { globalThis.__adsh_drain(); });
+            };
+            /* 一次批量兑现：1 个走单调用（与老路径逐字一致），多个走 __adsh_callAll__（一批 RPC）。
+               顺序 = then 的注册顺序 = 程序里写下调用的顺序（dsh 的 submission order）。 */
+            globalThis.__adsh_drain = function () {
+              globalThis.__adsh_scheduled = false;
+              var batch = globalThis.__adsh_deferred.slice();
+              globalThis.__adsh_deferred.length = 0;
+              if (batch.length === 0) return;
+              for (var i = 0; i < batch.length; i++) globalThis.__adsh_cancel(batch[i]);
+              if (batch.length === 1) {
+                var only = batch[0];
+                try { only.__resolve(globalThis.__adsh_parse(__adsh_call__(only.name, only.raw), only.name)); }
+                catch (e) { only.__reject(e); }
+                return;
+              }
+              var payload = [];
+              for (var j = 0; j < batch.length; j++) payload.push([batch[j].name, batch[j].raw]);
+              var wires;
+              try { wires = JSON.parse(__adsh_callAll__(JSON.stringify(payload)) || '[]'); }
+              catch (e2) {
+                for (var k = 0; k < batch.length; k++) batch[k].__reject(e2);
+                return;
+              }
+              for (var m = 0; m < batch.length; m++) {
+                try { batch[m].__resolve(globalThis.__adsh_wire(wires[m], batch[m].name)); }
+                catch (e3) { batch[m].__reject(e3); }
+              }
+            };
             globalThis.__adsh_flush = function () {
+              /* 先把已经 then 过、还等在微任务里的那批兑现掉（它们已经从 pending 里摘掉了，
+                 不能留到下面那圈再跑一遍 —— 那就成了执行两次） */
+              try { globalThis.__adsh_drain(); } catch (e) {}
               var rest = globalThis.__adsh_pending.slice();
               globalThis.__adsh_pending.length = 0;
               for (var i = 0; i < rest.length; i++) {

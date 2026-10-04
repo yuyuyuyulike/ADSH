@@ -20,8 +20,10 @@ import java.util.concurrent.CopyOnWriteArrayList
  *    子进程一起没 —— dsh 的 note 就是这么提醒的）。
  *  - 没有 pull 源与 150ms 泵：生产者本来就是「一根读线程 → append」，环就是唯一存储。dsh 的泵是
  *    为了把 subprocess 的有界观测缓冲搬进环，这里没有那一层。
- *  - 没有 spill 文件（ADSH 从来没有落盘的大输出通道），所以 lossy 读的提示里「full output」永远是
- *    (unavailable)。
+ *  - spill 文件（第 185 轮补上，dsh 的 `dsh-subprocess-local/lib/output.js`）：环只留**尾部**
+ *    （dsh 的 tail-keep 理由：错误与最终结果总在末尾），越界之后完整流进 [Spill] 文件，
+ *    环的投影把每路输出的路径带出去（[View.stdoutSpillPath] / [View.stderrSpillPath]），
+ *    模型据此自己 read 回来。至此 lossy 读的提示里「full output」不再是 (unavailable)。
  *
  * 硬语义（dsh 逐条对齐，缺一条就会出 bug）：
  *  - id = `<kind>-N`，按 kind 独立计数；**准入拒绝不消耗序号**（先判准入再发号）。
@@ -80,7 +82,14 @@ object Jobs {
         val finishedAt: Long? = null,
         val total: Int = 0,
         val earliest: Int = 0,
+        /** stdout 全文 spill 文件的路径（环只留尾部；没越界或落盘失败时为 null） */
+        val stdoutSpillPath: String? = null,
+        /** stderr 的那一份 */
+        val stderrSpillPath: String? = null,
     ) {
+
+        /** dsh 的 `job.output.spillPaths`：lossy 读的提示里列出来给模型 */
+        val spillPaths: List<String> get() = listOfNotNull(stdoutSpillPath, stderrSpillPath)
         /** dsh 的 statusLine：`[status: completed, exit code: 0]` */
         val statusLine: String
             get() = if (detail != null) "[status: ${status.wire}, $detail]" else "[status: ${status.wire}]"
@@ -89,8 +98,19 @@ object Jobs {
         val observable: Boolean get() = !status.terminal || total > 0
     }
 
-    /** dsh 的 JobRead：自模型游标以来的块 + lossy + 终局结果（结算后只给一次） */
-    data class Read(val chunks: List<Chunk>, val lossy: Boolean, val result: String?, val job: View)
+    /**
+     * dsh 的 JobRead：自模型游标以来的块 + lossy + 终局结果（结算后只给一次）。
+     *
+     * [droppedChannels] 是**每一路各自**有没有在内存里丢过字节（dsh 一个收集器管一路，各有各的
+     * `dropped`）：渲染时据此逐流补「全文在哪」的提示，不能把 stderr 也一起标上。
+     */
+    data class Read(
+        val chunks: List<Chunk>,
+        val lossy: Boolean,
+        val result: String?,
+        val job: View,
+        val droppedChannels: Set<Channel?> = emptySet(),
+    )
 
     /** dsh 的 JobOutputRead：观察者读到的一段 + 续读偏移（next 永远是块边界） */
     data class Observe(val chunks: List<Chunk>, val lossy: Boolean, val next: Int)
@@ -148,8 +168,37 @@ object Jobs {
         val label: String,
         val owner: Long?,
         val retainBytes: Int,
+        /** 全文 spill 的落盘目录（null = 这个任务不落盘） */
+        val spillDir: java.io.File?,
+        /** 每路输出越过多少字节就开 spill（dsh 的 `maxOutputBytes`，默认 64 KB） */
+        val outputLimitBytes: Int,
     ) {
         val ring = OutputRing()
+
+        /** 每路输出最多一个 spill 文件（dsh 是一路一个 OutputCollector） */
+        val spills = HashMap<Channel, Spill>()
+
+        /**
+         * 全文落盘（dsh 的 `OutputCollector.push` 里的另一半）：越过 [outputLimitBytes] 才开文件，
+         * 之后每块都追写；文件被丢弃（超过 spill 上限 / IO 失败）就不再重开 —— 与 dsh 的
+         * `spillDisabled` 同一条退路。
+         */
+        fun spillChunk(channel: Channel?, text: String) {
+            val dir = spillDir ?: return
+            if (text.isEmpty() || channel == null || channel == Channel.LOG) return
+            val bytes = text.toByteArray(Charsets.UTF_8)
+            val total = ring.totalOf(channel) + bytes.size
+            val spill = spills.getOrPut(channel) {
+                Spill(dir, if (channel == Channel.STDERR) "stderr" else "stdout")
+            }
+            if (!spill.active && !spill.discarded && total <= outputLimitBytes) return
+            spill.spill(total.toLong(), ring.bytesOf(channel), bytes)
+        }
+
+        /** 流结束了：封住每个 spill 文件（dsh 在进程结算时 seal 两个收集器） */
+        fun sealSpills() {
+            spills.values.forEach { it.seal() }
+        }
         val startedAt = System.currentTimeMillis()
         val settled = CompletableDeferred<Unit>()
         var status = Status.RUNNING
@@ -184,6 +233,8 @@ object Jobs {
             synchronized(lock) {
                 // 结算之后写进来的丢掉（dsh：生产者 append 到已结算的任务只记日志）
                 if (job.status.terminal) return
+                // 先 spill 再进内存尾部：dsh 的 push 也是这个顺序（补写「已收集的块」时不含本块）
+                job.spillChunk(channel, text)
                 job.ring.append(text, channel, false, job.retainBytes)
             }
         }
@@ -203,6 +254,10 @@ object Jobs {
         retainBytes: Int = RETAIN_BYTES,
         /** true = 调用方随后会 wait 它；那次结算因此不会重复发通知（见 [Tracked.held]） */
         hold: Boolean = false,
+        /** 全文 spill 的落盘目录（null = 只留内存尾部）；见 [Spill] */
+        spillDir: java.io.File? = null,
+        /** 每路输出越过多少字节就开 spill（dsh 的 `maxOutputBytes` 默认 64000） */
+        outputLimitBytes: Int = RETAIN_BYTES,
         run: (Handle) -> Hooks,
     ): String {
         if (kind.isEmpty()) throw IllegalArgumentException("invalid job kind: expected a non-empty string")
@@ -219,7 +274,7 @@ object Jobs {
             counters[kind] = count
             "$kind-$count"
         }
-        val job = Tracked(id, kind, label, owner, retainBytes)
+        val job = Tracked(id, kind, label, owner, retainBytes, spillDir, outputLimitBytes)
         job.held = hold
         val hooks = run(HandleImpl(job))
         job.cancel = { reason -> hooks.cancel(reason) }
@@ -253,7 +308,9 @@ object Jobs {
             val result = if (job.status.terminal && !job.resultDelivered) job.result else null
             if (result != null) job.resultDelivered = true
             if (job.status.terminal) job.ring.trim(SETTLED_RETAIN_BYTES)
-            return Read(chunks, lossy, result, view(job))
+            val dropped = listOf(Channel.STDOUT, Channel.STDERR)
+                .filterTo(LinkedHashSet()) { job.ring.droppedOf(it) }
+            return Read(chunks, lossy, result, view(job), dropped)
         }
     }
 
@@ -391,6 +448,8 @@ object Jobs {
             job.finishedAt = System.currentTimeMillis()
             // 结算结束这条流：裁到 settled cap，但绝不裁掉模型游标还没读过的字节
             job.ring.trim(settleRetainCap(job.ring.total, job.modelCursor))
+            // 两条读线程在 done 之前已经 join（见 Tools.startBashJob），这里封住 spill 文件
+            job.sealSpills()
             awaited = job.waiters > 0 || job.held
         }
         job.settled.complete(Unit)
@@ -446,6 +505,8 @@ object Jobs {
             finishedAt = job.finishedAt,
             total = job.ring.total,
             earliest = job.ring.earliest,
+            stdoutSpillPath = job.spills[Channel.STDOUT]?.path,
+            stderrSpillPath = job.spills[Channel.STDERR]?.path,
         )
     }
 }
