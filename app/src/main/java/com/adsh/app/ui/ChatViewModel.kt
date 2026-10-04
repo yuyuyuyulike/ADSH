@@ -16,6 +16,7 @@ import com.adsh.app.core.llm.ChatEvent
 import com.adsh.app.core.llm.LlmClient
 import com.adsh.app.core.llm.SessionStats
 import com.adsh.app.core.workspace.WorkspaceManager
+import com.adsh.app.island.IslandBus
 import com.adsh.app.island.IslandController
 import com.adsh.app.island.islandWaitingOf
 import com.adsh.app.island.islandWorkOf
@@ -1768,6 +1769,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 状态每秒变好几次，但岛只关心「哪一格 + 哪三行」：一样就不往下传
                 .distinctUntilChanged()
                 .collect { work -> IslandController.sync(getApplication(), work) }
+        }
+        // 岛上的「停止」（通知那颗按钮 / 媒体卡的暂停）= 与输入框右下角那个停止键同一件事
+        viewModelScope.launch {
+            IslandBus.stopRequests.collect { cancel() }
         }
     }
 }

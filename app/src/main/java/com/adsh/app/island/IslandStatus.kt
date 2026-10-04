@@ -6,18 +6,18 @@ import com.adsh.app.ui.ChatUiState
 import com.adsh.app.ui.toolRowSummary
 
 /**
- * 灵动岛右半格那五格（用户口径：agent **实际**在干什么）。
+ * 灵动岛那五格（用户口径：agent **实际**在干什么）。
  *
- * | 状态 | 收起态显示 | 流光 |
- * |---|---|---|
- * | [THINKING] | 「思考」+ 思考图标 | 有 |
- * | [TOOL] | 「#代码」（正在调用工具） | 有 |
- * | [ASK] | 卡住的**工具名**（ask_user_question / 等你批准的那个工具） | 无 |
- * | [OUTPUT] | 「输出中」 | 无 |
- * | [DONE] | 「已结束」（跑完之后还挂 [ISLAND_DONE_DWELL_MS]） | 无 |
+ * | 状态 | 显示 |
+ * |---|---|
+ * | [THINKING] | 「思考」 |
+ * | [TOOL] | 「#代码」（正在调用工具） |
+ * | [ASK] | 卡住的**工具名**（ask_user / 等你批准的那个工具） |
+ * | [OUTPUT] | 「输出中」 |
+ * | [DONE] | 「已结束」（跑完之后还挂 [ISLAND_DONE_DWELL_MS]） |
  *
- * 流光只给「还在等模型」的两格（[THINKING] / [TOOL]）—— [ASK] 是在等**人**，扫光会误导成
- * 「还在跑」；[OUTPUT] 的字自己在变，再加扫光就花了；[DONE] 是静息态。
+ * 画它的是 **MIUI 的超级岛**（见 IslandService：把前台服务通知做成媒体通知，由系统画在状态栏那一条里），
+ * 所以这一层只负责「哪一格 + 哪一行文字」；样式 / 动效 / 点击展开都归系统。
  */
 internal enum class IslandPhase { THINKING, TOOL, ASK, OUTPUT, DONE }
 
@@ -44,6 +44,22 @@ internal const val ISLAND_LINE_CHARS = 48
  */
 internal const val ASK_TOOL_LABEL = "ask_user"
 
+/** 每一格的颜色：等模型的两格是白的，等你回答是琥珀，跑完是绿的（媒体岛左半格那张图的着色） */
+internal fun phaseTint(phase: IslandPhase): Int = when (phase) {
+    IslandPhase.ASK -> 0xFFFFC66D.toInt()
+    IslandPhase.DONE -> 0xFF7BE0A3.toInt()
+    else -> 0xFFFFFFFF.toInt()
+}
+
+/** 那一格的文案（用户口径的五格）—— 通知标题就是它，MIUI 的岛上显示的也是它 */
+internal fun phaseLabel(phase: IslandPhase): String = when (phase) {
+    IslandPhase.THINKING -> "思考"
+    IslandPhase.TOOL -> "#代码"
+    IslandPhase.ASK -> ASK_TOOL_LABEL
+    IslandPhase.OUTPUT -> "输出中"
+    IslandPhase.DONE -> "已结束"
+}
+
 /**
  * 从正文/思考里只留最后这么多字符再切行。
  *
@@ -53,7 +69,7 @@ internal const val ASK_TOOL_LABEL = "ask_user"
 internal const val ISLAND_TAIL_CHARS = 2000
 
 /** 一轮跑完（sending 落回 false）之后，岛还挂多久显示「已结束」 */
-internal const val ISLAND_DONE_DWELL_MS = 3000L
+internal const val ISLAND_DONE_DWELL_MS = 1200L
 
 /** 代码围栏那一行（展开态不显示它） */
 private const val FENCE_LINE = "```"
