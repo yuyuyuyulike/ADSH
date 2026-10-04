@@ -1,7 +1,6 @@
 package com.adsh.app.ui
 
 import android.Manifest
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -28,9 +27,6 @@ internal enum class AppPermission(val label: String) {
     /** 电池优化白名单：不做这一项，前台服务在多数国产 ROM 上照样会被清 */
     BATTERY("电池优化"),
 
-    /** MIUI 的自启动管理：系统级清理的第一道门，没有公开 API 可读，只能跳过去让用户开 */
-    AUTOSTART("自启动"),
-
     /** 真实 POSIX 路径读手机文件（Android 11+ 的 MANAGE_EXTERNAL_STORAGE） */
     FILES("所有文件访问"),
 }
@@ -42,7 +38,6 @@ internal enum class AppPermission(val label: String) {
 internal fun permissionStatus(context: Context, permission: AppPermission): Boolean? = when (permission) {
     AppPermission.NOTIFICATION -> NotificationManagerCompat.from(context).areNotificationsEnabled()
     AppPermission.BATTERY -> isIgnoringBatteryOptimizations(context)
-    AppPermission.AUTOSTART -> null
     AppPermission.FILES -> filesAccessGranted(context)
 }
 
@@ -91,18 +86,6 @@ internal fun openPermissionSettings(context: Context, permission: AppPermission)
                 val listed = start(context, Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                 if (!listed) openAppDetails(context)
             }
-        }
-
-        AppPermission.AUTOSTART -> {
-            // MIUI / HyperOS 的自启动管理页（安全中心里的那个）。组件名来自系统自身，
-            // 别的 ROM 上起不来就退到应用信息页。
-            val miui = Intent().setComponent(
-                ComponentName(
-                    "com.miui.securitycenter",
-                    "com.miui.permcenter.autostart.AutoStartManagementActivity",
-                ),
-            )
-            if (!start(context, miui)) openAppDetails(context)
         }
 
         AppPermission.FILES -> {

@@ -191,7 +191,7 @@ fun AppRoot(viewModel: ChatViewModel) {
             if (!hasAllFilesAccess()) {
                 android.widget.Toast.makeText(
                     context,
-                    "还需要在系统设置里允许「所有文件访问」，否则读不到手机里的文件",
+                    "要读到手机里的文件，请打开「所有文件访问」权限（设置 → 功能 → 权限 里可以一键跳转）",
                     android.widget.Toast.LENGTH_LONG,
                 ).show()
             }

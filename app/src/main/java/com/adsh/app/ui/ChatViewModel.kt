@@ -386,6 +386,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 只补统计 / 计划模式 / 工作区 —— 切会话时正文的换入换出越少，收起动画越稳。
      */
     private suspend fun openConversation(id: Long, knownMessages: List<com.adsh.app.core.data.MessageEntity>? = null) {
+        // 切走之前先把「正在跑的那一轮」的样子存进它自己的格子（切回来接上，见 liveRuns）
+        stashLiveRun()
         val conversation = repository.byId(id)
         val workspace = conversation?.workspaceId?.let { repository.workspace(it) }
         if (workspace != null) bindFolder(workspace.path)
@@ -402,6 +404,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 stats = repository.statsOf(id),
                 planMode = conversation?.planMode == true,
                 pendingAttachments = emptyList(),
+                // 新会话**不许继承**正在跑那一轮的界面痕迹：sending / liveTurn 这些字段以前不在
+                // 这里复位，于是切过去之后「吃白饭中」那条工作提示画在新会话里（用户第 180 轮报的）。
+                // 正在跑的那一轮自己的状态住在 liveRuns，切回去由 restoreLiveRun 接上。
+                sending = false,
+                liveTurnId = null,
+                liveTurn = LiveTurn(),
+                toolArgsFlowing = false,
+                connection = ConnectionState.Idle,
+                runStartedAt = 0L,
+                queuedCount = queueOf(id).size,
             )
         }
     }
