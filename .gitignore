@@ -45,3 +45,6 @@ docs/screenshots/*.png
 
 # 临时参考物（对齐 dsh 源码时下载的文本，第 90 / 94 轮清理过）
 .tmp-dsh/
+
+# 临时探针 / 截图 / 数据库快照：绝不入库（R95 误提交过一次 .scratch/db/adsh.db）
+.scratch/

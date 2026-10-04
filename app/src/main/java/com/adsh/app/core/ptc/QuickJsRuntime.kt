@@ -97,6 +97,72 @@ class QuickJsRuntime(
         cancel: (() -> Boolean)? = null,
     ): CodeRunResult {
         val started = System.currentTimeMillis()
+        // 「等工具」的累计耗时：预算只算程序自己的执行时间（见下面的注释）
+        val toolWaitMs = java.util.concurrent.atomic.AtomicLong(0)
+        // 程序跑在**自己的线程**上，宿主在外面按同一条判据看着它。
+        //
+        // 为什么必须这样（第 183 轮真机实测）：QuickJS 一旦进了同步死循环（`for (let i = 0; i < 1e11; i++)`），
+        // 就再也不会把执行权还给宿主 —— 泵循环里那条超时判据（`elapsed - toolWait < budget`）**没有机会执行**，
+        // 用户按「停止」也没用（cancel 探针同样只在泵里读）。于是整轮无限期挂住：界面显示在跑、岛一直亮着，
+        // 子调用的通知永远等不到下一个步边界去认领。真机上那次是 harness 的 CPU 预算探针，挂了 13 分钟，
+        // 一直挂到进程被系统清掉。
+        //
+        // 现在宿主每 [WATCHDOG_TICK_MS] 醒一次算「程序自己跑了多久」：超预算 + 宽限就**放弃这次调用**，
+        // 把话说清楚还给模型，整轮不再被一个死循环拖住。放弃意味着那条线程还在转（QuickJS 没有中断接口，
+        // 见 [PTC_STACK_BYTES] 那段注释），所以只能放弃 —— 但它已经不再影响这一轮。
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor { target ->
+            Thread(null, target, PTC_THREAD_NAME, PTC_STACK_BYTES).apply { isDaemon = true }
+        }
+        return when (
+            val outcome = awaitPtcProgram(
+                executor = executor,
+                startedAt = started,
+                toolWaitMs = toolWaitMs,
+                budgetMs = timeoutMs,
+                timeoutGraceMs = WATCHDOG_GRACE_MS,
+                cancelGraceMs = CANCEL_GRACE_MS,
+                tickMs = WATCHDOG_TICK_MS,
+                cancelRequested = { cancel?.invoke() == true },
+                start = {
+                    executor.submit<CodeRunResult> {
+                        runBody(program, tools, context, timeoutMs, maxLogLines, cancel, started, toolWaitMs)
+                    }
+                },
+            )
+        ) {
+            is PtcWatchdogOutcome.Finished -> outcome.value
+            PtcWatchdogOutcome.Cancelled -> CodeRunResult(
+                valueJson = null,
+                logs = emptyList(),
+                error = "已停止",
+                durationMs = System.currentTimeMillis() - started,
+                aborted = true,
+            )
+            PtcWatchdogOutcome.TimedOut -> CodeRunResult(
+                valueJson = null,
+                logs = emptyList(),
+                error = "程序在 " + timeoutMs + "ms 内未结束：同步死循环（JS 没有把执行权还给宿主，" +
+                    "子调用的通知也等不到下一个步边界）。这次调用已放弃 —— 长循环请拆小，" +
+                    "或改成后台任务（run_in_background）稍后再查。",
+                durationMs = System.currentTimeMillis() - started,
+            )
+        }
+    }
+
+    /**
+     * 程序本体：跑在 [PTC_THREAD_NAME] 那条线程上（见 [run] 的看门狗注释）。
+     * [started] / [toolWaitMs] 由 [run] 持有 —— 看门狗要用同一对数字算「程序自己跑了多久」。
+     */
+    private fun runBody(
+        program: String,
+        tools: List<Tool>,
+        context: ToolContext,
+        timeoutMs: Long,
+        maxLogLines: Int,
+        cancel: (() -> Boolean)?,
+        started: Long,
+        toolWaitMs: java.util.concurrent.atomic.AtomicLong,
+    ): CodeRunResult {
         val logs = ArrayList<String>(16)
         val calls = java.util.concurrent.atomic.AtomicInteger(0)
         val trace = java.util.Collections.synchronizedList(ArrayList<SubCall>())
@@ -113,8 +179,8 @@ class QuickJsRuntime(
         // （见下面的泵循环），以前拿 started + timeoutMs 当死线 —— 用户在提问卡上想了两分钟，
         // 工具一返回循环条件立刻为假，程序被判超时；而子调用的正文本来就不回灌模型
         // （AgentLoop：模型只看到 run_code 的最终返回），等于问题白问、答案直接丢。
-        // 现在预算只算「程序自己跑了多久」：把每次子调用的耗时累加进来，每个工具仍有自己的超时。
-        val toolWaitMs = java.util.concurrent.atomic.AtomicLong(0)
+        // 现在预算只算「程序自己跑了多久」：把每次子调用的耗时累加进来，每个工具仍有自己的超时
+        // （toolWaitMs 由 run 持有并传进来，宿主侧的看门狗要用同一对数字）。
         val engine = QuickJSContext.create()
         // **这个数必须小于执行线程的真实栈**（第 120 轮真机实测：一个 f(n)=1+f(n-1) 递归 5000 层的
         // 探针把 App 整个打崩了）。QuickJS 的溢出判据是 `sp < stack_top - stack_size` —— 报的是它
@@ -573,6 +639,33 @@ class QuickJsRuntime(
         const val MAX_LOG_LINES = 500
         private const val MAX_PUMPS = 200_000
 
+        /** 看门狗线程的名字（真机抓线程栈时一眼认得出） */
+        private const val PTC_THREAD_NAME = "adsh-ptc"
+
+        /**
+         * 程序线程的栈大小：**必须大于 QuickJS 自己记账的 256KB**（[runBody] 里 setMaxStackSize）。
+         *
+         * 第 120 轮真机实测：QuickJS 的溢出判据是 `sp < stack_top - stack_size` —— 报的是它自己
+         * 记账的用量；账比 pthread 栈还大时它永远不会先开口，递归一路吃穿栈 = SIGSEGV（进程级）。
+         * 所以这里显式给 2MB（安卓默认线程栈约 1MB，翻倍留量），而不是用系统默认值赌一把。
+         */
+        private const val PTC_STACK_BYTES = 2L * 1024 * 1024
+
+        /** 宿主看门狗的轮询粒度 */
+        private const val WATCHDOG_TICK_MS = 200L
+
+        /**
+         * 超预算之后还给程序多少宽限：正常路径是**泵循环**自己发现超时并收尾（几毫秒），
+         * 看门狗只负责接住「JS 不让出执行权」那种 —— 所以留 5 秒，避免和正常收尾抢。
+         */
+        private const val WATCHDOG_GRACE_MS = 5_000L
+
+        /**
+         * 「用户按了停止」之后还给程序多少宽限：泵循环每个周期都会读 cancel 探针（第 91 轮加的那条路），
+         * 正常几毫秒就停；只有同步死循环才走到这里 —— 2 秒足够区分「正在停」与「停不下来」。
+         */
+        private const val CANCEL_GRACE_MS = 2_000L
+
         /**
          * 中断看门狗的轮询粒度：正在跑的子调用最多迟这么久发现「用户停了」。
          * 与 [com.adsh.app.runtime.termux.TermuxRuntime.run] 的探针粒度同量级。
@@ -779,3 +872,117 @@ class QuickJsRuntime(
         """.trimIndent()
     }
 }
+
+/** 看门狗等出来的三种结局（见 [awaitPtcProgram]） */
+internal sealed interface PtcWatchdogOutcome<out T> {
+    /** 程序自己结束了（正常返回 / 语法错误 / 泵循环收尾，都是这一支） */
+    data class Finished<T>(val value: T) : PtcWatchdogOutcome<T>
+
+    /** 超预算 + 宽限还没结束：同步死循环，放弃这次调用 */
+    data object TimedOut : PtcWatchdogOutcome<Nothing>
+
+    /** 用户按了停止 + 宽限还没停：放弃这次调用（按「已停止」收尾） */
+    data object Cancelled : PtcWatchdogOutcome<Nothing>
+}
+
+/**
+ * 宿主看门狗的**调度循环**（第 183 轮）：把程序提交到 [executor] 上，每 [tickMs] 醒一次，
+ * 用 [ptcWatchdogVerdict] 判决要不要放弃。
+ *
+ * 抽成独立函数的理由：QuickJS 是原生库，桌面上跑不了它的单测 —— 但这段**调度**（轮询、算
+ * 「程序自己跑了多久」、放弃时 cancel + shutdown、正常完成照原样返回）恰恰是最容易写错的地方，
+ * 所以它必须能在 JVM 上被测（见 PtcWatchdogTest 里那个「提交一个永不结束的 body」的用例）。
+ *
+ * @param toolWaitMs 「等工具」的累计耗时（由程序本体在子调用返回时累加）：判据用它扣掉等工具的
+ *   时间，与泵循环的公式保持同一条
+ * @param cancelRequested 用户是否按了停止（每次 tick 问一次）
+ * @param now 时钟（测试注入）
+ * @param start 真正把程序提交上去（测试注入一个「永不结束」的 body）
+ */
+internal fun <T> awaitPtcProgram(
+    executor: java.util.concurrent.ExecutorService,
+    startedAt: Long,
+    toolWaitMs: java.util.concurrent.atomic.AtomicLong,
+    budgetMs: Long,
+    timeoutGraceMs: Long,
+    cancelGraceMs: Long,
+    tickMs: Long,
+    cancelRequested: () -> Boolean,
+    start: () -> java.util.concurrent.Future<T>,
+    now: () -> Long = System::currentTimeMillis,
+): PtcWatchdogOutcome<T> {
+    val future = start()
+    while (true) {
+        val finished = try {
+            future.get(tickMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: java.util.concurrent.TimeoutException) {
+            null
+        } catch (failed: java.util.concurrent.ExecutionException) {
+            // 程序本体自己兜了 Throwable；这里只可能是 Error（例如 OOM），照实抛给上层
+            executor.shutdown()
+            throw (failed.cause ?: failed)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            future.cancel(true)
+            executor.shutdown()
+            return PtcWatchdogOutcome.Cancelled
+        }
+        if (finished != null) {
+            executor.shutdown()
+            return PtcWatchdogOutcome.Finished(finished)
+        }
+        val programMs = now() - startedAt - toolWaitMs.get()
+        when (
+            ptcWatchdogVerdict(
+                programMs = programMs,
+                budgetMs = budgetMs,
+                timeoutGraceMs = timeoutGraceMs,
+                cancelRequested = cancelRequested(),
+                cancelGraceMs = cancelGraceMs,
+            )
+        ) {
+            PtcWatchdog.RUNNING -> Unit
+            // 放弃：cancel 只是语义标记（同步死循环里的 native 代码收不到中断），
+            // 关键是**宿主不再等它**，这一轮继续往下走
+            PtcWatchdog.ABANDON_CANCELLED -> {
+                future.cancel(true)
+                executor.shutdown()
+                return PtcWatchdogOutcome.Cancelled
+            }
+            PtcWatchdog.ABANDON_TIMEOUT -> {
+                future.cancel(true)
+                executor.shutdown()
+                return PtcWatchdogOutcome.TimedOut
+            }
+        }
+    }
+}
+
+/**
+ * 宿主看门狗的判据（**纯函数**，第 183 轮）：程序自己跑了 [programMs] 毫秒之后，该继续等、还是放弃。
+ *
+ * 三段优先级：
+ *  1. [PtcWatchdog.ABANDON_CANCELLED]：用户按了停止、而且程序已经超过 [cancelGraceMs] 没让出执行权
+ *     —— 泵循环读不到 cancel 的那种（同步死循环），只能放弃；
+ *  2. [PtcWatchdog.ABANDON_TIMEOUT]：程序自己跑的时间超过预算 + [timeoutGraceMs]
+ *     —— 同样是泵循环那条判据没机会执行的情形（真机实测：一个 1e11 次的 for 循环把整轮挂了 13 分钟）；
+ *  3. [PtcWatchdog.RUNNING]：其余都继续等（等工具的耗时不算在 [programMs] 里，见 [QuickJsRuntime.run]）。
+ *
+ * 判据与泵循环保持**同一条公式**（elapsed - toolWait），宽限只用来区分「正常收尾」与「卡死」。
+ * 单测把这三段的边界都钉住（见 PtcWatchdogTest）。
+ */
+internal fun ptcWatchdogVerdict(
+    programMs: Long,
+    budgetMs: Long,
+    timeoutGraceMs: Long,
+    cancelRequested: Boolean,
+    cancelGraceMs: Long,
+): PtcWatchdog = when {
+    cancelRequested && programMs > cancelGraceMs -> PtcWatchdog.ABANDON_CANCELLED
+    programMs > budgetMs + timeoutGraceMs -> PtcWatchdog.ABANDON_TIMEOUT
+    else -> PtcWatchdog.RUNNING
+}
+
+/** 看门狗的三种判决（见 [ptcWatchdogVerdict]） */
+internal enum class PtcWatchdog { RUNNING, ABANDON_TIMEOUT, ABANDON_CANCELLED }
+
