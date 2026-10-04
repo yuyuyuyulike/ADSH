@@ -26,7 +26,7 @@ DeepSeek Harness（dsh）的安卓原生客户端：**dsh 的 PTC 工具语义 +
 
 ## 安装
 
-下载 [`ADSH-0.2.0-release.apk`](https://github.com/yuyuyuyulike/ADSH/releases/download/v0.2.0-20261003/ADSH-0.2.0-release.apk)：
+下载 [`ADSH-0.2.1-release.apk`](https://github.com/yuyuyuyulike/ADSH/releases/download/v0.2.1-20261004/ADSH-0.2.1-release.apk)：
 arm64-v8a，Android 8.0（API 26）以上；release 已开 R8（minify + shrink）。
 新版本都发在 [Releases](https://github.com/yuyuyuyulike/ADSH/releases) 页，那里始终是最新那一份。
 
