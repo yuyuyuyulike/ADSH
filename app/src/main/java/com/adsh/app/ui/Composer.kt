@@ -55,7 +55,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
@@ -66,7 +65,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -101,7 +99,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
-import com.adsh.app.core.agent.imageMediaTypeOf
 import com.adsh.app.core.data.SettingsStore
 import com.adsh.app.ui.theme.LocalDshPalette
 import kotlinx.coroutines.Dispatchers
@@ -976,8 +973,7 @@ private fun WorkspaceChipRow(
  * 以前这里只看扩展名，于是「输入框显示图片缩略图、发出去变成文件卡片」——
  * 拇指图能解出来就显示成图，而发出去的 mediaType 是按字节嗅探的。
  */
-private fun isImagePath(path: String): Boolean =
-    runCatching { imageMediaTypeOf(File(path)) != null }.getOrDefault(false)
+// isImagePath 已搬到 ui/ImageDecode.kt（与缩略图解码同一个家：图片这条路上的共用件只有一处）
 
 /**
  * 待发附件：**图片**与**文件**是两种形状（各自向参考实现看齐）。
@@ -1003,7 +999,7 @@ private fun AttachmentCard(path: String, onRemove: (String) -> Unit) {
 private fun ImageAttachment(path: String, onRemove: (String) -> Unit) {
     val palette = LocalDshPalette.current
     val thumbnail by produceState<ImageBitmap?>(initialValue = null, path) {
-        value = withContext(Dispatchers.IO) { decodeThumbnail(path) }
+        value = withContext(Dispatchers.IO) { cachedImage(path, THUMB_TARGET_PX) }
     }
     Box(Modifier.size(72.dp)) {
         Box(
@@ -1102,20 +1098,8 @@ private fun RemoveBadge(onRemove: () -> Unit, modifier: Modifier = Modifier) {
 /** 移除徽标的底色：黑 55%（深浅两套主题下都是「深底白叉」） */
 private val REMOVE_BADGE_BACKGROUND = Color(0x8C000000)
 
-/** 生成附件封面：图片按 2 的幂下采样解码；非图片返回 null（用文件图标兜底） */
+/** 待发附件缩略图的目标长边（解码与缓存在 ui/ImageDecode.kt，第 182 轮起只有那一份实现） */
 private const val THUMB_TARGET_PX = 144
-
-private fun decodeThumbnail(path: String): ImageBitmap? = runCatching {
-    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    android.graphics.BitmapFactory.decodeFile(path, bounds)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
-    var sample = 1
-    while (bounds.outWidth / (sample * 2) >= THUMB_TARGET_PX && bounds.outHeight / (sample * 2) >= THUMB_TARGET_PX) {
-        sample *= 2
-    }
-    val options = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
-    android.graphics.BitmapFactory.decodeFile(path, options)?.asImageBitmap()
-}.getOrNull()
 
 /** dsh 的 .uV2eYG_add：28dp 圆形、--dsw-specific-selector 底、图标 14px */
 @Composable

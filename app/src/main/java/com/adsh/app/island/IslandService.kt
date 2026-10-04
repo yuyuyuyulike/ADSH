@@ -110,7 +110,7 @@ class IslandService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // 前台服务必须尽快 startForeground（系统给的窗口只有几秒）
-        startForeground(NOTIFICATION_ID, notification(this, display.value, session?.sessionToken, null))
+        startForeground(NOTIFICATION_ID, notification(this, frameOf(display.value), session?.sessionToken, null))
         if (intent?.action == ACTION_STOP) IslandBus.requestStop()
         if (!watching) {
             watching = true
@@ -161,13 +161,17 @@ class IslandService : Service() {
         }
     }
 
+    /** 岛还没起稳时那一帧（startForeground 必须马上给一条通知，此时业务帧还没到） */
+    private fun frameOf(work: IslandWork?): IslandFrame =
+        work?.let { islandFrameOf(it) } ?: IslandFrame(IslandPhase.THINKING, "准备中", "", true)
+
     /** 把这一帧写进会话元数据 + 通知（两者都是 MIUI 那颗岛的数据源） */
     private fun apply(work: IslandWork) {
         display.value = work
-        val label = phaseLabel(work.phase)
-        val line = work.lines.firstOrNull().orEmpty()
-        updateSession(label, line, work.phase != IslandPhase.DONE, artFor(work.phase))
-        publish(work)
+        // 一帧只算一次：文案 / 最新一行 / 是否在干活都在 islandFrameOf 里（见 IslandStatus.kt）
+        val frame = islandFrameOf(work)
+        updateSession(frame, artFor(frame.phase))
+        publish(frame)
     }
 
     /**
@@ -176,27 +180,26 @@ class IslandService : Service() {
      * 排在后面的那一发**发的是当时最新的一帧**（不是排队时那一帧）：一轮结束时最后那几行
      * 一定落在屏幕上，而中间那些帧该丢就丢 —— 通知栏不是逐帧播放器。
      */
-    private fun publish(work: IslandWork) {
-        val key = phaseLabel(work.phase) + "\u0000" + work.lines.firstOrNull().orEmpty()
+    private fun publish(frame: IslandFrame) {
+        val key = frame.label + "\u0000" + frame.line
         if (key == notifiedKey || notifyJob != null) return
         val wait = NOTIFY_MIN_INTERVAL_MS - (System.currentTimeMillis() - notifiedAt)
         if (wait <= 0L) {
-            notifyNow(work, key)
+            notifyNow(frame)
             return
         }
         notifyJob = scope.launch {
             delay(wait)
             notifyJob = null
-            val latest = display.value ?: return@launch
-            notifyNow(latest, phaseLabel(latest.phase) + "\u0000" + latest.lines.firstOrNull().orEmpty())
+            notifyNow(frameOf(display.value))
         }
     }
 
-    private fun notifyNow(work: IslandWork, key: String) {
-        notifiedKey = key
+    private fun notifyNow(frame: IslandFrame) {
+        notifiedKey = frame.label + "\u0000" + frame.line
         notifiedAt = System.currentTimeMillis()
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, notification(this, work, session?.sessionToken, artFor(work.phase)))
+            .notify(NOTIFICATION_ID, notification(this, frame, session?.sessionToken, artFor(frame.phase)))
     }
 
     /**
@@ -204,8 +207,11 @@ class IslandService : Service() {
      *
      * 「正在播放」是给系统看的：媒体岛只在有活动会话时出现，一轮跑完就置成 STOPPED（岛随之收掉）。
      */
-    private fun updateSession(title: String, text: String, active: Boolean, art: Bitmap?) {
+    private fun updateSession(frame: IslandFrame, art: Bitmap?) {
         val media = session ?: return
+        val title = frame.label
+        val text = frame.line
+        val active = frame.active
         val metadata = MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, title)
             .putString(MediaMetadata.METADATA_KEY_ARTIST, text)
@@ -281,12 +287,12 @@ class IslandService : Service() {
  */
 private fun notification(
     context: Context,
-    work: IslandWork?,
+    frame: IslandFrame,
     token: MediaSession.Token?,
     art: Bitmap?,
 ): Notification {
-    val label = work?.let { phaseLabel(it.phase) } ?: "准备中"
-    val text = work?.lines?.firstOrNull().orEmpty()
+    val label = frame.label
+    val text = frame.line
     val open = openAppIntent(context)
     val stop = PendingIntent.getService(
         context,

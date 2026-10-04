@@ -31,7 +31,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
@@ -87,7 +86,7 @@ internal fun SettingsCard(
 @Composable
 internal fun DshHairline(color: Color? = null) {
     val palette = LocalDshPalette.current
-    Box(Modifier.fillMaxWidth().height(0.5.dp).background(color ?: palette.borderL2))
+    Box(Modifier.fillMaxWidth().height(DshSpacing.Hairline).background(color ?: palette.borderL2))
 }
 
 /** 可展开的卡片：只有头部 + 主体，没有保存脚（工作区 / 系统提示词 / 关于用它） */

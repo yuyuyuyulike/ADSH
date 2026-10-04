@@ -8,6 +8,7 @@ import com.adsh.app.ui.LiveCall
 import com.adsh.app.ui.LiveTurn
 import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -102,6 +103,28 @@ class IslandStatusTest {
     @Test
     fun aFreshTurnCountsAsThinking() {
         assertEquals(IslandPhase.THINKING, islandWorkOf(state())?.phase)
+    }
+
+    /**
+     * 一帧的全部字符串来自 [islandFrameOf] 这一处（第 182 轮熵减）：服务只负责把一帧画出去。
+     * 这里钉住三件事：文案就是五格文案、展开态那行取最新一行、以及「算不算在干活」——
+     * 最后一格（已结束）必须是 STOPPED，否则媒体岛不会收。
+     */
+    @Test
+    fun frameCarriesLabelLineAndActiveFlag() {
+        val thinking = islandFrameOf(IslandWork(IslandPhase.THINKING, listOf("在想这件事", "第二行")))
+        assertEquals("思考", thinking.label)
+        assertEquals("在想这件事", thinking.line)
+        assertTrue(thinking.active)
+
+        val coding = islandFrameOf(IslandWork(IslandPhase.TOOL, listOf("run_code")))
+        assertEquals("#代码", coding.label)
+        assertTrue(coding.active)
+
+        val done = islandFrameOf(IslandWork(IslandPhase.DONE))
+        assertEquals("已结束", done.label)
+        assertEquals("", done.line)
+        assertFalse("已结束那一帧必须是 STOPPED（岛随之收掉）", done.active)
     }
 
     @Test

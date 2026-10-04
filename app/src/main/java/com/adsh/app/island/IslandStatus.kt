@@ -30,6 +30,29 @@ internal data class IslandWork(val phase: IslandPhase, val lines: List<String> =
  */
 internal data class IslandWaiting(val label: String, val lines: List<String> = emptyList())
 
+/**
+ * 一帧的**全部字符串**：那一格的文案、展开态最新一行、以及「算不算在干活」。
+ *
+ * 第 182 轮熵减：这三个值原来在 IslandService 里被算了三遍（apply / updateSession /
+ * notification 各算一次，其中 active 还写成 `phase != DONE`），于是「哪一格长什么样」这件事
+ * 散在服务里。现在只有 [islandFrameOf] 一处算，服务只负责把一帧画出去。
+ */
+internal data class IslandFrame(
+    val phase: IslandPhase,
+    val label: String,
+    val line: String,
+    /** 还在干活（媒体会话用 PLAYING；「已结束」那一格是 STOPPED，岛随之收掉） */
+    val active: Boolean,
+)
+
+/** 把 [IslandWork] 折成一帧（纯函数，与 [islandWorkOf] 一起被 IslandStatusTest 钉住） */
+internal fun islandFrameOf(work: IslandWork): IslandFrame = IslandFrame(
+    phase = work.phase,
+    label = phaseLabel(work.phase),
+    line = work.lines.firstOrNull().orEmpty(),
+    active = work.phase != IslandPhase.DONE,
+)
+
 /** 展开态显示几行（用户口径：最新的两三行就够） */
 internal const val ISLAND_DETAIL_LINES = 3
 

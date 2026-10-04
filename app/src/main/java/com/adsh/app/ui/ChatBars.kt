@@ -377,61 +377,61 @@ internal fun ChatTopBar(
 ) {
     val focusManager = LocalFocusManager.current
     val palette = LocalDshPalette.current
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .height(48.dp)
-                .padding(horizontal = DshSpacing.Section)
-                // 顶栏的空白处也算「别处」：点一下就收起输入框的光标与键盘。
-                // 子节点（三个图标）自己会消费掉点击，所以这里只会接住落在空白上的那一下。
-                .pointerInput(Unit) {
-                    detectTapGestures { focusManager.clearFocus() }
-                },
-            verticalAlignment = Alignment.CenterVertically,
-            // 第 117 轮：右上角那个图标在 Spacer 之后，改这一行的间距只会让「上下文」
-            // 那一块再左移 8（用户点名「上下文窗口的图标再整块左移 8」）。
-            horizontalArrangement = Arrangement.spacedBy(DshSpacing.Xl),
-        ) {
-            // dsh 会话统计入口（IconGaugeOutline16），点开是统计弹窗（不再整页跳转）
-            Box {
-                // 第 117 轮用户要求：顶栏三个图标**各小一点点**（20 → 18）；Gauge 的线宽也跟着
-                // 调细（见 DshIcons.Gauge），顶栏看起来才不是一排水桶。
-                IconTap(DshIcons.Gauge, "会话统计与 Token 用量", size = 18.dp, tint = palette.labelPrimary) {
-                    onOverlaysChange(overlays.statsToggled())
-                }
-                if (overlays.statsOpen) {
-                    DshPopup(
-                        onDismiss = { onOverlaysChange(overlays.copy(statsOpen = false)) },
-                        alignStart = true,
-                        below = true,
-                    ) { SessionStatsPanels(state.stats) }
-                }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .height(48.dp)
+            .padding(horizontal = DshSpacing.Section)
+            // 顶栏的空白处也算「别处」：点一下就收起输入框的光标与键盘。
+            // 子节点（三个图标）自己会消费掉点击，所以这里只会接住落在空白上的那一下。
+            .pointerInput(Unit) {
+                detectTapGestures { focusManager.clearFocus() }
+            },
+        verticalAlignment = Alignment.CenterVertically,
+        // 第 117 轮：右上角那个图标在 Spacer 之后，改这一行的间距只会让「上下文」
+        // 那一块再左移 8（用户点名「上下文窗口的图标再整块左移 8」）。
+        horizontalArrangement = Arrangement.spacedBy(DshSpacing.Xl),
+    ) {
+        // dsh 会话统计入口（IconGaugeOutline16），点开是统计弹窗（不再整页跳转）
+        Box {
+            // 第 117 轮用户要求：顶栏三个图标**各小一点点**（20 → 18）；Gauge 的线宽也跟着
+            // 调细（见 DshIcons.Gauge），顶栏看起来才不是一排水桶。
+            IconTap(DshIcons.Gauge, "会话统计与 Token 用量", size = 18.dp, tint = palette.labelPrimary) {
+                onOverlaysChange(overlays.statsToggled())
             }
-            // 上下文占用紧挨在会话统计右侧（dsh 的 ContextMeter 就是「会话统计右侧的圆环 +
-            // 百分比」）。放在这里还有一个副作用是想要的：它不再出现在输入框里，
-            // 于是会话一开始（上下文用量可用）时，模型按钮不会被它顶走一格。
-            // （state.context 不是可空的：没有用量时它就是一个 0 用量的默认值，
-            //  这里原先写的 `state.context?.let` 恒等于直接调用。）
-            ContextMeter(
-                usage = state.context,
-                open = overlays.composerMenu == "context",
-                below = true,
-                // 打开时顺手收掉统计浮窗与触发菜单 —— 互斥规则在 ChatOverlays.menuChanged 里
-                onOpenChange = { open ->
-                    onOverlaysChange(overlays.menuChanged(if (open) "context" else null, draft))
-                },
-            )
-            Spacer(Modifier.weight(1f))
-            // dsh 的会话头部 actions 区：后台任务列表（第 118 轮）。**没有任务时整个控件不出现**
-            // —— 与 dsh 的 JobListAction 一样，不为一个没用到的能力常驻一个入口。
-            JobsControl(
-                conversationId = state.conversationId,
-                onReaderAction = readerAction,
-            )
-            // 右上角只保留「工作区文件预览」（dsh 的 IconPanelLeftOutline16 镜像 = 分栏线在右）
-            IconTap(DshIcons.PanelRight, "工作区文件", size = 18.dp, tint = palette.labelPrimary) { onOpenWorkspaceFiles() }
+            if (overlays.statsOpen) {
+                DshPopup(
+                    onDismiss = { onOverlaysChange(overlays.copy(statsOpen = false)) },
+                    alignStart = true,
+                    below = true,
+                ) { SessionStatsPanels(state.stats) }
+            }
         }
+        // 上下文占用紧挨在会话统计右侧（dsh 的 ContextMeter 就是「会话统计右侧的圆环 +
+        // 百分比」）。放在这里还有一个副作用是想要的：它不再出现在输入框里，
+        // 于是会话一开始（上下文用量可用）时，模型按钮不会被它顶走一格。
+        // （state.context 不是可空的：没有用量时它就是一个 0 用量的默认值，
+        //  这里原先写的 `state.context?.let` 恒等于直接调用。）
+        ContextMeter(
+            usage = state.context,
+            open = overlays.composerMenu == "context",
+            below = true,
+            // 打开时顺手收掉统计浮窗与触发菜单 —— 互斥规则在 ChatOverlays.menuChanged 里
+            onOpenChange = { open ->
+                onOverlaysChange(overlays.menuChanged(if (open) "context" else null, draft))
+            },
+        )
+        Spacer(Modifier.weight(1f))
+        // dsh 的会话头部 actions 区：后台任务列表（第 118 轮）。**没有任务时整个控件不出现**
+        // —— 与 dsh 的 JobListAction 一样，不为一个没用到的能力常驻一个入口。
+        JobsControl(
+            conversationId = state.conversationId,
+            onReaderAction = readerAction,
+        )
+        // 右上角只保留「工作区文件预览」（dsh 的 IconPanelLeftOutline16 镜像 = 分栏线在右）
+        IconTap(DshIcons.PanelRight, "工作区文件", size = 18.dp, tint = palette.labelPrimary) { onOpenWorkspaceFiles() }
+    }
 }
 
 /**

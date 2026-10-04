@@ -5,7 +5,6 @@ import com.adsh.app.core.data.MessageEntity
 import android.content.Context
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 

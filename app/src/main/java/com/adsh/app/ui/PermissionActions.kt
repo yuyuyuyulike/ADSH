@@ -45,6 +45,19 @@ internal fun permissionStatus(context: Context, permission: AppPermission): Bool
 }
 
 /**
+ * 卡片上那一格状态文字：**三态一一对应**（null = 系统没给读取口 → 「去设置」）。
+ *
+ * 与 [permissionStatus] 放在同一个文件里，是因为它们是一条规矩的两半：**界面不许撒谎** ——
+ * 读不到就写「去设置」，读到 false 就写「未授权」。以前这段 when 写在卡片那边，
+ * 于是「哪三种状态」这件事被拆在两个文件里。
+ */
+internal fun permissionStatusLabel(granted: Boolean?): String = when (granted) {
+    true -> "已授权"
+    false -> "未授权"
+    null -> "去设置"
+}
+
+/**
  * 「所有文件访问」的两种形态：
  *  - Android 11+（R）：MANAGE_EXTERNAL_STORAGE，读 [Environment.isExternalStorageManager]；
  *  - Android 10 及以下：共享存储还是普通运行时权限，读 WRITE_EXTERNAL_STORAGE。

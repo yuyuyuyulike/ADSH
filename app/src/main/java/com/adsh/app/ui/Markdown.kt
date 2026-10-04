@@ -653,7 +653,7 @@ private fun MdImage(block: MdBlock.Image, style: MarkdownStyle) {
         return
     }
     val bitmap by produceState<ImageBitmap?>(initialValue = null, path) {
-        value = withContext(Dispatchers.IO) { cachedAttachmentBitmap(path, 1280) }
+        value = withContext(Dispatchers.IO) { cachedImage(path, 1280) }
     }
     val image = bitmap
     if (image == null) {

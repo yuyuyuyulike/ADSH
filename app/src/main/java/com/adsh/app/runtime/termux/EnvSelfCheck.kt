@@ -204,7 +204,10 @@ object EnvSelfCheck {
                 "app targetSdk=" + context.applicationInfo.targetSdkVersion +
                     " deviceSdk=" + Build.VERSION.SDK_INT +
                     " domain=" + domain +
-                    " isExternalStorageManager=" + Environment.isExternalStorageManager(),
+                    // MANAGE_EXTERNAL_STORAGE 是 api 30 才有的（minSdk 26）：必须在版本闸里调，
+                    // 否则 api 26~29 的机器走到这一行就是 NoSuchMethodError（lint 的 NewApi 报的就是这里）
+                    " isExternalStorageManager=" + (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                        runCatching { Environment.isExternalStorageManager() }.getOrDefault(false)),
             )
             // 预载库的实际取法（Kotlin 侧直接问，比在 shell 里猜可靠）：LD_PRELOAD 为空时，
             // 写围栏与 termux-exec 都不会生效 —— 这是最该先看到的一条。

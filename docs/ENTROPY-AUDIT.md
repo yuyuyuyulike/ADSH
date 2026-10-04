@@ -496,6 +496,12 @@ R63 之后又动过 13 个源文件（R64–R75），所以这一轮把「还有
 | 文件内没人用的 private 声明 | `scripts/find-file-local-dead-code.py` | **0 候选** |
 | 未用 import | `scripts/remove-unused-imports.py` | **0 行** |
 | 未用资源 / 版本目录条目 | `scripts/find-unused-resources.py` / `find-unused-catalog-entries.py` | **0 / 0** |
+
+> 第 182 轮（R93）起上面那四个 Kotlin/资源脚本**合并重写**了：判据从「名字在全语料出现几次」
+> 换成词法级引用 + 作用域，工具是 `scripts/kt_source.py` + `scripts/deadcode.py`
+> （自测 `deadcode-selftest.py`、例外表 `deadcode-baseline.json`），
+> 资源那半是重写过的 `find-unused-resources.py`；语义级的交叉验证交给 Android Lint
+> （`./gradlew --offline :app:lintDebug`）。本表记录的是 R76 当时的结果，工具名保留原样。
 | C 静态符号 | `scripts/find-unused-c-symbols.py` | **0** |
 | 编译器**全部**警告（`--rerun-tasks`） | Gradle | 只有 2 条 deprecated，且代码里都带着「有意的，别修」的注释（`WEBP` 在 R 之前只有旧常量；`ViewCompat.getWindowInsetsController` 是 minSdk 26 上唯一的入口） |
 

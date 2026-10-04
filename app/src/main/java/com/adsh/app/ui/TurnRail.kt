@@ -859,7 +859,7 @@ private fun RailImageGallery(images: List<com.adsh.app.core.agent.ToolImage>, co
                 targetPx,
             ) {
                 value = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    cachedAttachmentBitmap(attachment.path, targetPx)
+                    cachedImage(attachment.path, targetPx)
                 }
             }
             val frame = Modifier

@@ -88,7 +88,7 @@ internal fun PermissionsCard() {
 /**
  * 一行权限：卡片体内的一行（分线分隔、没有底），整行可点。
  *
- * [granted] 为 null = 系统没给读取口，那一行写「去设置」—— 不编「已授权」。
+ * [granted] 为 null = 系统没给读取口，那一行写「去设置」—— 文案与状态读法都在 [PermissionActions.kt]。
  */
 @Composable
 private fun PermissionRow(label: String, granted: Boolean?, first: Boolean, onClick: () -> Unit) {
@@ -112,11 +112,7 @@ private fun PermissionRow(label: String, granted: Boolean?, first: Boolean, onCl
                 color = palette.labelPrimary,
             )
             Text(
-                text = when (granted) {
-                    true -> "已授权"
-                    false -> "未授权"
-                    null -> "去设置"
-                },
+                text = permissionStatusLabel(granted),
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
                 color = if (granted == true) palette.success else palette.labelTertiary,

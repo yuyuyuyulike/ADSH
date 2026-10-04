@@ -30,7 +30,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
@@ -169,7 +168,7 @@ private fun UserImageAttachment(
     val palette = LocalDshPalette.current
     val targetPx = if (compact) 160 else 960
     val bitmap by produceState<ImageBitmap?>(initialValue = null, attachment.path, targetPx) {
-        value = withContext(Dispatchers.IO) { cachedAttachmentBitmap(attachment.path, targetPx) }
+        value = withContext(Dispatchers.IO) { cachedImage(attachment.path, targetPx) }
     }
     val frame = Modifier
         .clip(RoundedCornerShape(16.dp))
@@ -290,39 +289,8 @@ private fun fileMetaText(attachment: com.adsh.app.core.agent.UserAttachment): St
 // 数字与单位之间没有空格）。以前这里另有一份「恒一位小数 + 带空格」的近似实现，
 // 同一个包里两个同名函数还会撞签名。
 
-/**
- * 附件封面缓存（按字节数计价，32MB）。
- *
- * 之前每次滑回视口都会重新 decodeFile 一遍 960px 的整图（一张 = 约 3.7MB 位图），
- * 上下滑动遇到图片就明显掉帧。dsh 的图片节点是「解码一次、按节点缓存」，
- * 这里等价地按 path@目标像素 缓存住。
- */
-private val attachmentBitmaps = object : android.util.LruCache<String, ImageBitmap>(32 * 1024 * 1024) {
-    override fun sizeOf(key: String, value: ImageBitmap): Int =
-        value.width.coerceAtLeast(1) * value.height.coerceAtLeast(1) * 4
-}
-
-/** 带缓存的附件封面解码 */
-internal fun cachedAttachmentBitmap(path: String, targetPx: Int): ImageBitmap? {
-    val key = path + "@" + targetPx
-    attachmentBitmaps.get(key)?.let { return it }
-    val decoded = loadAttachmentBitmap(path, targetPx) ?: return null
-    attachmentBitmaps.put(key, decoded)
-    return decoded
-}
-
-/** 附件封面：按目标像素做 2 的幂下采样（图片很大时避免整张解码进内存） */
-private fun loadAttachmentBitmap(path: String, targetPx: Int): ImageBitmap? = runCatching {
-    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    android.graphics.BitmapFactory.decodeFile(path, bounds)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
-    var sample = 1
-    while (bounds.outWidth / (sample * 2) >= targetPx && bounds.outHeight / (sample * 2) >= targetPx) {
-        sample *= 2
-    }
-    val options = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
-    android.graphics.BitmapFactory.decodeFile(path, options)?.asImageBitmap()
-}.getOrNull()
+// 附件封面的解码与缓存搬到了 ui/ImageDecode.kt（第 182 轮熵减）：同一个 LruCache 与同一份
+// 下采样实现，Composer 的缩略图 / 消息里的图片 / 文件预览 / Markdown 图片四处共用一份。
 
 /** dsh 的 .xzv4MW_timeStart：13/24 三级色，右侧 12px 间距 */
 @Composable

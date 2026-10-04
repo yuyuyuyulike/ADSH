@@ -1,6 +1,5 @@
 package com.adsh.app.ui
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -142,9 +141,10 @@ private fun ImagePreview(path: String) {
         failure = null
         scale = 1f
         offset = Offset.Zero
-        val result = withContext(Dispatchers.IO) { runCatching { decodeDownsampled(path) } }
-        bitmap = result.getOrNull()
-        failure = result.exceptionOrNull()?.message
+        // 长边压到 2048 以内（共用实现，见 ui/ImageDecode.kt）：一次性的原图预览不进缓存
+        val decoded = withContext(Dispatchers.IO) { decodeSampledImage(path, PREVIEW_MAX_PX) }
+        bitmap = decoded
+        failure = if (decoded == null) "格式不支持，或图片太大内存不足" else null
     }
 
     val image = bitmap
@@ -580,25 +580,8 @@ private fun CenteredNote(text: String) {
     }
 }
 
-/** 下采样解码：长边不超过 2048，避免大图 OOM */
-private fun decodeDownsampled(path: String): ImageBitmap? {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeFile(path, bounds)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-        throw IllegalStateException("不是可识别的图片格式")
-    }
-    var sample = 1
-    while (bounds.outWidth / (sample * 2) >= 2048 || bounds.outHeight / (sample * 2) >= 2048) sample *= 2
-    val options = BitmapFactory.Options().apply {
-        inSampleSize = sample
-        inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
-    }
-    return try {
-        BitmapFactory.decodeFile(path, options)?.asImageBitmap()
-    } catch (oom: OutOfMemoryError) {
-        throw IllegalStateException("图片太大，内存不足")
-    }
-}
+/** 原图预览的最长边上限（下采样解码见 ui/ImageDecode.kt：全套只有那一份实现） */
+private const val PREVIEW_MAX_PX = 2048
 
 /** 读文本：限长 + 二进制探测（含 NUL 就当作二进制，不再吐乱码） */
 private fun readTextPreview(path: String): Pair<String, String?> {

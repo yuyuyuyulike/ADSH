@@ -391,23 +391,53 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (workspace != null) bindFolder(workspace.path)
         val messages = knownMessages ?: repository.messages(id)
         // 统计随会话持久化：切回来能看到上次的用时/用量
-        val stats = repository.statsOf(id)
-        // 一次 update 摆好这一条会话的**视图**：会话级字段从库里填，轮内字段整块复位（见 resetTurnFields），
-        // 最后把「这条会话正在跑的那一轮」盖回来 —— 正在跑的那一份住在 liveRuns 里，跟视图无关，
-        // 所以这里既不需要「切走时抓帧」也不会覆盖它（第 181 轮换掉的抓帧模型，见 LiveRunState.kt）。
-        _state.update { previous ->
-            previous.copy(
-                conversationId = id,
-                messages = messages,
+        showConversationFrame(
+            id = id,
+            messages = messages,
+            meta = ConversationFrame(
                 workspaceId = conversation?.workspaceId,
-                stats = stats,
+                stats = repository.statsOf(id),
                 planMode = conversation?.planMode == true,
-                pendingAttachments = emptyList(),
-                queuedCount = queueOf(id).size,
-            ).resetTurnFields(queueOf(id).size).withLiveRun(liveRuns[id])
-        }
+            ),
+        )
         // 这条会话排着的消息（在别的会话跑着的时候排下的）：回到它、而且现在没人在跑，就接着发
         flushQueue(id)
+    }
+
+    /** 切会话时要一起换掉的**会话级**字段（正文之外的那几个） */
+    private data class ConversationFrame(
+        val workspaceId: Long?,
+        val stats: SessionStats,
+        val planMode: Boolean,
+    )
+
+    /**
+     * 把「现在看这条会话」这一帧摆上去 —— 切会话的两条路（缓存命中 / 读库）**只有这一处**写状态。
+     *
+     * 顺序是固定的三步（第 181 轮定下的口径，见 LiveRunState.kt）：
+     *  1. 会话级字段：正文，以及 [meta] 里的工作区 / 统计 / 计划模式（null = 只换正文 ——
+     *     缓存命中那条快路径先抢一帧，统计与工作区由随后的 openConversation 带着真值补齐）；
+     *  2. 轮内字段整块复位（sending / 流式尾巴 / 工具行 / 重连条 / 队列条数）；
+     *  3. 把「这条会话正在跑的那一轮」盖回来（住在 liveRuns 里，跟视图无关 —— 所以复位不会
+     *     把在跑的那一轮抹掉，这正是「切走再切回来不许停」的实现）。
+     */
+    private fun showConversationFrame(id: Long, messages: List<com.adsh.app.core.data.MessageEntity>, meta: ConversationFrame? = null) {
+        _state.update { previous ->
+            val base = if (meta == null) {
+                previous.copy(conversationId = id, messages = messages)
+            } else {
+                previous.copy(
+                    conversationId = id,
+                    messages = messages,
+                    workspaceId = meta.workspaceId,
+                    stats = meta.stats,
+                    planMode = meta.planMode,
+                )
+            }
+            base.copy(pendingAttachments = emptyList(), queuedCount = queueOf(id).size)
+                .resetTurnFields(queueOf(id).size)
+                .withLiveRun(liveRuns[id])
+        }
     }
 
     /** 把工作区绑定切到某个文件夹（工具沙箱 / bash 的 cwd 都跟着走） */
@@ -548,11 +578,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // 正在跑的那条切回来时，sending / 流式尾巴 / 工具行 / 岛一起亮，中间没有一帧是「空的」。
             // 以前这里只换正文、随后靠 restoreLiveRun 补 —— 而补之前 openConversation 会先复位一次，
             // 复位与补之间那一帧正是用户眼里的「切一下它停了」（第 181 轮修）。
-            _state.update { previous ->
-                previous.copy(conversationId = id, messages = cached)
-                    .resetTurnFields(queueOf(id).size)
-                    .withLiveRun(liveRuns[id])
-            }
+            showConversationFrame(id, cached)
             viewModelScope.launch {
                 openConversation(id, knownMessages = cached)
                 refreshContext()
