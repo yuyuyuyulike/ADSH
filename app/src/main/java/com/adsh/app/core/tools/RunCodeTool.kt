@@ -101,8 +101,8 @@ object RunCodeTool : Tool {
         val cancelProbe = { job?.isActive == false }
         val appContext = ctx.appContext
             ?: return ToolResult.Error("run_code 需要应用上下文才能把程序放进独立进程（ToolContext.appContext 为空）")
-        // 工具在**主进程**执行（ToolContext 只在这里有效），程序在 :ptc 进程跑 —— 两边靠 Messenger
-        // 做同步 RPC，与 dsh 的「子进程 ↔ 父进程」同形（见 core/ptc/PtcProcess 的 KDoc）
+        // 工具在**主进程**执行（ToolContext 只在这里有效），程序在 :ptc 进程跑 —— 两边靠 LocalSocket
+        // 上的「4 字节长度 + JSON」帧做同步 RPC，与 dsh 的「子进程 ↔ 父进程」同形（见 core/ptc/PtcChannel）
         val runner = PtcToolRunner(ToolRegistry.bindings, ctx, cancelProbe)
         // dsh 的 clampTimeout：模型没给就用默认值 12e4，给了就夹在 (0, maxTimeoutMs]。
         // 预算**包含**程序里等工具与等审批的时间（dsh 的 schema 原文就这么写）—— 到点由宿主

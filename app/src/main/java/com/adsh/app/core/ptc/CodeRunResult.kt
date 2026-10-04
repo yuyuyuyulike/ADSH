@@ -8,7 +8,9 @@ package com.adsh.app.core.ptc
  *
  * [failureKind] 是 dsh 失败信封里那一段（`code run failed (<kind>): <message>` 的 kind）：
  *  - `timeout`：到点了（泵循环优雅收尾，或宿主直接杀进程 —— 见 [PtcProcess]）；
- *  - `worker-exit`：`:ptc` 进程没了（崩了 / 被系统杀了）；
+ *  - `worker-exit`：`:ptc` 进程没了（崩了 / 被系统杀了），或控制通道断了
+ *    （dsh 原文：control channel ended before the program settled）；
+ *  - `protocol`：通道上的帧不合法（超限 / 空帧 / 不是 JSON / 调用 id 对不上 / 未声明的工具名）；
  *  - `abort`：用户按了停止；
  *  - `exception`：程序自己抛了（含语法错误）；
  *  - null：程序正常结束。

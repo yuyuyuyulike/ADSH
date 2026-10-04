@@ -1,53 +1,75 @@
 package com.adsh.app.core.ptc
 
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+
 /**
- * `:ptc` 进程与主进程之间的协议（第 183 轮）。
+ * `:ptc` 进程与主进程之间的**帧词汇表**与**到点判据**（第 96 轮建，第 184 轮换通道）。
  *
- * 为什么要有这一段：dsh 的 `dsh-ptc-runtime-node` 把程序放进**独立子进程**跑，父进程通过
- * 管道 RPC 处理程序里的 `tools.x()`，并在 `setTimeout(timeoutMs)` 到点后
- * `handle.terminate()` **杀掉子进程**。ADSH 用安卓自己的进程模型做同一件事：
- * 程序跑在 `android:process=":ptc"` 的 [PtcWorkerService] 里，工具执行留在主进程
- * （[PtcToolRunner]），两边用 [android.os.Messenger] 传消息。到点由主进程
- * `Process.killProcess(workerPid)` —— 同步死循环当场结束，**这是 dsh 的 terminate 的等价物**。
+ * 帧走 [PtcChannel]（4 字节大端长度 + UTF-8 JSON 的字节流），形状与 dsh 的
+ * `dsh-ptc-runtime-node` 一一对应：
+ *
+ * | 帧 | 方向 | dsh 对应 |
+ * |---|---|---|
+ * | [TYPE_READY] | worker → 宿主 | 子进程起来后的第一帧（`process.js`：`channel.send({type:"ready"})`）；ADSH 多带一个 `pid` |
+ * | [TYPE_BOOT] | 宿主 → worker | `{type:"boot", data}`：程序正文、工具名、时间预算 |
+ * | [TYPE_CALL] | worker → 宿主 | `{type:"call", id, global, name, args}`：一次 `await tools.x()` |
+ * | [TYPE_REPLY] | 宿主 → worker | `{type:"reply", id, ok, value}`：那一次调用的信封 |
+ * | [TYPE_DONE] | worker → 宿主 | `{type:"done", value}` 或 `{type:"done", error:{kind,message}}` |
+ *
+ * ADSH 的两处差异（都在 KDoc 里写明，不藏着）：`pid` 是安卓特有的（没有「spawn 返回 pid」，
+ * 宿主要靠它才能在到点时杀进程）；`all` 是批量调用的标记（dsh 把 `Promise.all` 拆成
+ * 若干个独立 `call`，ADSH 的并发闸门与子调用轨迹按批处理，见 [PtcToolRunner.callAll]）。
  */
 internal object PtcProtocol {
 
-    /** 宿主 → worker：跑一段程序（`replyTo` = 宿主的 Messenger） */
-    const val MSG_RUN = 1
+    const val TYPE = "type"
+    const val TYPE_READY = "ready"
+    const val TYPE_BOOT = "boot"
+    const val TYPE_CALL = "call"
+    const val TYPE_REPLY = "reply"
+    const val TYPE_DONE = "done"
 
-    /** worker → 宿主：我的 pid（宿主要用它来杀进程；收到 RUN 后第一件事就是发它） */
-    const val MSG_PID = 2
+    const val FIELD_PID = "pid"
+    const val FIELD_PROGRAM = "program"
+    const val FIELD_TOOLS = "tools"
+    const val FIELD_TIMEOUT_MS = "timeoutMs"
+    const val FIELD_ID = "id"
+    const val FIELD_ALL = "all"
+    const val FIELD_NAME = "name"
+    const val FIELD_ARGS = "args"
+    const val FIELD_WIRE = "wire"
+    const val FIELD_VALUE = "value"
+    const val FIELD_ERROR = "error"
+    const val FIELD_KIND = "kind"
+    const val FIELD_MESSAGE = "message"
+    const val FIELD_LOGS = "logs"
+    const val FIELD_DURATION_MS = "durationMs"
+    const val FIELD_TOOL_CALLS = "toolCalls"
 
-    /** worker → 宿主：执行一次 `await tools.x()`，**等宿主回信封**（同步 RPC） */
-    const val MSG_CALL = 3
-
-    /** worker → 宿主：执行一次 `Promise.all([...])` */
-    const val MSG_CALL_ALL = 4
-
-    /** 宿主 → worker：信封（对应上面的请求 id） */
-    const val MSG_RESULT = 5
-
-    /** worker → 宿主：程序跑完了 */
-    const val MSG_DONE = 6
-
-    const val KEY_REQUEST_ID = "requestId"
-    const val KEY_PROGRAM = "program"
-    const val KEY_TOOL_NAMES = "toolNames"
-    const val KEY_TIMEOUT_MS = "timeoutMs"
-    const val KEY_NAME = "name"
-    const val KEY_ARGS = "args"
-    const val KEY_PAYLOAD = "payload"
-    const val KEY_WIRE = "wire"
-    const val KEY_PID = "pid"
-    const val KEY_VALUE_JSON = "valueJson"
-    const val KEY_LOGS = "logs"
-    const val KEY_ERROR = "error"
-    const val KEY_DURATION_MS = "durationMs"
-    const val KEY_TOOL_CALLS = "toolCalls"
-    const val KEY_FAILURE_KIND = "failureKind"
+    /** 通道在程序结算之前断掉 —— dsh `JsonChannel.onEnd` 的原文 */
+    const val CHANNEL_ENDED = "control channel ended before the program settled"
 
     /** 心跳粒度：到点判定的最坏延迟（也要够小，「停止」才跟手） */
     const val TICK_MS = 100L
+
+    fun typeOf(frame: JsonObject?): String? = text(frame, TYPE)
+
+    /** 取字符串字段：缺字段 / JSON null / 不是标量都算没有（帧来自另一个进程，不能假定形状） */
+    fun text(frame: JsonObject?, key: String): String? =
+        frame?.get(key)?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
+
+    fun long(frame: JsonObject?, key: String): Long? = text(frame, key)?.toLongOrNull()
+
+    fun int(frame: JsonObject?, key: String): Int? = text(frame, key)?.toIntOrNull()
+
+    fun flag(frame: JsonObject?, key: String): Boolean = text(frame, key) == "true"
+
+    fun strings(frame: JsonObject?, key: String): List<String> =
+        (frame?.get(key) as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
 }
 
 /** 一次 `:ptc` 执行的收尾方式 */
@@ -69,12 +91,13 @@ internal sealed interface PtcWaitOutcome {
  * 等一次 `:ptc` 执行收尾 —— **纯调度**，桌面上可测（见 PtcDeadlineTest）。
  *
  * 与 dsh 的对应关系：dsh 在 `setTimeout(spec.timeoutMs)` 里 `controller.abort(...)` 再
- * `handle.terminate()`；这里同一个循环里判三件事：结果回来了没有、到点没有、用户停没停。
- * 到点/停止都调 [kill]（主进程杀 `:ptc` 进程）—— 这是**唯一**能真正打断同步死循环的手段。
+ * `handle.terminate()`；这里同一个循环里判四件事：结果回来了没有、worker 还在不在、用户停没停、
+ * 到点没有。到点/停止都调 [kill]（主进程杀 `:ptc` 进程）—— 这是**唯一**能真正打断
+ * QuickJS 同步死循环的手段（第 183 轮真机事故，见 [QuickJsRuntime]）。
  *
  * @param finished worker 是否已把结果交回来（非阻塞地看一眼）
  * @param cancelRequested 用户是否按了停止（每 tick 问一次）
- * @param workerAlive worker 进程是否还活着（binder 断了 / 已经确认死亡 = false）
+ * @param workerAlive worker 进程是否还活着（通道断了 / 已经确认死亡 = false）
  * @param kill 杀 worker 进程（`Process.killProcess(pid)`）
  */
 internal fun awaitPtcWorker(

@@ -187,7 +187,7 @@ internal class PtcToolRunner(
 
     /** 被用户中断的子调用：给程序一个「已停止」的失败信封（dsh 的 code = interrupted） */
     private fun interruptedOutcome(name: String, rawArgs: String): CallOutcome = CallOutcome(
-        wire = errorWire(
+        wire = toolErrorWire(
             name,
             rawArgs,
             "已停止：用户中断了这一轮",
@@ -229,7 +229,7 @@ internal class PtcToolRunner(
             // 子调用的正文（界面、轨迹、落库）同样过一遍脱敏；wire 保持原样给程序用
             val message = com.adsh.app.core.tools.SecretRedaction.redact(rawMessage)
             return CallOutcome(
-                wire = errorWire(name, rawArgs, rawMessage, retryable, code),
+                wire = toolErrorWire(name, rawArgs, rawMessage, retryable, code),
                 text = message,
                 ok = false,
             )
@@ -260,34 +260,37 @@ internal class PtcToolRunner(
         }
     }
 
-    /**
-     * 失败时的 wire 形态：带上 toolName / 参数原文 / retryable / code，
-     * 这样程序没 catch 时，最外层也能说清楚「哪个工具、什么参数、原始错误」（dsh 的 ToolCallError），
-     * 而程序 catch 到之后还能按 code 分支（dsh 的 WebError.code 就是这么用的）。
-     */
-    private fun errorWire(
-        name: String,
-        rawArgs: String,
-        message: String,
-        retryable: Boolean,
-        code: String?,
-    ): String = buildString {
-        append("{\"__error\":true,\"toolName\":\"").append(jsStringEscape(name))
-        append("\",\"args\":\"").append(jsStringEscape(rawArgs.take(600)))
-        append("\",\"message\":\"").append(jsStringEscape(message))
-        append("\",\"retryable\":").append(retryable)
-        append(",\"code\":")
-        if (code == null) append("null") else append('"').append(jsStringEscape(code)).append('"')
-        append('}')
-    }
-
     private companion object {
         /** 中断看门狗的轮询粒度：正在跑的子调用最多迟这么久发现「用户停了」 */
         const val CANCEL_PROBE_MS = 50L
     }
 }
 
-/** JS 字符串转义（errorWire 与给程序注入工具名列表共用一份，别再各写一遍） */
+/**
+ * 失败时的 wire 形态：带上 toolName / 参数原文 / retryable / code，
+ * 这样程序没 catch 时，最外层也能说清楚「哪个工具、什么参数、原始错误」（dsh 的 ToolCallError），
+ * 而程序 catch 到之后还能按 code 分支（dsh 的 WebError.code 就是这么用的）。
+ *
+ * 三个调用方共用一份：工具失败（[PtcToolRunner]）、用户中断（同上）、控制通道断掉
+ * （[PtcWorkerService] 要拿它把还等着的引擎线程放行）。
+ */
+internal fun toolErrorWire(
+    name: String,
+    rawArgs: String,
+    message: String,
+    retryable: Boolean = false,
+    code: String? = null,
+): String = buildString {
+    append("{\"__error\":true,\"toolName\":\"").append(jsStringEscape(name))
+    append("\",\"args\":\"").append(jsStringEscape(rawArgs.take(600)))
+    append("\",\"message\":\"").append(jsStringEscape(message))
+    append("\",\"retryable\":").append(retryable)
+    append(",\"code\":")
+    if (code == null) append("null") else append('"').append(jsStringEscape(code)).append('"')
+    append('}')
+}
+
+/** JS 字符串转义（toolErrorWire 与给程序注入工具名列表共用一份，别再各写一遍） */
 internal fun jsStringEscape(s: String): String = buildString(s.length + 16) {
     s.forEach { c ->
         when (c) {
