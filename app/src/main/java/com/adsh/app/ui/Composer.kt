@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -40,8 +41,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -980,31 +979,38 @@ private fun WorkspaceChipRow(
 private fun isImagePath(path: String): Boolean =
     runCatching { imageMediaTypeOf(File(path)) != null }.getOrDefault(false)
 
-/** 附件卡片：封面（图片缩略图 / 文件图标）+ 文件名 + 移除（dsh 的 attachment chip） */
+/**
+ * 待发附件：**图片**与**文件**是两种形状（各自向参考实现看齐）。
+ *
+ *  - 图片：只显示缩略图，**不带文件名**，移除的叉压在图的右上角（dsh 的图片附件）；
+ *  - 文件：类型图标（与文件浏览里同一个 [FileTypeIcon]）+ 文件名 + 大小，
+ *    右上角一枚深色圆形叉徽标 —— 形状照 DeepSeek app 的附件卡片。
+ *
+ * 是不是图片用**魔数**判定（与发出去之后消息里那一行同一套），不看扩展名：
+ * 否则会出现「输入框里是图片缩略图、发出去变成文件卡片」这种前后不一致。
+ */
 @Composable
 private fun AttachmentCard(path: String, onRemove: (String) -> Unit) {
-    val palette = LocalDshPalette.current
-    val name = remember(path) { File(path).name }
-    // 是不是图片用**魔数**判定（与发出去之后消息里那一行同一套），不看扩展名：
-    // 否则会出现「输入框里是图片缩略图、发出去变成文件卡片」这种前后不一致
-    val isImage = remember(path) { isImagePath(path) }
-    val thumbnail by produceState<ImageBitmap?>(initialValue = null, path, isImage) {
-        value = if (isImage) withContext(Dispatchers.IO) { decodeThumbnail(path) } else null
+    if (remember(path) { isImagePath(path) }) {
+        ImageAttachment(path, onRemove)
+    } else {
+        FileAttachment(path, onRemove)
     }
-    Row(
-        modifier = Modifier
-            .height(56.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(palette.selector)
-            .padding(DshSpacing.Md),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(DshSpacing.Xl),
-    ) {
+}
+
+/** 图片附件：缩略图 + 压在右上角的叉（没有文件名 —— dsh 那边也没有） */
+@Composable
+private fun ImageAttachment(path: String, onRemove: (String) -> Unit) {
+    val palette = LocalDshPalette.current
+    val thumbnail by produceState<ImageBitmap?>(initialValue = null, path) {
+        value = withContext(Dispatchers.IO) { decodeThumbnail(path) }
+    }
+    Box(Modifier.size(72.dp)) {
         Box(
             modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(9.dp))
-                .background(palette.menu),
+                .fillMaxSize()
+                .clip(RoundedCornerShape(12.dp))
+                .background(palette.selector),
             contentAlignment = Alignment.Center,
         ) {
             val image = thumbnail
@@ -1015,40 +1021,86 @@ private fun AttachmentCard(path: String, onRemove: (String) -> Unit) {
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
-            } else {
-                Icon(
-                    Icons.Outlined.Description,
-                    contentDescription = null,
-                    tint = palette.labelTertiary,
-                    modifier = Modifier.size(20.dp),
+            }
+        }
+        RemoveBadge(
+            onRemove = { onRemove(path) },
+            modifier = Modifier.align(Alignment.TopEnd),
+        )
+    }
+}
+
+/** 文件附件：类型图标 + 文件名 + 大小（右上角同样是那枚叉徽标） */
+@Composable
+private fun FileAttachment(path: String, onRemove: (String) -> Unit) {
+    val palette = LocalDshPalette.current
+    val file = remember(path) { File(path) }
+    val size = remember(path) { runCatching { file.length() }.getOrDefault(0L) }
+    Box(Modifier.widthIn(max = 240.dp)) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(palette.selector)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // 与工作区文件浏览同一个图标（按类型给角标：PDF / MD / PY …）
+            FileTypeIcon(name = file.name, size = 40.dp)
+            Column(modifier = Modifier.weight(1f, fill = false)) {
+                Text(
+                    text = file.name,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = palette.labelPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = fileSizeText(size),
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp,
+                    color = palette.labelTertiary,
+                    maxLines = 1,
                 )
             }
         }
-        Text(
-            text = name,
-            modifier = Modifier.widthIn(max = 130.dp),
-            fontSize = 13.sp,
-            lineHeight = 18.sp,
-            color = palette.labelPrimary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        RemoveBadge(
+            onRemove = { onRemove(path) },
+            modifier = Modifier.align(Alignment.TopEnd),
         )
-        Box(
-            modifier = Modifier
-                .size(28.dp)
-                .clip(CircleShape)
-                .dshClickable(interactionSource = dshInteraction()) { onRemove(path) },
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                DshIcons.CloseFill,
-                contentDescription = "移除附件",
-                tint = palette.labelTertiary,
-                modifier = Modifier.size(14.dp),
-            )
-        }
     }
 }
+
+/**
+ * 移除徽标：一枚深色圆底 + 白色叉，压在卡片的右上角上（DeepSeek app 的附件卡片就这么画的）。
+ *
+ * 深色用「黑 55%」而不是某个主题令牌：它在浅色卡片和深色卡片上都得是**深底白叉**
+ * （用 labelPrimary 这类跟着主题反转的令牌，深色主题下会变成白圆底）。
+ */
+@Composable
+private fun RemoveBadge(onRemove: () -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .offset(x = 6.dp, y = (-6).dp)
+            .size(22.dp)
+            .clip(CircleShape)
+            .background(REMOVE_BADGE_BACKGROUND)
+            .dshClickable(interactionSource = dshInteraction()) { onRemove() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            DshIcons.CloseFill,
+            contentDescription = "移除附件",
+            tint = Color.White,
+            modifier = Modifier.size(12.dp),
+        )
+    }
+}
+
+/** 移除徽标的底色：黑 55%（深浅两套主题下都是「深底白叉」） */
+private val REMOVE_BADGE_BACKGROUND = Color(0x8C000000)
 
 /** 生成附件封面：图片按 2 的幂下采样解码；非图片返回 null（用文件图标兜底） */
 private const val THUMB_TARGET_PX = 144

@@ -1,11 +1,5 @@
 package com.adsh.app.ui
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -18,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
@@ -30,11 +23,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -84,55 +72,6 @@ private fun terminalSettleOf(output: String?, running: Boolean, error: Boolean):
 }
 
 /**
- * dsh 的 StateDot：实心态是 10px 槽里一枚 6px 的圆核（done 绿 / error 红），
- * ongoing 是 14px 的旋转弧（25% 透明度的整圈轨道 + 一段 72° 的弧，1.5s 线性循环）。
- */
-@Composable
-private fun StateDot(state: String, modifier: Modifier = Modifier) {
-    val palette = LocalDshPalette.current
-    if (state == "ongoing") {
-        val transition = rememberInfiniteTransition(label = "stateDot")
-        val angle by transition.animateFloat(
-            initialValue = 0f,
-            targetValue = 360f,
-            animationSpec = infiniteRepeatable(tween(1500, easing = LinearEasing)),
-            label = "stateDotSpin",
-        )
-        Canvas(modifier.size(14.dp)) {
-            val stroke = 1.2.dp.toPx()
-            val topLeft = Offset(stroke / 2f, stroke / 2f)
-            val arcSize = Size(size.width - stroke, size.height - stroke)
-            drawArc(
-                color = palette.labelTertiary.copy(alpha = 0.25f),
-                startAngle = 0f,
-                sweepAngle = 360f,
-                useCenter = false,
-                topLeft = topLeft,
-                size = arcSize,
-                style = Stroke(width = stroke, cap = StrokeCap.Round),
-            )
-            rotate(angle) {
-                drawArc(
-                    color = palette.labelTertiary,
-                    startAngle = 0f,
-                    // dsh 的 stroke-dasharray 12/周长≈59.7 ≈ 72°
-                    sweepAngle = 72f,
-                    useCenter = false,
-                    topLeft = topLeft,
-                    size = arcSize,
-                    style = Stroke(width = stroke, cap = StrokeCap.Round),
-                )
-            }
-        }
-    } else {
-        val color = if (state == "error") palette.errorLabel else palette.success
-        Box(modifier.size(10.dp), contentAlignment = Alignment.Center) {
-            Box(Modifier.size(6.dp).clip(CircleShape).background(color))
-        }
-    }
-}
-
-/**
  * bash 工具行的展开卡（dsh 的 TerminalBlock，聊天行变体）。
  *
  * @param command 命令原文（横幅里并成单行、超出省略）
@@ -168,7 +107,7 @@ internal fun RailTerminalBlock(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(Modifier.size(14.dp), contentAlignment = Alignment.CenterStart) {
-                StateDot(if (running) "ongoing" else if (settle.failed || error) "error" else "done")
+                DshStateDot(if (running) "ongoing" else if (settle.failed || error) "error" else "done")
             }
             // 沟槽凑满 30dp：8(卡内边距) + 14(点槽) + 8 = 提示符起点
             Spacer(Modifier.width(8.dp))

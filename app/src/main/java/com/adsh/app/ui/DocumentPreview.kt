@@ -183,7 +183,7 @@ private fun ImagePreview(path: String) {
                     },
             )
             Text(
-                text = image.width.toString() + " × " + image.height + "  ·  " + formatSize(File(path).length()),
+                text = image.width.toString() + " × " + image.height + "  ·  " + fileSizeText(File(path).length()),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = DshSpacing.Xxl)
@@ -556,7 +556,7 @@ private fun UnsupportedPreview(path: String, note: String? = null) {
         Text(file.name, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = palette.labelPrimary)
         Spacer(Modifier.height(4.dp))
         Text(
-            text = note ?: ("这种类型不支持预览 · " + formatSize(file.length())),
+            text = note ?: ("这种类型不支持预览 · " + fileSizeText(file.length())),
             fontSize = 12.sp,
             color = palette.labelTertiary,
         )
@@ -621,15 +621,11 @@ private fun readTextPreview(path: String): Pair<String, String?> {
     }
     val text = String(bytes, 0, read, Charsets.UTF_8)
     val note = if (length > read) {
-        "仅显示前 " + formatSize(read.toLong()) + "，文件共 " + formatSize(length)
+        "仅显示前 " + fileSizeText(read.toLong()) + "，文件共 " + fileSizeText(length)
     } else {
-        formatSize(length) + "  ·  " + path
+        fileSizeText(length) + "  ·  " + path
     }
     return text to note
 }
 
-private fun formatSize(bytes: Long): String = when {
-    bytes >= 1024L * 1024L -> String.format("%.1f MB", bytes / 1024.0 / 1024.0)
-    bytes >= 1024L -> String.format("%.1f KB", bytes / 1024.0)
-    else -> bytes.toString() + " B"
-}
+// 大小文案统一走 ui/FileSizeText.kt 的 fileSizeText（dsh 的 fileSizeText 规则；附件卡片用同一份）

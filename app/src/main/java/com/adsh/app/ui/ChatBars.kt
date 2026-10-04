@@ -1,5 +1,9 @@
 package com.adsh.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -40,6 +44,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -158,13 +163,16 @@ internal fun QueuedBar(count: Int, onClear: () -> Unit) {
 }
 
 /**
- * 掉线重连条（dsh 的 ConnectionIndicator：断线 / 连接中 / 已恢复三态）。
+ * 掉线重连条（dsh 的 ConnectionIndicator：断开 / 连接中 / 已恢复三态）。
  *
- * dsh 的形状是「警告色图标 + 文案」的行内控件，**断开与连接中两个状态都可以点**（点了立刻重连），
- * 已恢复是成功色、不可点。这里照做：
- *  - 正在重连：warning 色的刷新图形 + 「连接已断开，正在重连（第 N 次）」+ 一至三个点每 500ms
- *    推进（dsh 的 ongoing loader 就是这个 500ms 节奏，与重试时序无关）；整条可点。
- *  - 已恢复：成功色的对勾 + 「连接已恢复」。
+ * 形状与令牌**逐条**取自 dsh 的 `ConnectionIndicator.module.css`：
+ *  - 28px 高、8px 圆角（`--dsw-radius-sm`）、左右各 8px 内边距、图标与文案间距 4px；
+ *  - 12px / 字重 500 / 行高 18px 的字；
+ *  - warning 态 = `state-warn-tertiary` 底 + `state-warn-label` 字 + 同色 20% 描边（可点）；
+ *    success 态 = `state-success-tertiary` 底 + `state-success-primary` 字 + 同色 20% 描边（不可点）；
+ *  - 图标：连接中 = dsh 的 `StateDot ongoing`（转圈），断开 = 刷新图形，已恢复 = 对勾；
+ *  - **文案自己写着动作**（dsh 没有额外的「点击重试」提示），连接中的点接在文案后面、
+ *    宽度固定 1em（dsh 的 `.dots`）—— 点长出来时整条不会跟着抖。
  */
 @Composable
 internal fun ConnectionBar(
@@ -174,15 +182,23 @@ internal fun ConnectionBar(
 ) {
     val palette = LocalDshPalette.current
     val recovered = state is ConnectionState.Recovered
+    val connecting = state is ConnectionState.Reconnecting
     val tint = if (recovered) palette.success else palette.warnLabel
+    val background = if (recovered) palette.successBg else palette.warnBg
+    val shape = RoundedCornerShape(8.dp)          // dsh 的 --dsw-radius-sm = 8px
+    // 文案自己写着动作（dsh 的三条文案同理），所以不需要另加「点击重试」那一行
     val label = when (state) {
         is ConnectionState.Recovered -> "连接已恢复"
-        is ConnectionState.Reconnecting -> "连接已断开，正在重连（第 " + state.attempt + " 次）"
+        is ConnectionState.Disconnected -> "连接已断开，点此重试"
+        is ConnectionState.Reconnecting -> "正在重连（第 " + state.attempt + " 次）"
         ConnectionState.Idle -> ""
     }
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(100.dp))
+            .height(28.dp)
+            .clip(shape)
+            .background(background)
+            .border(1.dp, tint.copy(alpha = 0.2f), shape)
             .then(
                 if (recovered) {
                     Modifier
@@ -190,35 +206,35 @@ internal fun ConnectionBar(
                     Modifier.dshClickable(interactionSource = dshInteraction(), onClick = onRetry)
                 },
             )
-            .padding(horizontal = DshSpacing.Lg, vertical = DshSpacing.Xs),
+            .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(DshSpacing.Lg),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Icon(
-            if (recovered) DshIcons.Check else DshIcons.Refresh,
-            contentDescription = null,
-            tint = tint,
-            modifier = Modifier.size(14.dp),
-        )
-        Text(text = label, fontSize = 12.sp, lineHeight = 18.sp, color = tint, maxLines = 1)
-        if (!recovered) {
-            LoadingDots(tint)
-            // 失败原因（dsh 的 outage label 由持有方提供）：一行、超出省略 ——
-            // 没有它用户只知道「断了」，分不清超时 / DNS / 服务端 5xx
-            val reason = (state as? ConnectionState.Reconnecting)?.message.orEmpty()
-            if (reason.isNotBlank()) {
-                Text(
-                    text = reason,
-                    modifier = Modifier.weight(1f, fill = false),
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp,
-                    color = palette.labelCaption,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Text("点击立即重试", fontSize = 12.sp, lineHeight = 18.sp, color = palette.labelCaption, maxLines = 1)
+        when {
+            recovered -> Icon(
+                DshIcons.Check,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(14.dp),
+            )
+            connecting -> DshStateDot("ongoing")
+            else -> Icon(
+                DshIcons.Refresh,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(14.dp),
+            )
         }
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            lineHeight = 18.sp,
+            fontWeight = FontWeight.Medium,
+            color = tint,
+            maxLines = 1,
+        )
+        // 连接中的点：宽度固定（dsh 的 .dots 是 1em），所以点长出来时这条不会抖
+        if (connecting) LoadingDots(tint)
     }
 }
 
@@ -487,7 +503,13 @@ internal fun ChatBottomBars(
     // 掉线重连条（dsh 的 ConnectionIndicator）：断线 / 连接中 / 已恢复三态，
     // 钉在输入框上面那一列（与 TurnStatus 同一个位置）。它有话要说时**替换**掉
     // TurnStatus 的那一行 —— 两行一起挂着反而看不清现在到底是「在跑」还是「断了」。
-    if (state.connection !is ConnectionState.Idle) {
+    // 出现 / 消失都淡入淡出 150ms（dsh 的 `indicator-enter` / `.leaving` 也是 150ms）：
+    // 退场期间内容还留着（AnimatedVisibility 会保留最后一帧），所以不会「啪」地消失。
+    AnimatedVisibility(
+        visible = state.connection !is ConnectionState.Idle,
+        enter = fadeIn(tween(150)),
+        exit = fadeOut(tween(150)),
+    ) {
         ConnectionBar(
             state = state.connection,
             modifier = Modifier.padding(start = DshSpacing.Section, bottom = DshSpacing.Xs),

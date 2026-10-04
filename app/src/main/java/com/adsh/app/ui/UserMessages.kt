@@ -286,20 +286,9 @@ private fun fileMetaText(attachment: com.adsh.app.core.agent.UserAttachment): St
     return listOf(extension, fileSizeText(attachment.bytes)).filter { it.isNotEmpty() }.joinToString(" ")
 }
 
-/** 字节数文案：dsh 的 fileSizeText（B / KB / MB / GB，保留一位小数） */
-private fun fileSizeText(bytes: Long): String {
-    if (bytes < 1024) return bytes.toString() + " B"
-    val units = listOf("KB", "MB", "GB", "TB")
-    var value = bytes.toDouble() / 1024.0
-    var index = 0
-    while (value >= 1024.0 && index < units.lastIndex) {
-        value /= 1024.0
-        index++
-    }
-    val rounded = kotlin.math.round(value * 10.0) / 10.0
-    val text = if (rounded >= 100.0) rounded.toInt().toString() else rounded.toString()
-    return text + " " + units[index]
-}
+// 字节数文案统一走 ui/FileSizeText.kt 的 fileSizeText（dsh 的规则：<10 一位小数、≥10 取整、
+// 数字与单位之间没有空格）。以前这里另有一份「恒一位小数 + 带空格」的近似实现，
+// 同一个包里两个同名函数还会撞签名。
 
 /**
  * 附件封面缓存（按字节数计价，32MB）。

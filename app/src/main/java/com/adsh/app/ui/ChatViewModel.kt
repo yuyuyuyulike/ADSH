@@ -123,12 +123,29 @@ sealed interface ConnectionState {
     /** 连接正常 / 没有正在重连的事（界面什么都不画） */
     data object Idle : ConnectionState
 
-    /** 正在按退避重连（第 [attempt] 次） */
+    /** 正在按退避重连（第 [attempt] 次）——dsh 的 `connecting`，指示器带点动画 */
     data class Reconnecting(val attempt: Int, val message: String = "") : ConnectionState
+
+    /**
+     * **断网挂起**（dsh 的 `disconnected`）：自动重试已暂停，等网络回来。
+     *
+     * 与 [Reconnecting] 的区别就是 dsh 那两个状态的区别：这个在**等**（指示器静态、写着「点此重试」），
+     * 那个在**试**（带点动画）。看错这两个状态，用户就分不清「手机没网」和「服务端挂了」。
+     */
+    data class Disconnected(val message: String = "") : ConnectionState
 
     /** 刚刚重连上（HTTP 200 已经回来），停留 [ConnectionRecovery.RECOVERY_CONFIRMATION_MS] */
     data class Recovered(val at: Long) : ConnectionState
 }
+
+/**
+ * 这条连接条是不是**临时态**（重连中 / 断网挂起）—— 轮结束、按停止时都要把它收掉。
+ *
+ * 「已恢复」不算：它有自己的 2 秒计时收尾（dsh 的 `RECOVERY_CONFIRMATION_MS`），
+ * 提前收掉就等于用户永远看不到「已恢复」。
+ */
+internal fun ConnectionState.isTransient(): Boolean =
+    this is ConnectionState.Reconnecting || this is ConnectionState.Disconnected
 
 /**
  * 正在跑的一轮里的工具调用（dsh 的 live tool row）：
@@ -944,6 +961,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 is ChatEvent.Reconnecting -> setConnection(
                     ConnectionState.Reconnecting(event.attempt, event.message),
                 )
+                // 断网挂起（dsh 的 disconnected）：不是「正在重连」，是在等网络
+                is ChatEvent.Disconnected -> setConnection(
+                    ConnectionState.Disconnected(event.message),
+                )
                 is ChatEvent.Reconnected -> setConnection(
                     ConnectionState.Recovered(System.currentTimeMillis()),
                 )
@@ -1005,9 +1026,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { repository.setStats(conversationId, stats) }
             refreshConversations()
             refreshContext()
-            // 这一轮结束就不该再挂着「正在重连」了（「已恢复」那条由它自己的
+            // 这一轮结束就不该再挂着「正在重连 / 断网」了（「已恢复」那条由它自己的
             // 2 秒计时收尾，这里不动）
-            if (_state.value.connection is ConnectionState.Reconnecting) {
+            if (_state.value.connection.isTransient()) {
                 applyConnection(ConnectionState.Idle)
             }
             if (stopped) {
@@ -1096,8 +1117,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         if (it.running) it.copy(running = false) else it
                     },
                 ),
-                // 正在重连时按停止：重连条也要收掉（否则它会一直挂在输入框上面）
-                connection = if (current.connection is ConnectionState.Reconnecting) {
+                // 正在重连 / 断网挂起时按停止：连接条也要收掉（否则它会一直挂在输入框上面）
+                connection = if (current.connection.isTransient()) {
                     ConnectionState.Idle
                 } else {
                     current.connection

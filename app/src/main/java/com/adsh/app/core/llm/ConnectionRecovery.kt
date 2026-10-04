@@ -85,6 +85,42 @@ object ConnectionRecovery {
 
     /** 手动重试的轮询粒度：点下去到真的重发之间最多迟这么久 */
     private const val RETRY_POLL_MS = 100L
+
+    /** 等网络回来的轮询粒度（系统回调那侧是即时的，这里只是「醒来看看」） */
+    private const val NETWORK_POLL_MS = 200L
+
+    /**
+     * 断网时挂起，等到「网络回来」或「用户点了重试」为止 —— dsh 的 `ConnectionController.loop()`
+     * 里那个等 abort 的分支，以及 `setNetworkAvailable` 的两条出口（网络恢复 → connecting；
+     * 手动 → immediateRetry）。
+     *
+     * 两种出口对调用方是同一件事：**立刻重试，且退避序列归零**（dsh 在两条路径上都写
+     * `attempt = 0`），所以这里不返回值。
+     */
+    suspend fun awaitNetwork(generationAtStart: Int) {
+        while (!NetworkAvailability.isAvailable()) {
+            delay(NETWORK_POLL_MS)
+            if (ManualReconnect.generation() != generationAtStart) return
+        }
+    }
+}
+
+/**
+ * 网络可用性（dsh 的 `networkAvailable`）：断网时 [ConnectionRecovery.awaitNetwork] 挂起，
+ * 网络一回来立刻放行。
+ *
+ * 谁写它：Android 那侧的系统回调（[watchNetwork]，在 `AdshApp` 里注册）。
+ * 默认 **true** —— 没有回调信息时按「可用」处理，否则不回调的设备会永远停在「断开」。
+ */
+object NetworkAvailability {
+    private val available = java.util.concurrent.atomic.AtomicBoolean(true)
+
+    fun isAvailable(): Boolean = available.get()
+
+    /** 只由网络回调调用（dsh 的 `setNetworkAvailable`） */
+    fun set(value: Boolean) {
+        available.set(value)
+    }
 }
 
 /**

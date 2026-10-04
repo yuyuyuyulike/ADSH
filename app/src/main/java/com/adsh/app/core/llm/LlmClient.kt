@@ -116,6 +116,16 @@ class LlmClient(
                     // 这一次尝试的非持久增量作废（重连 = 重新生成这一步），先把界面上的
                     // 半截正文清掉，再报「正在重连」。顺序反了会看到「正在重连」和半截正文同框。
                     emit(ChatEvent.StreamReset)
+                    // 断网：**不盲目退避**（等下去大概率还是失败），挂起等网络回来 —— dsh 的
+                    // `setNetworkAvailable`：网络不可用时连指示器都不一样（静态的「断开」而不是
+                    // 带点动画的「正在重连」）。网络回来、或用户点了重试，都从这里往下走且退避归零。
+                    if (!NetworkAvailability.isAvailable()) {
+                        emit(ChatEvent.Disconnected(outcome.message))
+                        if (BuildConfig.DEBUG) Log.d(TAG, "offline, waiting for network: " + outcome.message)
+                        ConnectionRecovery.awaitNetwork(generation)
+                        attempt = 0
+                        continue
+                    }
                     val delayMs = ConnectionRecovery.backoffDelayMs(attempt)
                     emit(ChatEvent.Reconnecting(attempt, outcome.message, delayMs))
                     if (BuildConfig.DEBUG) Log.d(TAG, "reconnect #" + attempt + " in " + delayMs + "ms: " + outcome.message)

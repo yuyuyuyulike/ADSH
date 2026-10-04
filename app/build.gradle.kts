@@ -51,8 +51,8 @@ android {
         targetSdk = 28
         // versionCode 只往前加：手机上的 0.1.3（code 5）不能降级安装
         // （release 不可 debuggable，-d 也不放行），退回就是「卸载重装 = 丢数据」。
-        versionCode = 12
-        versionName = "0.2.0"
+        versionCode = 13
+        versionName = "0.2.1"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }

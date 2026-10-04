@@ -233,6 +233,16 @@ sealed interface ChatEvent {
     ) : ChatEvent
 
     /**
+     * **断网了，自动重试已挂起**（dsh 的 `disconnected` 状态 + `setNetworkAvailable`）：
+     * 它和 [Reconnecting] 不是一回事 —— 那个在按退避不停地重试（指示器带点动画），
+     * 这个在等网络回来（指示器是静态的「断开，点此重试」）。
+     *
+     * 为什么要有它：断网时按 500ms/1s/2s… 一路重试只是白打服务端，用户也看不明白在等什么。
+     * dsh 的做法是**网络不可用就暂停重试**，网络一恢复立刻重来（退避序列归零）。
+     */
+    data class Disconnected(val message: String) : ChatEvent
+
+    /**
      * 重连成功（HTTP 200 已经回来）——dsh 的 `connected`：指示器切成「已恢复」并保留 2 秒。
      * 它**不代表**这一步的正文完整，只代表连接回来了。
      */

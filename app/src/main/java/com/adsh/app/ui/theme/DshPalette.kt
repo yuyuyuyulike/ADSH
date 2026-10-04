@@ -80,6 +80,8 @@ data class DshPalette(
     val warnBg: Color,
     val warnLabel: Color,
     val errorLabel: Color,
+    /** --dsw-alias-state-success-tertiary（重连条「已恢复」的底色：浅 green-100 / 深 green-900） */
+    val successBg: Color,
     /**
      * 这一套是不是深色。dsh 的 CSS 里有不少 `color-mix(in srgb, neutral-00 N%, transparent)`
      * 这种**跟着主题走**的写法（同一个混白比例在深浅两套下不同），Compose 侧没有等价的表达式，
@@ -119,6 +121,8 @@ val LightDshPalette = DshPalette(
     userBubble = Color(0xFFEDF3FE),
     labelDimmed = Color(0xFFE1E5EE),
     success = Color(0xFF22C55E),
+    // --dsw-alias-state-success-tertiary = --dsw-static-green-100
+    successBg = Color(0xFFE6FAED),
     dangerHover = Color(0x0DEC1313),
     buttonElevated = Color(0xFFFFFFFF),
     business = Color(0xFF4176E6),
@@ -172,6 +176,8 @@ val DarkDshPalette = DshPalette(
     userBubble = Color(0xFF2C2C2E),
     labelDimmed = Color(0xFF43454A),
     success = Color(0xFF22C55E),
+    // --dsw-alias-state-success-tertiary = --dsw-static-green-900
+    successBg = Color(0xFF233C2C),
     dangerHover = Color(0x26F25A5A),
     buttonElevated = Color(0xFF43454A),
     business = Color(0xFF679EFE),
