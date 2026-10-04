@@ -31,15 +31,13 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.adsh.app.ui.theme.LocalDshPalette
 
 /**
- * 设置-功能页的「权限」卡（用户点名要的那一张）。
- *
- * 形态就是设置页里别的卡：标题 + 一句小字（用户口径：「快捷授予权限。」），展开后四项，每项是一个
+ * 设置-功能页的「权限」卡：标题 + 一句小字（用户口径：「快捷授予权限。」），展开后四项，每项是一个
  * **同款的圆角长方框**（底色 bgModulePlatform、圆角 12 —— 与字号步进器 / 主题立方同一套），
- * 框里是「名称 + 授权状态 + 倒角」，点一下跳到 adsh 在这个系统上的对应权限页。
+ * 框里是「名称 + 状态 + 倒角」，点一下跳到 adsh 在这个系统上的对应权限页。
  *
  * 「授予后卡片里也要显示已授权」这条靠**回前台重算**实现：跳出去时本页只是 stop，用户回来会走
- * ON_RESUME（[LifecycleEventObserver]），那一刻把四项状态重新读一遍（[isGranted] 每次都读系统
- * 真值，没有本地缓存，所以不会出现「显示已授权其实没给」）。
+ * ON_RESUME（[LifecycleEventObserver]），那一刻把四项状态重新读一遍（[permissionStatus] 每次都读
+ * 系统真值，没有本地缓存）。自启动那一项系统没给读取口，状态是 null —— 卡片写「去设置」，不编。
  */
 @Composable
 internal fun PermissionsCard() {
@@ -57,8 +55,8 @@ internal fun PermissionsCard() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     // 展开时也重算一次：收起着的时候用户可能刚从别处改过权限
-    val granted = remember(tick, open) {
-        AppPermission.entries.associateWith { isGranted(context, it) }
+    val status = remember(tick, open) {
+        AppPermission.entries.associateWith { permissionStatus(context, it) }
     }
     SettingsCard(background = if (open) palette.bgLayer2 else palette.bgLayer3) {
         CardFrame(
@@ -76,7 +74,7 @@ internal fun PermissionsCard() {
                     if (index > 0) Spacer(Modifier.height(DshSpacing.Xl))
                     PermissionRow(
                         label = permission.label,
-                        granted = granted[permission] == true,
+                        granted = status[permission],
                         onClick = { openPermissionSettings(context, permission) },
                     )
                 }
@@ -86,9 +84,13 @@ internal fun PermissionsCard() {
     }
 }
 
-/** 一行权限：一个圆角长方框（同字号步进器 / 主题立方的底），整框可点 */
+/**
+ * 一行权限：一个圆角长方框（同字号步进器 / 主题立方的底），整框可点。
+ *
+ * [granted] 为 null = 系统没给读取口（自启动），那一格写「去设置」—— 不编「已授权」。
+ */
 @Composable
-private fun PermissionRow(label: String, granted: Boolean, onClick: () -> Unit) {
+private fun PermissionRow(label: String, granted: Boolean?, onClick: () -> Unit) {
     val palette = LocalDshPalette.current
     Row(
         Modifier
@@ -108,10 +110,14 @@ private fun PermissionRow(label: String, granted: Boolean, onClick: () -> Unit) 
             color = palette.labelPrimary,
         )
         Text(
-            text = if (granted) "已授权" else "未授权",
+            text = when (granted) {
+                true -> "已授权"
+                false -> "未授权"
+                null -> "去设置"
+            },
             fontSize = 12.sp,
             lineHeight = 18.sp,
-            color = if (granted) palette.success else palette.labelTertiary,
+            color = if (granted == true) palette.success else palette.labelTertiary,
         )
         Spacer(Modifier.size(DshSpacing.Md))
         Icon(

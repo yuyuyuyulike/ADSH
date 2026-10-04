@@ -127,6 +127,8 @@ internal fun Drawer(
     // dsh 的 sessionVisible：空白会话只在它是当前会话时出现在列表里
     val ungrouped = conversations.filter { it.workspaceId == null }
         .filter { it.id !in blankIds || it.id == currentId }
+        // 用户口径（与 dsh 一致）：「新会话」永远排在这一组最上面
+        .sortedByDescending { it.id == currentId && it.id in blankIds }
 
     /**
      * 抽屉里的一行会话。**两个分支（工作区 / 未分组）共用** ——
@@ -232,12 +234,15 @@ internal fun Drawer(
                     onDelete = { deleteTarget = workspace },
                 )
                 if (open) {
-                    conversations.filter { it.workspaceId == workspace.id }.forEach { session ->
-                        // dsh 的 sessionVisible：空白会话只有「它就是当前会话」时才露出来
-                        val blank = session.id in blankIds && session.id != currentId
-                        if (blank) return@forEach
-                        sessionRow(session)
-                    }
+                    conversations.filter { it.workspaceId == workspace.id }
+                        // 用户口径（与 dsh 一致）：「新会话」永远排在工作区标题下面第一行
+                        .sortedByDescending { it.id == currentId && it.id in blankIds }
+                        .forEach { session ->
+                            // dsh 的 sessionVisible：空白会话只有「它就是当前会话」时才露出来
+                            val blank = session.id in blankIds && session.id != currentId
+                            if (blank) return@forEach
+                            sessionRow(session)
+                        }
                 }
             }
 

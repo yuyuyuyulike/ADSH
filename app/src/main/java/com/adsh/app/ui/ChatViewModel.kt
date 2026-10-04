@@ -535,20 +535,54 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      *    于是抽屉滑进来的那几帧里正文整块换掉，用户看到的就是闪一下 / 卡一下。
      */
     suspend fun switchConversation(id: Long) {
-        if (_state.value.conversationId == id || _state.value.sending) return
+        // **不再看 sending**（用户口径，参照 dsh）：正在跑的那一轮在后台接着跑，切会话只是换一下
+        // 「看哪一条」—— 它的实时内容留在 liveRuns 里，切回来原样接上。
+        if (_state.value.conversationId == id) return
+        stashLiveRun()
         val cached = repository.cachedMessages(id)
         if (cached != null) {
             _state.update { it.copy(conversationId = id, messages = cached) }
             viewModelScope.launch {
                 openConversation(id, knownMessages = cached)
+                restoreLiveRun(id)
                 refreshContext()
             }
             return
         }
         val ready = withTimeoutOrNull(SWITCH_CONTENT_WAIT_MS) { openConversation(id) } != null
+        restoreLiveRun(id)
         // 库慢到超过上限：先让抽屉收起，正文晚一帧到（不至于把抽屉吊在那里）
-        if (!ready) viewModelScope.launch { openConversation(id) }
+        if (!ready) viewModelScope.launch { openConversation(id); restoreLiveRun(id) }
         viewModelScope.launch { refreshContext() }
+    }
+
+    /** 切走之前：把当前会话此刻的样子存进它自己的格子（只有它正在跑才需要） */
+    private fun stashLiveRun() {
+        val current = _state.value
+        val id = current.conversationId ?: return
+        if (runningConversationId == id) liveRuns[id] = current
+    }
+
+    /**
+     * 切回来之后：把那一轮**还在流**的内容盖到刚从库里读出来的状态上（正文与已定稿的工具行以库为准，
+     * 只有正在流的那部分 liveRuns 里才有）—— 于是切来切去看不出中间停过。
+     */
+    private fun restoreLiveRun(id: Long) {
+        val live = liveRuns[id] ?: return
+        _state.update { fresh ->
+            fresh.copy(
+                streaming = live.streaming,
+                reasoning = live.reasoning,
+                reasoningRunning = live.reasoningRunning,
+                toolArgsFlowing = live.toolArgsFlowing,
+                sending = live.sending,
+                liveTurnId = live.liveTurnId,
+                liveTurn = live.liveTurn,
+                connection = live.connection,
+                runStartedAt = live.runStartedAt,
+                queuedCount = live.queuedCount,
+            )
+        }
     }
 
     /**
@@ -600,7 +634,55 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     private data class PendingSend(val text: String, val attachments: List<String>)
 
-    private val pendingSends = ArrayDeque<PendingSend>()
+    /** 排队待发的消息：**按会话各排各的**（切会话不打断正在跑的那一轮，队列也不能串会话） */
+    private val pendingSends = HashMap<Long, ArrayDeque<PendingSend>>()
+
+    private fun queueOf(conversationId: Long): ArrayDeque<PendingSend> =
+        pendingSends.getOrPut(conversationId) { ArrayDeque() }
+
+    /** 正在跑的那条会话（同一时刻只有一轮在跑；切会话不打断它，见 [switchConversation]） */
+    private var runningConversationId: Long? = null
+
+    /**
+     * 每条会话「正在跑 / 刚跑过」的那一轮的界面状态。
+     *
+     * 这是「切会话不打断正在跑的那一轮」的支点（用户口径，参照 dsh）：跟某一轮有关的状态写入都走
+     * [updateTurn] —— 正在看它就直接上屏，没在看就留在这儿；切回来时 [restoreLiveRun] 把流式正文 /
+     * 思考 / 工具行 / 连接原样接上，那一轮在后台一秒都没停。
+     */
+    private val liveRuns = HashMap<Long, ChatUiState>()
+
+    /** 某条会话此刻的界面状态：正在看它就读 _state，否则读 [liveRuns]（它还在后台跑） */
+    private fun stateOf(conversationId: Long): ChatUiState =
+        if (_state.value.conversationId == conversationId) _state.value else liveRuns[conversationId] ?: _state.value
+
+    /** 只改「这条会话」的状态（见 [liveRuns] 的注释），顺带把这一帧推给灵动岛 */
+    private fun updateTurn(conversationId: Long, block: (ChatUiState) -> ChatUiState) {
+        val current = _state.value
+        if (current.conversationId == conversationId) {
+            _state.value = block(current)
+        } else {
+            liveRuns[conversationId] = block(liveRuns[conversationId] ?: current)
+        }
+        publishIsland(conversationId)
+    }
+
+    /** 把这条会话此刻的岛状态推给前台服务（岛只在有轮在跑时才出现，见 islandWorkOf） */
+    private fun publishIsland(conversationId: Long) {
+        IslandController.sync(
+            getApplication(),
+            islandWorkOf(stateOf(conversationId), islandWaitingOf(question.value, approval.value)),
+        )
+    }
+
+    /** 一轮收尾后：现在没人在跑，就把**当前会话**排着的消息发出去（各会话各排各的） */
+    private fun flushQueue() {
+        if (runningConversationId != null) return
+        val id = _state.value.conversationId ?: return
+        val next = queueOf(id).removeFirstOrNull() ?: return
+        updateTurn(id) { it.copy(queuedCount = queueOf(id).size) }
+        send(next.text, next.attachments)
+    }
 
     /** 本轮里发生过一次「插话发送」：收尾时要看这条插话有没有人接（没人接就补一轮） */
     /**
@@ -742,12 +824,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val body = text.trim()
         if (body.isEmpty() && attachments.isEmpty()) return
         val conversationId = _state.value.conversationId ?: return
-        if (_state.value.sending) {
+        val running = runningConversationId
+        if (running != null) {
+            if (running != conversationId) {
+                // 别的会话正在跑（用户切过来发的）：排进**它自己那条会话**的队列，等那边空出来再发
+                queueOf(conversationId).addLast(PendingSend(body, attachments))
+                updateTurn(conversationId) {
+                    it.copy(queuedCount = queueOf(conversationId).size, pendingAttachments = emptyList())
+                }
+                return
+            }
             if (settings.busyEnter == SettingsStore.BUSY_STEER) {
                 steer(body, conversationId, attachments)
             } else {
-                pendingSends.addLast(PendingSend(body, attachments))
-                _state.update { it.copy(queuedCount = pendingSends.size, pendingAttachments = emptyList()) }
+                queueOf(conversationId).addLast(PendingSend(body, attachments))
+                updateTurn(conversationId) {
+                    it.copy(queuedCount = queueOf(conversationId).size, pendingAttachments = emptyList())
+                }
             }
             return
         }
@@ -779,7 +872,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 清空排队发送的消息（dsh 的 queue chip 上的清空） */
     fun clearQueued() {
-        pendingSends.clear()
+        val id = _state.value.conversationId ?: return
+        queueOf(id).clear()
         _state.update { it.copy(queuedCount = 0) }
     }
 
@@ -819,8 +913,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         com.adsh.app.core.tools.TodoStore.clear(conversationId)
 
         turnsInFlight.incrementAndGet()
+        runningConversationId = conversationId
+        // 这一轮开始时的样子存进它自己的格子（切走之后所有跟它有关的写入都落在那里）
+        if (_state.value.conversationId == conversationId) liveRuns[conversationId] = _state.value
         val job = viewModelScope.launch {
-            _state.update { turnOpened(it, System.currentTimeMillis()) }
+            updateTurn(conversationId) { turnOpened(it, System.currentTimeMillis()) }
             try {
                 openTurnInputs(conversationId, body, persistUser, attachmentPaths, turnKey)
                 val toolContext = buildToolContext(conversationId, workspacePath)
@@ -990,7 +1087,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         } else {
                             null
                         }
-                    _state.update { current -> turnProjected(current, event, messages) { settings.modelLabel() } }
+                    updateTurn(conversationId) { current -> turnProjected(current, event, messages) { settings.modelLabel() } }
                     if (messages != null) {
                         // 上下文占用跟着这一步立刻重算（第 99 轮，用户点名「只有在一轮对话结束时
                         // 才更新」）：dsh 的 contextPressure 是会话状态每次追加后都变的投影，
@@ -1003,11 +1100,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // 收件箱认领（dsh 的 preStep claim）：行已经写进库，重读一次把它们画出来。
                 is ChatEvent.InboxClaimed -> {
                     val claimed = repository.messages(conversationId)
-                    _state.update { current -> turnProjected(current, event, claimed) { settings.modelLabel() } }
+                    updateTurn(conversationId) { current -> turnProjected(current, event, claimed) { settings.modelLabel() } }
                 }
                 // 其余分支（Delta / Reasoning / ToolCallDelta / Stats / StreamReset / Failed / Usage）
                 // 都是纯投影，见 [turnProjected]；Usage 由 AgentLoop 的 token 账本消费，这里不动状态
-                else -> _state.update { current -> turnProjected(current, event) { settings.modelLabel() } }
+                else -> updateTurn(conversationId) { current -> turnProjected(current, event) { settings.modelLabel() } }
             }
         }
     }
@@ -1026,14 +1123,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val messages = repository.messages(conversationId)
             // 轮/步由消息推导（每轮上报的 turns 是绝对值，累加会重复计数）；其余统计随会话落库。
             // 轮数与 AgentLoop 的口径一致：带 name 的 user 行（插话 / 权限切换通知）不算一轮。
-            val stats = turnStatsOf(_state.value.stats, messages)
-            _state.update { turnFinished(it, messages, stats) }
+            val stats = turnStatsOf(stateOf(conversationId).stats, messages)
+            updateTurn(conversationId) { turnFinished(it, messages, stats) }
             runCatching { repository.setStats(conversationId, stats) }
             refreshConversations()
             refreshContext()
             // 这一轮结束就不该再挂着「正在重连 / 断网」了（「已恢复」那条由它自己的
             // 2 秒计时收尾，这里不动）
-            if (_state.value.connection.isTransient()) {
+            if (stateOf(conversationId).connection.isTransient()) {
                 applyConnection(ConnectionState.Idle)
             }
             if (stopped) {
@@ -1042,9 +1139,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 repository.clearInjected(conversationId)
             } else {
                 // 被停掉的那一轮不接着发（队列留着，下次发送前还在）
-                val next = pendingSends.removeFirstOrNull()
+                val next = queueOf(conversationId).removeFirstOrNull()
                 if (next != null) {
-                    _state.update { it.copy(queuedCount = pendingSends.size) }
+                    updateTurn(conversationId) { it.copy(queuedCount = queueOf(conversationId).size) }
                     send(next.text, next.attachments)
                 } else if (repository.hasInjected(conversationId)) {
                     // dsh 的「inbox 非空就不能关轮」：还有没被认领的注入行（多半正好压在
@@ -1052,6 +1149,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     continueIfDangling(conversationId)
                 }
             }
+
+            // 这一轮跑完了：运行时格子撤掉（内容已落库）、岛收尾（updateTurn 里 sending 已复位 →
+            // islandWorkOf 返回 null → 服务进入「已结束」）、别的会话排下的消息轮到它了
+            if (runningConversationId == conversationId) runningConversationId = null
+            liveRuns.remove(conversationId)
+            publishIsland(conversationId)
+            flushQueue()
         }
     }
     /**
@@ -1096,10 +1200,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun cancel() {
         val job = sendJob
         sendJob = null
+        // 要停的可能是**另一条会话**在跑的那一轮（用户切走了再按停止）——按跑着的那条路由
+        val owner = runningConversationId ?: _state.value.conversationId
         // 被停掉的那一轮里插进来的消息不会被接：收件箱在 startTurn 的收尾里一起清掉
         // （dsh 的 cancel → inbox.clear()）。
         if (job == null) {
-            _state.update { it.copy(sending = false) }
+            if (owner != null) updateTurn(owner) { it.copy(sending = false) }
             return
         }
         // **立刻**把运行中的指示全部停下（工具行 / 子调用 / 思考行的扫光）：
@@ -1108,7 +1214,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 用户按下停止时看到的第一件事必须是「它停了」。库里的 interrupted 行随后替换掉这些
         // 流式行（内容一致，不闪）。
         val stoppedAt = System.currentTimeMillis()
-        _state.update { current ->
+        if (owner != null) updateTurn(owner) { current ->
             current.copy(
                 sending = false,
                 reasoningRunning = false,
@@ -1135,8 +1241,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // 到这里 AgentLoop 的收尾（NonCancellable）已经跑完：库里那条 interrupted 消息就位、
             // startTurn 的 finally 也把流式内容清干净了。这里只补一次「库为准」的消息快照，
             // 万一 finally 与这次读有先后差，也不会把内容清空。
-            val conversationId = _state.value.conversationId ?: return@launch
-            _state.update { it.copy(messages = repository.messages(conversationId)) }
+            val conversationId = owner ?: return@launch
+            // 先读库（挂起），再写状态：updateTurn 是普通函数，里面不能调挂起函数
+            val fresh = repository.messages(conversationId)
+            updateTurn(conversationId) { it.copy(messages = fresh) }
         }
     }
 
@@ -1762,13 +1870,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 保活只在 agent 干活期间，用户口径是「干完一起停」（收尾在 IslandService 里）。
      */
     init {
+        // 岛：跟某一轮有关的状态写入全部走 updateTurn（里面调 publishIsland）；这里只管
+        // 「等你回答」那两格的变化（提问 / 审批来了或走了）
         viewModelScope.launch {
-            combine(state, question, approval) { snapshot, asking, approving ->
-                islandWorkOf(snapshot, islandWaitingOf(asking, approving))
-            }
-                // 状态每秒变好几次，但岛只关心「哪一格 + 哪三行」：一样就不往下传
+            combine(question, approval) { asking, approving -> islandWaitingOf(asking, approving) }
                 .distinctUntilChanged()
-                .collect { work -> IslandController.sync(getApplication(), work) }
+                .collect { runningConversationId?.let { id -> publishIsland(id) } }
         }
         // 岛上的「停止」（通知那颗按钮 / 媒体卡的暂停）= 与输入框右下角那个停止键同一件事
         viewModelScope.launch {
