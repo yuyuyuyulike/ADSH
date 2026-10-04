@@ -42,6 +42,16 @@
 
         <!-- 灵动岛的宿主前台服务：agent 在跑时把进程钉住，同时挂那块悬浮窗 -->
         <service android:name=".island.IslandService" android:exported="false" />
+
+        <!--
+          PTC 程序的宿主进程：**独立进程**（dsh 的 dsh-ptc-runtime-node 也是每次调用 spawn 一个
+          Node 子进程）。程序里的同步死循环只会烧死这个进程 —— 到点由主进程
+          Process.killProcess 干掉它（见 core/ptc/PtcProcess 的 KDoc）。
+        -->
+        <service
+            android:name=".core.ptc.PtcWorkerService"
+            android:process=":ptc"
+            android:exported="false" />
     </application>
 
 </manifest>

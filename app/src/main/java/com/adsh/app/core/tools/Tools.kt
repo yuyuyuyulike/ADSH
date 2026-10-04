@@ -28,6 +28,11 @@ data class ToolContext(
     val workspace: Workspace,
     val runtime: TermuxRuntime,
     /**
+     * 应用上下文（只给需要**跨进程**的工具用：run_code 要把 PTC 程序绑到 `:ptc` 进程上跑，
+     * 见 com.adsh.app.core.ptc.PtcProcess）。显式传入而不是全局单例：这条依赖一眼看得见。
+     */
+    val appContext: android.content.Context? = null,
+    /**
      * web_search 的后端（dsh 的 ctx.web 搜索提供方）：
      * deepseek-official → 走 Anthropic 兼容 Messages + web_search_20250305 服务端工具；
      * exa → 走 Exa 的 /search。工具本身的名字、参数与输出格式两边完全一样。

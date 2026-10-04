@@ -292,9 +292,19 @@ class PromptAssemblerTest {
         assertTrue("policy facts come only from the injected context", text.contains("Policy facts come only from the runtime context the harness injects"))
         // L1：语言一致
         assertTrue("reply language matches the user", text.contains("Answer in the language the user writes in"))
-        // S3/T2：预算只算程序自己；后台任务的用法只写两处（tool:jobs 段 + 参数说明），
-        // 描述与 SDK 说明里不再复述（第 118 轮按用户要求把多出来的那一句删了）。
-        assertTrue("tool waits do not consume the budget", text.contains("the clock covers the program itself rather than the tools it waits on"))
+        // S3/T2：**第 183 轮按 dsh 改正** —— 预算包含「等工具与等审批」的时间。
+        // dsh 的 run_code 参数说明原文：Positive elapsed-time budget in milliseconds,
+        // including nested tool and approval waits. Default 120000; capped at 600000.
+        // 实现也是墙钟：wallTimer 从执行开始计时，到点 terminate 子进程。
+        // 以前那句「时钟只算程序自己、等工具不消耗预算」是本地口径（第 91 轮），与 dsh 不一致，已删。
+        assertTrue("tool waits do consume the budget", text.contains("includes nested tool and approval waits"))
+        assertTrue("the budget is raisable", text.contains("pass `timeoutMs` to raise it"))
+        assertFalse(
+            "the local \"the clock skips tool waits\" wording is gone",
+            text.contains("rather than the tools it waits on"),
+        )
+        // 后台任务的用法只写两处（tool:jobs 段 + 参数说明），描述与 SDK 说明里不再复述
+        // （第 118 轮按用户要求把多出来的那一句删了）。
         assertTrue("the job guidance is in the static section", text.contains("Track every background job id you start"))
         assertFalse("no duplicate background-lane prose", text.contains("background lane"))
         // S4：safe / mutating 的清单从调度器生成，不是各写一份

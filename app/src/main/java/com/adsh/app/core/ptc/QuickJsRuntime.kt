@@ -1,73 +1,40 @@
 package com.adsh.app.core.ptc
 
-import com.adsh.app.core.tools.Tool
-import com.adsh.app.core.tools.ToolContext
-import com.adsh.app.core.tools.ToolResult
 import com.whl.quickjs.wrapper.JSCallFunction
 import com.whl.quickjs.wrapper.QuickJSContext
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-
-/** 程序内一次 await tools.x() 的痕迹（轨迹视图用） */
-@kotlinx.serialization.Serializable
-data class SubCall(
-    val name: String,
-    val args: String,
-    val ok: Boolean,
-    val result: String,
-    val durationMs: Long,
-    /** 这次子调用的稳定 id：界面用它把「开始」与「结束」贴成同一行 */
-    val id: String = "",
-    /** 是否正在跑：只有流式期间的实时行会为 true，落库的轨迹一律是 false */
-    val running: Boolean = false,
-    /**
-     * 这次子调用产出的图片（只有 read_image 会有）。
-     * 界面在子行下面渲染画廊；AgentLoop 把它收进工具行的 imagesJson，
-     * 装配请求时按 dsh 的 tools-ptc deferContext 作为一条 user 消息回灌模型。
-     */
-    val images: List<com.adsh.app.core.agent.ToolImage> = emptyList(),
-    /**
-     * 这次子调用声明的交付物（只有 present 会有）—— dsh 的 deliverables/presented。
-     * 与 [images] 同路：AgentLoop 把它收进工具行的 deliverablesJson，界面按轮画在轮尾。
-     */
-    val deliverables: List<com.adsh.app.core.agent.PresentedFile> = emptyList(),
-)
-
-data class CodeRunResult(
-    val valueJson: String?,
-    val logs: List<String>,
-    val error: String?,
-    val durationMs: Long,
-    /** 程序内 await tools.x() 的次数（dsh 状态栏「步」的一部分） */
-    val toolCalls: Int = 0,
-    /** 子调用明细 */
-    val subCalls: List<SubCall> = emptyList(),
-    /** 这次运行是因为用户中断而停下的（[run] 的 `cancel` 探针命中），不是程序自己结束 */
-    val aborted: Boolean = false,
-) {
-    val ok: Boolean get() = error == null
-}
 
 /**
- * PTC 代码运行时（QuickJS 后端）。
+ * PTC 引擎：把一段程序喂给 QuickJS，程序里的 `await tools.x()` 通过 [run] 的 invoke 回调
+ * **同步**交给宿主进程执行。这个类**只负责跑**，工具执行与轨迹记录都在宿主（[PtcToolRunner]）。
  *
- * ## 为什么是这个形状（M3 真机探针实测）
+ * ## 为什么搬进独立进程（第 183 轮，照 dsh 的隔离模型）
+ *
+ * dsh 的 `dsh-ptc-runtime-node` 对每次调用 **spawn 一个新 Node 进程**（`isolation = "process"`，
+ * executionInstructions 原文：Each call runs in a fresh Node process），宿主在
+ * `setTimeout(spec.timeoutMs)` 上守着：到点 `controller.abort("execution deadline reached")`
+ * 然后 `handle.terminate()` **杀掉那个子进程**。于是程序里的同步死循环
+ * （`for (let i = 0; i < 1e11; i++)`）最多烧死子进程 —— 父进程、整轮对话、界面全都活着。
+ *
+ * ADSH 以前是同进程 QuickJS，这条退路不存在：QuickJS 一旦进了同步死循环就再也不把执行权还给
+ * 宿主，泵循环里的超时判据（以及用户按停止的探针）**都没有机会执行**，整轮无限期挂住 ——
+ * 第 183 轮真机实测：harness 的 CPU 预算探针把一轮挂了 13 分钟，一直挂到进程被系统清掉。
+ * 现在照 dsh 的模型把程序搬进 `:ptc` 进程（见 [PtcWorkerService]），到点由宿主杀进程
+ * （见 [PtcProcess]），并且**每次调用一个新进程**（与 dsh 的 fresh process 一致）。
+ *
+ * ## 为什么是这个泵模型（M3 真机探针实测）
  * 该 QuickJS 包装库**没有 executePendingJob**：单次 evaluate 内产生的 promise 永远不会 settle。
  * 但探针证明 **microtask 会在下一次 evaluate 调用时被排空**（`Promise.resolve().then(...)` 在第二次
  * evaluate 时才生效）。因此采用「泵 + 同步宿主函数」模型：
  *   1) 把程序包进 async IIFE，结果写进 `globalThis.__adsh_state`；
  *   2) 反复 evaluate 一个空表达式来泵动 microtask 队列，直到 settled 或超时；
- *   3) 宿主函数 `__adsh_call__` 是**同步阻塞**的（内部 runBlocking 调工具），
+ *   3) 宿主函数 `__adsh_call__` 是**同步阻塞**的（跨进程 RPC 到宿主，由 [PtcToolRunner] 跑工具），
  *      所以程序里的 `await tools.x(...)` 在下一个泵周期即可继续。
  * 代价：同一程序内的多个工具调用是串行执行的（dsh 支持并行子调用），已在文档中记为已知差异。
+ *
+ * ## 超时（与 dsh 同一条口径）
+ * `timeoutMs` 是**墙钟**预算（dsh 的 wallTimer 同样从执行开始计时，等工具的时间也算在内），默认
+ * [DEFAULT_TIMEOUT_MS]。泵循环到点会走「优雅收尾」这条路（返回 failureKind = timeout）；如果程序
+ * 根本不让出执行权，宿主那份 deadline 会直接杀掉这个进程（见 [PtcProcess]）。
  *
  * ## 异常契约（dsh-tools 的 binding errorClass + worker.cjs 的 namespaces）
  *  - **已声明**的工具失败 → 抛 `ToolCallError`：`e.name === "ToolCallError"`、
@@ -76,121 +43,26 @@ data class CodeRunResult(
  *    `TypeError: tools.<name> is not a function`，整个程序失败。
  *    dsh 的 namespaces 是一个只定义了已声明名字的空原型对象，不做兜底翻译 —— 保持一致。
  */
-class QuickJsRuntime(
-    private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true },
-) {
+class QuickJsRuntime {
 
-    /**
-     * 跑一段 PTC 程序。
-     *
-     * @param cancel 「用户中断了吗」的探针。为 null = 不可中断（旧行为）。命中时立刻停：
-     *   ① 泵循环退出、程序不再往下跑；② 正在等工具的那些子调用会被看门狗取消（见 [callTool]）,
-     *   于是阻塞在 bash / 文件 IO 里的那一层也跟着结束。没有它的话「停止」要等程序自己跑完 ——
-     *   程序里一个 120s 的 bash 就把整个中断拖到两分钟（用户实测的「中断响应不够迅速」）。
-     */
     fun run(
         program: String,
-        tools: List<Tool>,
-        context: ToolContext,
+        toolNames: List<String>,
+        invoke: (name: String, argsJson: String) -> String,
+        invokeAll: (payloadJson: String) -> String,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         maxLogLines: Int = MAX_LOG_LINES,
         cancel: (() -> Boolean)? = null,
     ): CodeRunResult {
         val started = System.currentTimeMillis()
-        // 「等工具」的累计耗时：预算只算程序自己的执行时间（见下面的注释）
-        val toolWaitMs = java.util.concurrent.atomic.AtomicLong(0)
-        // 程序跑在**自己的线程**上，宿主在外面按同一条判据看着它。
-        //
-        // 为什么必须这样（第 183 轮真机实测）：QuickJS 一旦进了同步死循环（`for (let i = 0; i < 1e11; i++)`），
-        // 就再也不会把执行权还给宿主 —— 泵循环里那条超时判据（`elapsed - toolWait < budget`）**没有机会执行**，
-        // 用户按「停止」也没用（cancel 探针同样只在泵里读）。于是整轮无限期挂住：界面显示在跑、岛一直亮着，
-        // 子调用的通知永远等不到下一个步边界去认领。真机上那次是 harness 的 CPU 预算探针，挂了 13 分钟，
-        // 一直挂到进程被系统清掉。
-        //
-        // 现在宿主每 [WATCHDOG_TICK_MS] 醒一次算「程序自己跑了多久」：超预算 + 宽限就**放弃这次调用**，
-        // 把话说清楚还给模型，整轮不再被一个死循环拖住。放弃意味着那条线程还在转（QuickJS 没有中断接口，
-        // 见 [PTC_STACK_BYTES] 那段注释），所以只能放弃 —— 但它已经不再影响这一轮。
-        val executor = java.util.concurrent.Executors.newSingleThreadExecutor { target ->
-            Thread(null, target, PTC_THREAD_NAME, PTC_STACK_BYTES).apply { isDaemon = true }
-        }
-        return when (
-            val outcome = awaitPtcProgram(
-                executor = executor,
-                startedAt = started,
-                toolWaitMs = toolWaitMs,
-                budgetMs = timeoutMs,
-                timeoutGraceMs = WATCHDOG_GRACE_MS,
-                cancelGraceMs = CANCEL_GRACE_MS,
-                tickMs = WATCHDOG_TICK_MS,
-                cancelRequested = { cancel?.invoke() == true },
-                start = {
-                    executor.submit<CodeRunResult> {
-                        runBody(program, tools, context, timeoutMs, maxLogLines, cancel, started, toolWaitMs)
-                    }
-                },
-            )
-        ) {
-            is PtcWatchdogOutcome.Finished -> outcome.value
-            PtcWatchdogOutcome.Cancelled -> CodeRunResult(
-                valueJson = null,
-                logs = emptyList(),
-                error = "已停止",
-                durationMs = System.currentTimeMillis() - started,
-                aborted = true,
-            )
-            PtcWatchdogOutcome.TimedOut -> CodeRunResult(
-                valueJson = null,
-                logs = emptyList(),
-                error = "程序在 " + timeoutMs + "ms 内未结束：同步死循环（JS 没有把执行权还给宿主，" +
-                    "子调用的通知也等不到下一个步边界）。这次调用已放弃 —— 长循环请拆小，" +
-                    "或改成后台任务（run_in_background）稍后再查。",
-                durationMs = System.currentTimeMillis() - started,
-            )
-        }
-    }
-
-    /**
-     * 程序本体：跑在 [PTC_THREAD_NAME] 那条线程上（见 [run] 的看门狗注释）。
-     * [started] / [toolWaitMs] 由 [run] 持有 —— 看门狗要用同一对数字算「程序自己跑了多久」。
-     */
-    private fun runBody(
-        program: String,
-        tools: List<Tool>,
-        context: ToolContext,
-        timeoutMs: Long,
-        maxLogLines: Int,
-        cancel: (() -> Boolean)?,
-        started: Long,
-        toolWaitMs: java.util.concurrent.atomic.AtomicLong,
-    ): CodeRunResult {
         val logs = ArrayList<String>(16)
         val calls = java.util.concurrent.atomic.AtomicInteger(0)
-        val trace = java.util.Collections.synchronizedList(ArrayList<SubCall>())
-        // 子调用一跑完就回调（dsh 的 tool/ptc-dispatch）：界面可以逐行长出来，
-        // 不必等整个程序结束再一次性蹦出一整棵调用树
-        val onSubCall = context.onSubCall
-        // 这次顶层执行的序号：两个回调都带着它回去，界面据此认领轨迹（见 ToolContext.onSubCall）
-        val execToken = context.execToken
-        // 子调用「开始」也回调一次（dsh 的 tool/call）：界面先把这一行画成运行中（带扫光），
-        // 跑完再用同一个 id 贴回结果 —— 否则子行一出现就是完成态，永远看不到扫光。
-        val onSubCallStart = context.onSubCallStart
-        val subSeq = java.util.concurrent.atomic.AtomicInteger(0)
-        // 「等工具」的时间不计入程序预算（第九十一轮，审查报告 S3/T1）：工具调用是同步阻塞的
-        // （见下面的泵循环），以前拿 started + timeoutMs 当死线 —— 用户在提问卡上想了两分钟，
-        // 工具一返回循环条件立刻为假，程序被判超时；而子调用的正文本来就不回灌模型
-        // （AgentLoop：模型只看到 run_code 的最终返回），等于问题白问、答案直接丢。
-        // 现在预算只算「程序自己跑了多久」：把每次子调用的耗时累加进来，每个工具仍有自己的超时
-        // （toolWaitMs 由 run 持有并传进来，宿主侧的看门狗要用同一对数字）。
         val engine = QuickJSContext.create()
         // **这个数必须小于执行线程的真实栈**（第 120 轮真机实测：一个 f(n)=1+f(n-1) 递归 5000 层的
         // 探针把 App 整个打崩了）。QuickJS 的溢出判据是 `sp < stack_top - stack_size` —— 报的是它
         // **自己记账**的用量；账比 pthread 栈还大时它永远不会先开口，递归一路吃穿栈：
-        // SIGSEGV（crash 日志 Cause: "stack pointer is not in a rw map"，512 帧全是同一个
-        // JS_CallInternal 帧），进程级，界面上什么都来不及说。
-        // dsh 没有这层风险 —— 它的 PTC 程序跑在**独立进程**里（dsh-ptc-runtime-node 是 spawn 出来的
-        // Node 进程），程序把自己跑崩只死那个进程。ADSH 是同进程 QuickJS，只能让 QuickJS 先开口：
-        // 取它自己的默认值 256 KB（Android 线程栈约 1 MB，留 3 倍余量），同样的递归于是得到
-        // 一条可 catch 的 `InternalError: stack overflow`，走 [ProgramDiagnostics] 报给模型。
+        // SIGSEGV（crash 日志 Cause: "stack pointer is not in a rw map"）。取它自己的默认值 256 KB，
+        // 执行线程（PtcWorkerService 的引擎线程）显式给 2MB 栈，见那里的注释。
         engine.setMaxStackSize(256 * 1024)
         engine.setMemoryLimit(64 * 1024 * 1024)
         engine.setConsole(object : QuickJSContext.Console {
@@ -202,90 +74,25 @@ class QuickJsRuntime(
 
         try {
             val global = engine.getGlobalObject()
-            fun record(entry: SubCall) {
-                trace.add(entry)
-                runCatching { onSubCall?.invoke(entry) }
-            }
 
-            /**
-             * 下一个子调用的 id（dsh 的 `subCallId = callId + ':ptc:' + n`，spec-log §3）：
-             * 身份里带着父调用，界面按前缀归属，不需要「谁先到」的判据；
-             * **n 在提交那一刻按程序顺序分配**（任何挂起 / 抢闸门之前），并发跑完也用同一个号。
-             */
-            fun nextSubId(): String = execToken.toString() + ":ptc:" + subSeq.incrementAndGet()
-
-            /**
-             * 报一次「开始」（dsh 的 `tool/ptc-dispatch-start`）：按提交序调用，界面先把这一行
-             * 画成运行中（带扫光），跑完再用同一个 id 贴回结果 —— 否则子行一出现就是完成态。
-             */
-            fun announce(name: String, rawArgs: String, id: String) {
-                runCatching {
-                    onSubCallStart?.invoke(
-                        SubCall(
-                            name = name,
-                            args = rawArgs,
-                            ok = true,
-                            result = "",
-                            durationMs = 0,
-                            id = id,
-                            running = true,
-                        ),
-                    )
-                }
-            }
-
-            // 一次 await tools.x()：同步跑一个工具（dsh 的单次子调用）
+            // 一次 await tools.x()：同步 RPC 到宿主（宿主执行工具、记轨迹、回信封）
             global.setProperty("__adsh_call__", JSCallFunction { args ->
-                val name = args.getOrNull(0) as? String ?: return@JSCallFunction "{\"__error\":true,\"message\":\"bad tool name\"}"
+                val name = args.getOrNull(0) as? String
+                    ?: return@JSCallFunction "{\"__error\":true,\"message\":\"bad tool name\"}"
                 val rawArgs = args.getOrNull(1) as? String ?: "{}"
                 calls.incrementAndGet()
-                val callStarted = System.currentTimeMillis()
-                val id = nextSubId()
-                announce(name, rawArgs, id)
-                // 中断时这个子调用是按「已停止」收尾的（见 interruptedOutcome）：异常**不能**
-                // 穿过 JSCallFunction 抛回 native —— 那是在 JNI 回调里，行为不可控。
-                // 真正让程序停下的判断在泵循环里（run 的 cancel 检查）。
-                val outcome = try {
-                    callTool(tools, context, name, rawArgs, cancel)
-                } catch (cancelSignal: kotlinx.coroutines.CancellationException) {
-                    interruptedOutcome(name, rawArgs)
-                }
-                toolWaitMs.addAndGet(System.currentTimeMillis() - callStarted)
-                record(
-                    SubCall(
-                        name = name,
-                        args = rawArgs,
-                        ok = outcome.ok,
-                        // 轨迹里存「人看的正文」，不存带转义的 wire 信封
-                        result = outcome.text,
-                        durationMs = System.currentTimeMillis() - callStarted,
-                        id = id,
-                        // 图片随子调用一起进轨迹：界面在那一行下面渲染画廊，
-                        // AgentLoop 落库后装配请求时再回灌给模型
-                        images = outcome.images,
-                        // 交付物同路：AgentLoop 把它写进工具行的 deliverablesJson（dsh 的
-                        // deliverables/presented），界面在轮尾画文件卡片
-                        deliverables = outcome.deliverables,
-                    ),
-                )
-                outcome.wire
+                invoke(name, rawArgs)
             })
 
-            // 一次 Promise.all([tools.a(), tools.b()])：宿主侧按 maxParallelSubCalls 并发跑
+            // 一次 Promise.all([tools.a(), tools.b()])：整批交给宿主（闸门与提交序都在那边）
             global.setProperty("__adsh_callAll__", JSCallFunction { args ->
-                val payload = args.getOrNull(0) as? String ?: "[]"
-                val batchStarted = System.currentTimeMillis()
-                val wires = callToolsConcurrently(
-                    tools, context, payload, calls, ::nextSubId, ::announce, ::record, cancel,
-                )
-                toolWaitMs.addAndGet(System.currentTimeMillis() - batchStarted)
-                wires
+                invokeAll(args.getOrNull(0) as? String ?: "[]")
             })
 
-            // SDK 门面：把宿主回调包装成 `tools.<name>(args)`。
+            // SDK 门面：把宿主回调包装成 tools.<name>(args)。
             // 先注入**声明过的名字**：只有它们会成为 tools 的属性（未声明的名字是原生 TypeError）
-            val namesJson = tools.joinToString(separator = ",", prefix = "[", postfix = "]") {
-                "\"" + escape(it.name) + "\""
+            val namesJson = toolNames.joinToString(separator = ",", prefix = "[", postfix = "]") {
+                "\"" + jsStringEscape(it) + "\""
             }
             engine.evaluate("globalThis.__adsh_names = " + namesJson, "names.js")
             engine.evaluate(PREAMBLE, "sdk.js")
@@ -297,7 +104,6 @@ class QuickJsRuntime(
                 "\n    })();\n" +
                 "  } catch (e) {\n" +
                 // 分开存：message 是给人看的，toolName 用来还原「哪个工具失败了」
-                // （参数**不**往最终错误文本里带，见下面 errorValue 的注释）
                 "    globalThis.__adsh_state.error = (e && e.message) || String(e);\n" +
                 "    globalThis.__adsh_state.errorTool = (e && e.toolName) || null;\n" +
                 "    globalThis.__adsh_state.errorStack = (e && e.stack) || null;\n" +
@@ -310,11 +116,11 @@ class QuickJsRuntime(
             engine.evaluate(wrapper, "program.js")
 
             // 泵动 microtask：直到 settled、超时、或者用户中断。
-            // 预算 = 程序自己的执行时间：等工具那部分（toolWaitMs）扣掉（见上面的注释）。
+            // **墙钟**预算（dsh 的 wallTimer 同一条口径）：等工具的耗时也算在内。
             var settled = false
             var pumps = 0
             while (!settled &&
-                System.currentTimeMillis() - started - toolWaitMs.get() < timeoutMs &&
+                System.currentTimeMillis() - started < timeoutMs &&
                 pumps < MAX_PUMPS &&
                 cancel?.invoke() != true
             ) {
@@ -325,26 +131,26 @@ class QuickJsRuntime(
             }
 
             if (cancel?.invoke() == true) {
-                // 中断：程序剩下的部分不再跑（没 await 的调用也不补跑），交给上层抛取消
                 return CodeRunResult(
                     valueJson = null,
                     logs = logs,
                     error = "已停止",
                     durationMs = System.currentTimeMillis() - started,
                     toolCalls = calls.get(),
-                    subCalls = trace.toList(),
+                    failureKind = "abort",
                     aborted = true,
                 )
             }
 
             if (!settled) {
+                // dsh 的失败信封：kind = timeout、message = "execution deadline reached (Nms)"
                 return CodeRunResult(
                     valueJson = null,
                     logs = logs,
-                    error = "程序在 " + timeoutMs + "ms 内未结束（可能死循环或工具未返回）",
+                    error = "execution deadline reached (" + timeoutMs + "ms)",
                     durationMs = System.currentTimeMillis() - started,
                     toolCalls = calls.get(),
-                    subCalls = trace.toList(),
+                    failureKind = "timeout",
                 )
             }
 
@@ -376,11 +182,11 @@ class QuickJsRuntime(
             return CodeRunResult(
                 valueJson = valueJson,
                 logs = logs,
-                // located 是从 errorValue 派生的，所以走到 else 分支时 errorValue 一定非空（编译器自己也能推出来）
+                // located 是从 errorValue 派生的，所以走到 else 分支时 errorValue 一定非空
                 error = if (located == null) errorValue else errorValue + "\n" + located,
                 durationMs = System.currentTimeMillis() - started,
                 toolCalls = calls.get(),
-                subCalls = trace.toList(),
+                failureKind = if (errorValue != null) "exception" else null,
             )
         } catch (t: Throwable) {
             // 走到这里基本都是**语法**错误：程序体是直接 evaluate 的，parse 阶段就抛了，
@@ -394,7 +200,7 @@ class QuickJsRuntime(
                 if (located == null) message else message + "\n" + located,
                 System.currentTimeMillis() - started,
                 calls.get(),
-                trace.toList(),
+                failureKind = "exception",
             )
         } finally {
             runCatching { engine.releaseObjectRecords(true) }
@@ -402,275 +208,20 @@ class QuickJsRuntime(
         }
     }
 
-    /** 一次工具调用的结果：wire 给程序、text 给轨迹与日志、images 给轨迹与模型 */
-    private data class CallOutcome(
-        val wire: String,
-        val text: String,
-        val ok: Boolean,
-        val images: List<com.adsh.app.core.agent.ToolImage> = emptyList(),
-        val deliverables: List<com.adsh.app.core.agent.PresentedFile> = emptyList(),
-    )
-
-    /** 同步入口（单次子调用用）：内部 runBlocking 到 suspend 版 */
-    private fun callTool(
-        tools: List<Tool>,
-        context: ToolContext,
-        name: String,
-        rawArgs: String,
-        cancel: (() -> Boolean)? = null,
-    ): CallOutcome =
-        runBlocking {
-            com.adsh.app.core.tools.ToolConcurrency.configure(context.maxParallelSubCalls)
-            // 写类（bash / write / edit / 未知工具）独占：dsh 的 "mutating calls run alone,
-            // in submission order"（tools:sdk 段里逐字写着）——见 ToolConcurrency 的注释
-            watchCancel(cancel) {
-                com.adsh.app.core.tools.ToolConcurrency.withToolPermit(name) {
-                    callToolSuspend(tools, context, name, rawArgs)
-                }
-            }
-        }
-
-    /** 被用户中断的子调用：给程序一个「已停止」的失败信封（dsh 的 code = interrupted） */
-    private fun interruptedOutcome(name: String, rawArgs: String): CallOutcome = CallOutcome(
-        wire = errorWire(name, rawArgs, "已停止：用户中断了这一轮", retryable = false, code = INTERRUPTED_CODE),
-        text = "已停止：用户中断了这一轮",
-        ok = false,
-    )
-
-    /**
-     * 中断看门狗：探针命中就把这一段协程作用域取消掉。
-     *
-     * 子调用是在 `runBlocking` 里同步跑的（QuickJS 的回调是同步宿主函数，见文件头的模型说明），
-     * 所以外层的协程取消**传不进来** —— 没有这个看门狗，程序里一个 120s 的 bash 就让「停止」
-     * 等两分钟。看门狗每 [CANCEL_PROBE_MS] 问一次，命中即取消：正在跑的工具（bash 的
-     * Process.waitFor、文件的读写）会看到自己的 job 已经取消，各自按可中断路径收尾。
-     */
-    private suspend fun <T> watchCancel(interrupted: (() -> Boolean)?, block: suspend () -> T): T {
-        if (interrupted == null) return block()
-        return coroutineScope {
-            // 这个 coroutineScope 的 Job：看门狗把它取消掉，正在跑的工具就会看到自己的
-            // job 已经取消（bash 的 Process.waitFor 因此提前收手）
-            val scopeJob = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
-            val watchdog = launch {
-                while (true) {
-                    delay(CANCEL_PROBE_MS)
-                    if (interrupted()) {
-                        scopeJob?.cancel()
-                        return@launch
-                    }
-                }
-            }
-            try {
-                block()
-            } finally {
-                watchdog.cancel()
-            }
-        }
-    }
-
-    /**
-     * Promise.all 形态：一次宿主调用里并发跑多个子调用，
-     * 并发上限 = 设置里的「并行工具调用数」（dsh 的 agent-loop.maxParallelToolCalls /
-     * tools.maxParallelSubCalls 就是干这个的）。返回一个 JSON 数组，元素与入参一一对应。
-     */
-    private fun callToolsConcurrently(
-        tools: List<Tool>,
-        context: ToolContext,
-        payload: String,
-        calls: java.util.concurrent.atomic.AtomicInteger,
-        nextId: () -> String,
-        announce: (String, String, String) -> Unit,
-        record: (SubCall) -> Unit,
-        cancel: (() -> Boolean)? = null,
-    ): String {
-        val entries = runCatching { json.parseToJsonElement(payload).jsonArray }.getOrNull() ?: return "[]"
-        val parsed = entries.mapNotNull { element ->
-            val pair = element as? JsonArray ?: return@mapNotNull null
-            val name = pair.getOrNull(0)?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-            val rawArgs = pair.getOrNull(1)?.jsonPrimitive?.contentOrNull ?: "{}"
-            name to rawArgs
-        }
-        if (parsed.isEmpty()) return "[]"
-        // **提交序 = 程序序**（dsh 的 pendingQueue / commitQueue，spec-log §4.1-B）：
-        //  - id 在这里按程序顺序一次分完（任何挂起之前，spec-log §3「n 在任何 await 之前自增」）；
-        //  - 「开始」也按这个顺序宣布 —— 一次 `Promise.all` 是一次**原子提交**，dsh 的单车道会按
-        //    并发策略逐条 start，顺序相同（这里整批一起宣布：行先出现，跑仍然要过闸门）；
-        //  - 结算按提交序入日志（[SubCallOrder] 的队头阻塞）：谁先跑完都不影响日志顺序。
-        // 于是子行的顺序、它们的 id 序号、交付物与图片的收集顺序都等于模型写下的顺序，
-        // 不再由协程调度决定（旧写法实测 10 个并发 bash 的展示顺序是 2,1,3,5,6,7,8,10,9,4）。
-        val ids = parsed.map { nextId() }
-        ids.forEachIndexed { index, id -> announce(parsed[index].first, parsed[index].second, id) }
-        val order = SubCallOrder(parsed.size)
-        // 全进程一个闸门（见 ToolConcurrency）：原先每批各自建一个信号量，
-        // 「分两批发起」或「工具内部再并发」都能超过设置里的上限（实测一瞬间 30 个并行）
-        com.adsh.app.core.tools.ToolConcurrency.configure(context.maxParallelSubCalls)
-        val wires = arrayOfNulls<String>(parsed.size)
-
-        /** 跑第 index 个：与单调用同一条路（拿到名额 → 执行 → 按提交序记账） */
-        suspend fun runOne(index: Int): String {
-            val (name, rawArgs) = parsed[index]
-            return com.adsh.app.core.tools.ToolConcurrency.withToolPermit(name) {
-                calls.incrementAndGet()
-                val callStarted = System.currentTimeMillis()
-                val outcome = callToolSuspend(tools, context, name, rawArgs)
-                order.settle(
-                    index,
-                    SubCall(
-                        name = name,
-                        args = rawArgs,
-                        ok = outcome.ok,
-                        result = outcome.text,
-                        durationMs = System.currentTimeMillis() - callStarted,
-                        id = ids[index],
-                        images = outcome.images,
-                        deliverables = outcome.deliverables,
-                    ),
-                ).forEach(record)
-                outcome.wire
-            }
-        }
-
-        try {
-            runBlocking {
-                watchCancel(cancel) {
-                    // 读类并发、写类按提交顺序（见 ToolConcurrency.runBatch 的长注释：
-                    // 旧写法让写类各自 async 抢闸门，串行成立但顺序由协程调度决定 ——
-                    // 真机实测 10 个并发 bash 的执行顺序是 2,1,3,5,6,7,8,10,9,4，报告 1.1）
-                    com.adsh.app.core.tools.ToolConcurrency.runBatch(parsed.map { it.first }) { index ->
-                        wires[index] = runOne(index)
-                    }
-                }
-            }
-        } catch (cancelSignal: kotlinx.coroutines.CancellationException) {
-            // 中断：已经跑完的那些仍按提交序入日志（没跑完的号永远不进日志，dsh 的 abandon()），
-            // 整批都按「已停止」回信封（程序随后由泵循环的 cancel 检查终止）
-            order.drain().forEach(record)
-            return parsed.joinToString(separator = ",", prefix = "[", postfix = "]") { (name, rawArgs) ->
-                interruptedOutcome(name, rawArgs).wire
-            }
-        }
-        // 每个 wire 本身就是合法 JSON 值，直接拼成数组
-        return wires.joinToString(separator = ",", prefix = "[", postfix = "]") { it ?: "null" }
-    }
-
-    private suspend fun callToolSuspend(
-        tools: List<Tool>,
-        context: ToolContext,
-        name: String,
-        rawArgs: String,
-    ): CallOutcome {
-        fun failure(rawMessage: String, retryable: Boolean = false, code: String? = null): CallOutcome {
-            // 子调用的正文（界面、轨迹、落库）同样过一遍脱敏；wire 保持原样给程序用
-            val message = com.adsh.app.core.tools.SecretRedaction.redact(rawMessage)
-            return CallOutcome(
-                wire = errorWire(name, rawArgs, rawMessage, retryable, code),
-                text = message,
-                ok = false,
-            )
-        }
-        val tool = tools.firstOrNull { it.name == name } ?: return failure("未知工具：" + name)
-        val args = runCatching { json.parseToJsonElement(rawArgs).jsonObject }
-            .getOrElse { return failure("参数不是 JSON 对象：" + rawArgs.take(200)) }
-        val result = runCatching { tool.execute(args, context) }
-            .getOrElse {
-                // 取消（用户中断 / 看门狗）不能被吞成一条「工具失败」：那样程序会以为自己
-                // 只是调用失败、接着往下跑，而外层已经不要结果了
-                if (it is kotlinx.coroutines.CancellationException) throw it
-                // 工具内部异常在这里留一份堆栈：模型只看到一行 message，真机上要定位只能靠它
-                android.util.Log.w("ADSH", "工具 " + name + " 抛出异常", it)
-                return failure(it.message ?: (it::class.java.simpleName + "（工具内部异常）"))
-            }
-        return when (result) {
-            // 程序拿到的是「结构化值」（dsh 的 output.schema）；没给 value 的工具退化成 JSON 字符串
-            is ToolResult.Ok -> CallOutcome(
-                wire = result.value?.toString()
-                    ?: kotlinx.serialization.json.JsonPrimitive(result.text).toString(),
-                // 正文过脱敏（wire 不过：程序自己还要用那份数据，见 SecretRedaction 的注释）
-                text = com.adsh.app.core.tools.SecretRedaction.redact(result.text),
-                ok = true,
-                images = result.images,
-                deliverables = result.deliverables,
-            )
-            is ToolResult.Error -> failure(result.message, result.retryable, result.code)
-        }
-    }
-
-    /**
-     * 失败时的 wire 形态：带上 toolName / 参数原文 / retryable / code，
-     * 这样程序没 catch 时，最外层也能说清楚「哪个工具、什么参数、原始错误」（dsh 的 ToolCallError），
-     * 而程序 catch 到之后还能按 code 分支（dsh 的 WebError.code 就是这么用的）。
-     */
-    private fun errorWire(
-        name: String,
-        rawArgs: String,
-        message: String,
-        retryable: Boolean,
-        code: String?,
-    ): String = buildString {
-        append("{\"__error\":true,\"toolName\":\"").append(escape(name))
-        append("\",\"args\":\"").append(escape(rawArgs.take(600)))
-        append("\",\"message\":\"").append(escape(message))
-        append("\",\"retryable\":").append(retryable)
-        append(",\"code\":")
-        if (code == null) append("null") else append('"').append(escape(code)).append('"')
-        append('}')
-    }
-
     private fun addLog(logs: MutableList<String>, info: String?, cap: Int) {
         if (logs.size >= cap) return
         logs += (info ?: "")
     }
 
-    private fun escape(s: String): String = buildString(s.length + 16) {
-        s.forEach { c ->
-            when (c) {
-                '\\' -> append("\\\\")
-                '"' -> append("\\\"")
-                '\n' -> append("\\n")
-                '\r' -> append("\\r")
-                '\t' -> append("\\t")
-                else -> if (c < ' ') append(" ") else append(c)
-            }
-        }
-    }
-
     companion object {
+        /** dsh 的 ptc-runtime-node config：`timeoutMs` 默认 12e4 */
         const val DEFAULT_TIMEOUT_MS = 120_000L
+
+        /** dsh 的 config `maxTimeoutMs`：程序预算的上限（模型可以通过 run_code 的 timeoutMs 抬到它） */
+        const val MAX_TIMEOUT_MS = 600_000L
+
         const val MAX_LOG_LINES = 500
         private const val MAX_PUMPS = 200_000
-
-        /** 看门狗线程的名字（真机抓线程栈时一眼认得出） */
-        private const val PTC_THREAD_NAME = "adsh-ptc"
-
-        /**
-         * 程序线程的栈大小：**必须大于 QuickJS 自己记账的 256KB**（[runBody] 里 setMaxStackSize）。
-         *
-         * 第 120 轮真机实测：QuickJS 的溢出判据是 `sp < stack_top - stack_size` —— 报的是它自己
-         * 记账的用量；账比 pthread 栈还大时它永远不会先开口，递归一路吃穿栈 = SIGSEGV（进程级）。
-         * 所以这里显式给 2MB（安卓默认线程栈约 1MB，翻倍留量），而不是用系统默认值赌一把。
-         */
-        private const val PTC_STACK_BYTES = 2L * 1024 * 1024
-
-        /** 宿主看门狗的轮询粒度 */
-        private const val WATCHDOG_TICK_MS = 200L
-
-        /**
-         * 超预算之后还给程序多少宽限：正常路径是**泵循环**自己发现超时并收尾（几毫秒），
-         * 看门狗只负责接住「JS 不让出执行权」那种 —— 所以留 5 秒，避免和正常收尾抢。
-         */
-        private const val WATCHDOG_GRACE_MS = 5_000L
-
-        /**
-         * 「用户按了停止」之后还给程序多少宽限：泵循环每个周期都会读 cancel 探针（第 91 轮加的那条路），
-         * 正常几毫秒就停；只有同步死循环才走到这里 —— 2 秒足够区分「正在停」与「停不下来」。
-         */
-        private const val CANCEL_GRACE_MS = 2_000L
-
-        /**
-         * 中断看门狗的轮询粒度：正在跑的子调用最多迟这么久发现「用户停了」。
-         * 与 [com.adsh.app.runtime.termux.TermuxRuntime.run] 的探针粒度同量级。
-         */
-        private const val CANCEL_PROBE_MS = 50L
 
         /**
          * 子调用信封里表示「被用户中断」的 code（dsh 的 tool-call 块 `error.code === "interrupted"`，
@@ -872,117 +423,3 @@ class QuickJsRuntime(
         """.trimIndent()
     }
 }
-
-/** 看门狗等出来的三种结局（见 [awaitPtcProgram]） */
-internal sealed interface PtcWatchdogOutcome<out T> {
-    /** 程序自己结束了（正常返回 / 语法错误 / 泵循环收尾，都是这一支） */
-    data class Finished<T>(val value: T) : PtcWatchdogOutcome<T>
-
-    /** 超预算 + 宽限还没结束：同步死循环，放弃这次调用 */
-    data object TimedOut : PtcWatchdogOutcome<Nothing>
-
-    /** 用户按了停止 + 宽限还没停：放弃这次调用（按「已停止」收尾） */
-    data object Cancelled : PtcWatchdogOutcome<Nothing>
-}
-
-/**
- * 宿主看门狗的**调度循环**（第 183 轮）：把程序提交到 [executor] 上，每 [tickMs] 醒一次，
- * 用 [ptcWatchdogVerdict] 判决要不要放弃。
- *
- * 抽成独立函数的理由：QuickJS 是原生库，桌面上跑不了它的单测 —— 但这段**调度**（轮询、算
- * 「程序自己跑了多久」、放弃时 cancel + shutdown、正常完成照原样返回）恰恰是最容易写错的地方，
- * 所以它必须能在 JVM 上被测（见 PtcWatchdogTest 里那个「提交一个永不结束的 body」的用例）。
- *
- * @param toolWaitMs 「等工具」的累计耗时（由程序本体在子调用返回时累加）：判据用它扣掉等工具的
- *   时间，与泵循环的公式保持同一条
- * @param cancelRequested 用户是否按了停止（每次 tick 问一次）
- * @param now 时钟（测试注入）
- * @param start 真正把程序提交上去（测试注入一个「永不结束」的 body）
- */
-internal fun <T> awaitPtcProgram(
-    executor: java.util.concurrent.ExecutorService,
-    startedAt: Long,
-    toolWaitMs: java.util.concurrent.atomic.AtomicLong,
-    budgetMs: Long,
-    timeoutGraceMs: Long,
-    cancelGraceMs: Long,
-    tickMs: Long,
-    cancelRequested: () -> Boolean,
-    start: () -> java.util.concurrent.Future<T>,
-    now: () -> Long = System::currentTimeMillis,
-): PtcWatchdogOutcome<T> {
-    val future = start()
-    while (true) {
-        val finished = try {
-            future.get(tickMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-        } catch (_: java.util.concurrent.TimeoutException) {
-            null
-        } catch (failed: java.util.concurrent.ExecutionException) {
-            // 程序本体自己兜了 Throwable；这里只可能是 Error（例如 OOM），照实抛给上层
-            executor.shutdown()
-            throw (failed.cause ?: failed)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-            future.cancel(true)
-            executor.shutdown()
-            return PtcWatchdogOutcome.Cancelled
-        }
-        if (finished != null) {
-            executor.shutdown()
-            return PtcWatchdogOutcome.Finished(finished)
-        }
-        val programMs = now() - startedAt - toolWaitMs.get()
-        when (
-            ptcWatchdogVerdict(
-                programMs = programMs,
-                budgetMs = budgetMs,
-                timeoutGraceMs = timeoutGraceMs,
-                cancelRequested = cancelRequested(),
-                cancelGraceMs = cancelGraceMs,
-            )
-        ) {
-            PtcWatchdog.RUNNING -> Unit
-            // 放弃：cancel 只是语义标记（同步死循环里的 native 代码收不到中断），
-            // 关键是**宿主不再等它**，这一轮继续往下走
-            PtcWatchdog.ABANDON_CANCELLED -> {
-                future.cancel(true)
-                executor.shutdown()
-                return PtcWatchdogOutcome.Cancelled
-            }
-            PtcWatchdog.ABANDON_TIMEOUT -> {
-                future.cancel(true)
-                executor.shutdown()
-                return PtcWatchdogOutcome.TimedOut
-            }
-        }
-    }
-}
-
-/**
- * 宿主看门狗的判据（**纯函数**，第 183 轮）：程序自己跑了 [programMs] 毫秒之后，该继续等、还是放弃。
- *
- * 三段优先级：
- *  1. [PtcWatchdog.ABANDON_CANCELLED]：用户按了停止、而且程序已经超过 [cancelGraceMs] 没让出执行权
- *     —— 泵循环读不到 cancel 的那种（同步死循环），只能放弃；
- *  2. [PtcWatchdog.ABANDON_TIMEOUT]：程序自己跑的时间超过预算 + [timeoutGraceMs]
- *     —— 同样是泵循环那条判据没机会执行的情形（真机实测：一个 1e11 次的 for 循环把整轮挂了 13 分钟）；
- *  3. [PtcWatchdog.RUNNING]：其余都继续等（等工具的耗时不算在 [programMs] 里，见 [QuickJsRuntime.run]）。
- *
- * 判据与泵循环保持**同一条公式**（elapsed - toolWait），宽限只用来区分「正常收尾」与「卡死」。
- * 单测把这三段的边界都钉住（见 PtcWatchdogTest）。
- */
-internal fun ptcWatchdogVerdict(
-    programMs: Long,
-    budgetMs: Long,
-    timeoutGraceMs: Long,
-    cancelRequested: Boolean,
-    cancelGraceMs: Long,
-): PtcWatchdog = when {
-    cancelRequested && programMs > cancelGraceMs -> PtcWatchdog.ABANDON_CANCELLED
-    programMs > budgetMs + timeoutGraceMs -> PtcWatchdog.ABANDON_TIMEOUT
-    else -> PtcWatchdog.RUNNING
-}
-
-/** 看门狗的三种判决（见 [ptcWatchdogVerdict]） */
-internal enum class PtcWatchdog { RUNNING, ABANDON_TIMEOUT, ABANDON_CANCELLED }
-

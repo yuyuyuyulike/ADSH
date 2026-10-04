@@ -1048,6 +1048,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         workspacePath: String?,
     ): com.adsh.app.core.tools.ToolContext = com.adsh.app.core.tools.ToolContext(
             workspace = workspaces.current(),
+            // run_code 要把 PTC 程序绑到 `:ptc` 进程上跑（dsh 的独立进程隔离，见 PtcProcess）
+            appContext = getApplication(),
             runtime = runtime,
             webSearchProvider = settings.webSearchProvider,
             webSearchBaseUrl = settings.webSearchBaseUrl,

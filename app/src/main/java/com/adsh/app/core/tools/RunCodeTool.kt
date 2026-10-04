@@ -1,5 +1,7 @@
 package com.adsh.app.core.tools
 
+import com.adsh.app.core.ptc.PtcProcess
+import com.adsh.app.core.ptc.PtcToolRunner
 import com.adsh.app.core.ptc.QuickJsRuntime
 import com.adsh.app.core.ptc.SubCall
 import kotlinx.coroutines.Dispatchers
@@ -22,8 +24,6 @@ import kotlinx.serialization.json.put
 object RunCodeTool : Tool {
     override val name = "run_code"
     override val description = ToolSdk.RUN_CODE_DESCRIPTION
-
-    private val runtime = QuickJsRuntime()
 
     /**
      * wire 上唯一暴露的工具 schema（dsh-tools 的 wireSchemas）：code + description，两个都必填。
@@ -57,6 +57,16 @@ object RunCodeTool : Tool {
                                         put("description", ToolSdk.RUN_CODE_DESCRIPTION_PARAM_DESCRIPTION)
                                     },
                                 )
+                                // dsh 的 RUN_CODE_CONTROLS.timeoutMs（dsh-tools/lib/types/ptc.js）：
+                                // 「Positive elapsed-time budget in milliseconds, **including nested
+                                // tool and approval waits**. Default 120000; capped at 600000.」
+                                put(
+                                    "timeoutMs",
+                                    buildJsonObject {
+                                        put("type", "number")
+                                        put("description", ToolSdk.RUN_CODE_TIMEOUT_PARAM_DESCRIPTION)
+                                    },
+                                )
                             },
                         )
                         put(
@@ -85,29 +95,42 @@ object RunCodeTool : Tool {
         if (ctx.workspace.shellRoot == null) {
             return ToolResult.Error("当前工作区为 SAF 引用形态，run_code 不可用（工具链需要真实路径）")
         }
-        // 中断探针：用户按「停止」时，程序的泵循环与正在跑的子调用都要立刻收手
+        // 中断探针：用户按「停止」时，正在跑的子调用要立刻收手，宿主也会**杀掉 :ptc 进程**
         // （没有它的话「停止」要等程序自己跑完 —— 程序里一个 120s 的 bash 就是两分钟）
         val job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+        val cancelProbe = { job?.isActive == false }
+        val appContext = ctx.appContext
+            ?: return ToolResult.Error("run_code 需要应用上下文才能把程序放进独立进程（ToolContext.appContext 为空）")
+        // 工具在**主进程**执行（ToolContext 只在这里有效），程序在 :ptc 进程跑 —— 两边靠 Messenger
+        // 做同步 RPC，与 dsh 的「子进程 ↔ 父进程」同形（见 core/ptc/PtcProcess 的 KDoc）
+        val runner = PtcToolRunner(ToolRegistry.bindings, ctx, cancelProbe)
+        // dsh 的 clampTimeout：模型没给就用默认值 12e4，给了就夹在 (0, maxTimeoutMs]。
+        // 预算**包含**程序里等工具与等审批的时间（dsh 的 schema 原文就这么写）—— 到点由宿主
+        // 杀掉 :ptc 进程，所以这条预算是硬上限。
+        val timeoutMs = (Args.int(args, "timeoutMs")?.toLong() ?: QuickJsRuntime.DEFAULT_TIMEOUT_MS)
+            .coerceIn(1L, QuickJsRuntime.MAX_TIMEOUT_MS)
         val result = withContext(Dispatchers.IO) {
-            runtime.run(
+            PtcProcess.run(
+                context = appContext,
                 program = program,
-                tools = ToolRegistry.bindings,
-                context = ctx,
-                cancel = { job?.isActive == false },
+                toolNames = ToolRegistry.bindings.map { it.name },
+                timeoutMs = timeoutMs,
+                runner = runner,
+                cancel = cancelProbe,
             )
         }
         // 被中断：把取消原样抛出去（不要变成一条「程序失败」的工具结果 —— 那会接着跑下一轮）
         if (result.aborted) throw kotlinx.coroutines.CancellationException("run_code interrupted by the user")
         ToolStepCounter.bump(result.toolCalls)
-        SubCallTrace.record(result.subCalls)
         val logs = result.logs.joinToString("\n")
         if (result.error != null) {
             // dsh 的 CodeRunFailedError：code run failed (<kind>): <message>，
-            // 后面再附一段 Captured output（程序已经 console.log 出来的东西），模型据此自己纠正
-            val kind = if (result.error.startsWith("程序在 ")) "timeout" else "exception"
+            // 后面再附一段 Captured output（程序已经 console.log 出来的东西），模型据此自己纠正。
+            // kind 直接取运行时的失败分类（timeout / worker-exit / abort / exception），不再猜文案。
+            val kind = result.failureKind ?: "exception"
             val captured = if (result.logs.isEmpty()) "" else "\nCaptured output:\n" + logs
             // 第 101 轮：再附一张「已经跑成的子调用」回执（见 completedDigest）
-            val digest = completedDigest(result.subCalls)?.let { "\n" + it } ?: ""
+            val digest = completedDigest(runner.subCalls())?.let { "\n" + it } ?: ""
             return ToolResult.Error(
                 "code run failed (" + kind + "): " + result.error + captured + digest,
             )
