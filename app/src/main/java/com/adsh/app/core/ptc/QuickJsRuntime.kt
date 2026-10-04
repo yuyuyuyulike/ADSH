@@ -27,9 +27,10 @@ import com.whl.quickjs.wrapper.QuickJSContext
  * evaluate 时才生效）。因此采用「泵 + 同步宿主函数」模型：
  *   1) 把程序包进 async IIFE，结果写进 `globalThis.__adsh_state`；
  *   2) 反复 evaluate 一个空表达式来泵动 microtask 队列，直到 settled 或超时；
- *   3) 宿主函数 `__adsh_call__` 是**同步阻塞**的（跨进程 RPC 到宿主，由 [PtcToolRunner] 跑工具），
- *      所以程序里的 `await tools.x(...)` 在下一个泵周期即可继续。
- * 代价：同一程序内的多个工具调用是串行执行的（dsh 支持并行子调用），已在文档中记为已知差异。
+ *   3) 宿主函数 `__adsh_post__` **只把调用帧写出去就返回**（非阻塞）；回执到达后由泵循环喂给
+ *      `__adsh_settleAll__` 兑现 —— 于是同一程序里的多个 `tools.x(...)` 各自异步执行，
+ *      谁与谁重叠由宿主侧的 [com.adsh.app.core.tools.ToolConcurrency] 决定（第 186 轮；
+ *      dsh 的绑定就是这个形状：子进程 postMessage 之后继续跑）。
  *
  * ## 超时（与 dsh 同一条口径）
  * `timeoutMs` 是**墙钟**预算（dsh 的 wallTimer 同样从执行开始计时，等工具的时间也算在内），默认
@@ -48,8 +49,13 @@ class QuickJsRuntime {
     fun run(
         program: String,
         toolNames: List<String>,
-        invoke: (name: String, argsJson: String) -> String,
-        invokeAll: (payloadJson: String) -> String,
+        /**
+         * 发起一次 `tools.x()`：**只把调用帧写出去就返回**（不阻塞 JS 线程）。
+         * dsh 的绑定就是这个形状 —— 子进程 postMessage 之后继续跑，宿主那边各自异步执行。
+         */
+        postCall: (id: Int, name: String, argsJson: String) -> Unit,
+        /** 取走**已经到达**的回执（id → wire），非阻塞；没有就返回空表 */
+        takeReplies: () -> List<Pair<Int, String>>,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         maxLogLines: Int = MAX_LOG_LINES,
         /**
@@ -81,18 +87,16 @@ class QuickJsRuntime {
         try {
             val global = engine.getGlobalObject()
 
-            // 一次 await tools.x()：同步 RPC 到宿主（宿主执行工具、记轨迹、回信封）
-            global.setProperty("__adsh_call__", JSCallFunction { args ->
-                val name = args.getOrNull(0) as? String
-                    ?: return@JSCallFunction "{\"__error\":true,\"message\":\"bad tool name\"}"
-                val rawArgs = args.getOrNull(1) as? String ?: "{}"
+            // tools.x() 的**发起**（非阻塞）：把 id / 名字 / 参数原文交给宿主，立刻返回。
+            // 回执不走这条调用栈 —— 泵循环把 takeReplies() 收到的信封喂给 __adsh_settleAll__。
+            global.setProperty("__adsh_post__", JSCallFunction { args ->
+                val id = (args.getOrNull(0) as? Number)?.toInt()
+                    ?: return@JSCallFunction null
+                val name = args.getOrNull(1) as? String ?: return@JSCallFunction null
+                val rawArgs = args.getOrNull(2) as? String ?: "{}"
                 calls.incrementAndGet()
-                invoke(name, rawArgs)
-            })
-
-            // 一次 Promise.all([tools.a(), tools.b()])：整批交给宿主（闸门与提交序都在那边）
-            global.setProperty("__adsh_callAll__", JSCallFunction { args ->
-                invokeAll(args.getOrNull(0) as? String ?: "[]")
+                postCall(id, name, rawArgs)
+                null
             })
 
             // SDK 门面：把宿主回调包装成 tools.<name>(args)。
@@ -114,8 +118,6 @@ class QuickJsRuntime {
                 "    globalThis.__adsh_state.errorTool = (e && e.toolName) || null;\n" +
                 "    globalThis.__adsh_state.errorStack = (e && e.stack) || null;\n" +
                 "  } finally {\n" +
-                // 忘了 await 的写法兜底：把没执行过的惰性调用按顺序补跑（不会因为改成惰性就丢调用）
-                "    try { globalThis.__adsh_flush(); } catch (e) {}\n" +
                 "    globalThis.__adsh_state.settled = true;\n" +
                 "  }\n" +
                 "})();"
@@ -131,6 +133,11 @@ class QuickJsRuntime {
                 cancel?.invoke() != true
             ) {
                 engine.evaluate("0", "pump.js")
+                // 到了的回执先兑现（同一个泵 tick 里）：JS 侧那些 Promise 就是在这里被 resolve 的
+                val arrived = takeReplies()
+                if (arrived.isNotEmpty()) {
+                    engine.evaluate("globalThis.__adsh_settleAll__(" + replyPayload(arrived) + ")", "settle.js")
+                }
                 settled = (engine.evaluate("globalThis.__adsh_state.settled === true", "check.js") as? Boolean) ?: false
                 pumps++
                 if (!settled) Thread.sleep(1)
@@ -214,6 +221,12 @@ class QuickJsRuntime {
         }
     }
 
+    /** 回执打包成 __adsh_settleAll__ 吃的那张表：[[id, wire], …]（wire 交给 JsonPrimitive 转义） */
+    private fun replyPayload(replies: List<Pair<Int, String>>): String =
+        replies.joinToString(separator = ",", prefix = "[", postfix = "]") { (id, wire) ->
+            "[" + id + "," + kotlinx.serialization.json.JsonPrimitive(wire) + "]"
+        }
+
     /** 收一行控制台输出：进结果列表（有上限），同时**立刻**推给宿主（dsh 的 log 帧） */
     private fun addLog(logs: MutableList<String>, info: String?, cap: Int, onLog: ((String) -> Unit)?) {
         if (logs.size >= cap) return
@@ -241,12 +254,14 @@ class QuickJsRuntime {
         /**
          * 注入 tools 门面与状态对象。
          *
-         * dsh 的 SDK 里 `tools.x()` 返回的是 Promise，所以这里也让它是「惰性 thenable」：
-         *  - 直接 `await tools.x()` → then() 里同步调一次 __adsh_call__（老路径，行为不变）；
-         *  - `Promise.all([tools.a(), tools.b()])` → 走一次 __adsh_callAll__，
-         *    多个工具在宿主侧并发跑（上限 = 设置里的「并行工具调用数」）；
-         *  - 忘了 await 的写法兜底：程序收尾时 __adsh_flush 把没执行过的调用按顺序补跑，
-         *    不会因为改成惰性就把调用弄丢。
+         * dsh 的 SDK 里 `tools.x()` 返回的是 Promise —— 这里**就是真的 Promise**（第 186 轮）：
+         *  - 每次调用**立刻**把帧发出去（`__adsh_post__`，非阻塞）并返回一个 Promise；
+         *  - 回执由泵循环喂给 `__adsh_settleAll__`，于是多个调用在宿主侧各自异步执行、
+         *    由 [com.adsh.app.core.tools.ToolConcurrency] 决定谁与谁重叠（读类并发、写类独占）；
+         *  - `Promise.all` 不再需要任何补丁：原生语义就是对的。
+         * 第 185 轮曾经用「惰性 thenable + 一个 tick 合并成一次批量 RPC」来近似并发，
+         * 那套机器（__adsh_handle / __adsh_pending / __adsh_flush / __adsh_runAll / __adsh_callAll__）
+         * 随这一轮一起删掉了。
          */
         private val PREAMBLE = """
             /* console 的对象格式化（第 81 轮）：宿主侧的回调只收**一个字符串**
@@ -276,7 +291,6 @@ class QuickJsRuntime {
               }
             })();
             globalThis.__adsh_state = { settled: false, value: undefined, error: null };
-            globalThis.__adsh_pending = [];
             /* dsh 的 binding errorClass（dsh-code-runtime-worker-thread 的 makeBindingErrorClass）：
                程序里能 `e instanceof ToolCallError`，且 e.name 恒为字面量 "ToolCallError"、
                e.toolName 是被调工具名。以前这里直接抛 new Error(...)，于是 e.name === "Error"，
@@ -293,10 +307,9 @@ class QuickJsRuntime {
             globalThis.__adsh_parse = function (raw, name) {
               return globalThis.__adsh_wire(JSON.parse(raw || '{}'), name);
             };
-            /* 错误信封 → ToolCallError（单调用与批量调用共用一个判定）。
-               **入参是已经解析好的 JS 值**：批量路径拿到的就是 JSON.parse 的结果，
-               再交给 __adsh_parse 会二次 JSON.parse（对象被转成 "[object Object]"）
-               —— 那正是 Promise.all 在真机上必然抛 SyntaxError 的原因，见 __adsh_runAll。 */
+            /* 错误信封 → ToolCallError（唯一判定）。
+               **入参是已经解析好的 JS 值**（回执路径拿到的就是 JSON.parse 的结果），
+               所以这里不能再走 __adsh_parse —— 那会二次 JSON.parse，对象被转成 "[object Object]"。 */
             globalThis.__adsh_wire = function (parsed, name) {
               if (parsed && parsed.__error) {
                 var err = new globalThis.ToolCallError(parsed.message || 'tool failed', parsed.toolName || String(name));
@@ -309,100 +322,41 @@ class QuickJsRuntime {
               }
               return parsed;
             };
-            globalThis.__adsh_handle = function (name, args) {
+            /* 一次 tools.x()：**立刻**把调用帧发出去，返回一个**真正的 Promise**（第 186 轮）。
+               dsh 的绑定就是这个形状：子进程 postMessage 之后继续跑，宿主那边各自异步执行、
+               由调度器决定谁与谁重叠。以前 ADSH 的 handle 是惰性的手写 thenable，then() 会
+               **同步**等工具返回 —— 于是 Promise.all 里第二个调用要等第一个跑完（真机实测
+               3 × web_fetch(delay/2) 串行 7.2s，而提示词写着 safe calls run concurrently）。 */
+            globalThis.__adsh_next_call = 1;
+            globalThis.__adsh_open_calls = {};
+            /* 宿主回执的兑现口：泵循环每个 tick 把收到的信封喂进来（kotlin 侧调它）。
+               参数是 [[id, wire], …]，wire 已经是 JSON 原文，所以这里走 __adsh_wire（对象进、
+               对象出）—— 不能再走 __adsh_parse，那会二次 JSON.parse。 */
+            globalThis.__adsh_settleAll__ = function (payload) {
+              /* 调用方（kotlin 的 replyPayload）直接生成**数组字面量**，所以这里是「数组进、数组出」；
+                 接受字符串形态只为容错（JSON.parse 一个数组会先 String() 成 "1,…" 再炸
+                 "unexpected data at the end" —— 第 186 轮真机上就是这么踩的）。 */
+              var list = (typeof payload === 'string') ? JSON.parse(payload || '[]') : (payload || []);
+              for (var i = 0; i < list.length; i++) {
+                var entry = globalThis.__adsh_open_calls[list[i][0]];
+                if (!entry) continue;
+                delete globalThis.__adsh_open_calls[list[i][0]];
+                try { entry.resolve(globalThis.__adsh_wire(JSON.parse(list[i][1] || '{}'), entry.name)); }
+                catch (e) { entry.reject(e); }
+              }
+            };
+            globalThis.__adsh_invoke = function (name, args) {
               var raw = JSON.stringify(args === undefined ? {} : args);
-              var handle = {
-                __adshLazy: true,
-                name: name,
-                raw: raw,
-                then: function (resolve, reject) {
-                  /* 第 185 轮：这一次调用**推迟到本轮微任务**再发出去（合并见 __adsh_drain）。
-                     以前 then 是同步发起的（__adsh_call__ 当场阻塞到工具跑完），于是
-                     `Promise.all([tools.a().then(f), tools.b().then(g)])` 里第二个 tools.b()
-                     要等第一个跑完才被创建 —— 实测 3 × web_fetch(delay/2) 串行 7.2s，
-                     而提示词写着 safe calls run concurrently。推迟之后，同一个 tick 里 then 过的
-                     handle 合并成**一次** __adsh_callAll__，调度器就能让读类真正重叠。
-                     返回一个**真正的 Promise**（dsh 里 tools.x() 本来就是 Promise，模型会写
-                     `tools.x({...}).then(f).catch(g)`，见第 91 轮实测报告 B1）。 */
-                  var p = new Promise(function (res, rej) {
-                    handle.__resolve = res;
-                    handle.__reject = rej;
-                    globalThis.__adsh_schedule(handle);
-                  });
-                  return p.then(resolve, reject);
-                },
-                /* dsh 的绑定是 **async 函数**（真 Promise），所以那边 `tools.x().catch(g)` 与
-                   `.finally(f)` 都是合法的；ADSH 的 handle 是惰性的手写 thenable，本来只有 then ——
-                   模型直接 `.catch` 会拿到 "not a function"，看起来像工具不存在（实测报告第 9 点）。
-                   这两个方法按 Promise 语义补上；真正的调用仍然只发生在 then() 里，
-                   所以惰性批量合并（Promise.all → __adsh_callAll__）一点不受影响。 */
-                catch: function (onRejected) {
-                  return handle.then(undefined, onRejected);
-                },
-                finally: function (onFinally) {
-                  var run = function () { return typeof onFinally === 'function' ? onFinally() : undefined; };
-                  return handle.then(
-                    function (value) { return Promise.resolve(run()).then(function () { return value; }); },
-                    function (error) { return Promise.resolve(run()).then(function () { throw error; }); }
-                  );
+              return new Promise(function (resolve, reject) {
+                var id = globalThis.__adsh_next_call++;
+                globalThis.__adsh_open_calls[id] = { resolve: resolve, reject: reject, name: name };
+                try {
+                  __adsh_post__(id, name, raw);
+                } catch (e) {
+                  delete globalThis.__adsh_open_calls[id];
+                  reject(e);
                 }
-              };
-              globalThis.__adsh_pending.push(handle);
-              return handle;
-            };
-            globalThis.__adsh_cancel = function (handle) {
-              var at = globalThis.__adsh_pending.indexOf(handle);
-              if (at >= 0) globalThis.__adsh_pending.splice(at, 1);
-            };
-            globalThis.__adsh_settle = function (handle, raw) {
-              globalThis.__adsh_cancel(handle);
-              return globalThis.__adsh_parse(raw, handle.name);
-            };
-            /* 本轮微任务里要兑现的 handle（第 185 轮）：同一个 tick 里 then 过的调用合并成一次 */
-            globalThis.__adsh_deferred = [];
-            globalThis.__adsh_scheduled = false;
-            globalThis.__adsh_schedule = function (handle) {
-              if (globalThis.__adsh_deferred.indexOf(handle) < 0) globalThis.__adsh_deferred.push(handle);
-              if (globalThis.__adsh_scheduled) return;
-              globalThis.__adsh_scheduled = true;
-              Promise.resolve().then(function () { globalThis.__adsh_drain(); });
-            };
-            /* 一次批量兑现：1 个走单调用（与老路径逐字一致），多个走 __adsh_callAll__（一批 RPC）。
-               顺序 = then 的注册顺序 = 程序里写下调用的顺序（dsh 的 submission order）。 */
-            globalThis.__adsh_drain = function () {
-              globalThis.__adsh_scheduled = false;
-              var batch = globalThis.__adsh_deferred.slice();
-              globalThis.__adsh_deferred.length = 0;
-              if (batch.length === 0) return;
-              for (var i = 0; i < batch.length; i++) globalThis.__adsh_cancel(batch[i]);
-              if (batch.length === 1) {
-                var only = batch[0];
-                try { only.__resolve(globalThis.__adsh_parse(__adsh_call__(only.name, only.raw), only.name)); }
-                catch (e) { only.__reject(e); }
-                return;
-              }
-              var payload = [];
-              for (var j = 0; j < batch.length; j++) payload.push([batch[j].name, batch[j].raw]);
-              var wires;
-              try { wires = JSON.parse(__adsh_callAll__(JSON.stringify(payload)) || '[]'); }
-              catch (e2) {
-                for (var k = 0; k < batch.length; k++) batch[k].__reject(e2);
-                return;
-              }
-              for (var m = 0; m < batch.length; m++) {
-                try { batch[m].__resolve(globalThis.__adsh_wire(wires[m], batch[m].name)); }
-                catch (e3) { batch[m].__reject(e3); }
-              }
-            };
-            globalThis.__adsh_flush = function () {
-              /* 先把已经 then 过、还等在微任务里的那批兑现掉（它们已经从 pending 里摘掉了，
-                 不能留到下面那圈再跑一遍 —— 那就成了执行两次） */
-              try { globalThis.__adsh_drain(); } catch (e) {}
-              var rest = globalThis.__adsh_pending.slice();
-              globalThis.__adsh_pending.length = 0;
-              for (var i = 0; i < rest.length; i++) {
-                try { __adsh_call__(rest[i].name, rest[i].raw); } catch (e) {}
-              }
+              });
             };
             /* 只有 SDK 里声明过的名字才是 tools 的属性 —— dsh 的 namespaces 就是这么建的
                （worker.cjs 的 makeNamespaces：null 原型对象 + 只定义已声明的名字）。
@@ -415,63 +369,14 @@ class QuickJsRuntime {
               var names = globalThis.__adsh_names || [];
               for (var i = 0; i < names.length; i++) {
                 (function (name) {
-                  globalThis.tools[name] = function (args) { return globalThis.__adsh_handle(name, args); };
+                  globalThis.tools[name] = function (args) { return globalThis.__adsh_invoke(name, args); };
                 })(names[i]);
               }
             })();
-            /* Promise.all / allSettled 特判：全是惰性 handle 时合并成一次并发调用 */
-            globalThis.__adsh_nativeAll = Promise.all.bind(Promise);
-            globalThis.__adsh_nativeAllSettled = Promise.allSettled.bind(Promise);
-            globalThis.__adsh_allLazy = function (items) {
-              if (!items || items.length === 0) return false;
-              for (var i = 0; i < items.length; i++) {
-                var it = items[i];
-                if (!it || it.__adshLazy !== true) return false;
-              }
-              return true;
-            };
-            globalThis.__adsh_runAll = function (items, settled) {
-              var payload = [];
-              for (var i = 0; i < items.length; i++) {
-                globalThis.__adsh_cancel(items[i]);
-                payload.push([items[i].name, items[i].raw]);
-              }
-              var raw = __adsh_callAll__(JSON.stringify(payload));
-              /* wires 已经是**解析过的 JS 值**，所以下面只能走 __adsh_wire（对象进、对象出），
-                 不能再走 __adsh_parse —— 它内部还要 JSON.parse 一次，对象被转成 "[object Object]"，
-                 直接抛 SyntaxError: unexpected token: 'object'。
-                 这正是真机上 `Promise.all([tools.x()])`（哪怕只有一个元素）必然失败的原因：
-                 提示词唯一推荐的并发写法，曾经是运行时唯一不接受的写法（第 91 轮实测，报告 B1）。 */
-              var wires = JSON.parse(raw || '[]');
-              if (settled) {
-                var out = [];
-                for (var j = 0; j < items.length; j++) {
-                  try { out.push({ status: 'fulfilled', value: globalThis.__adsh_wire(wires[j], items[j].name) }); }
-                  catch (e) { out.push({ status: 'rejected', reason: e }); }
-                }
-                /* 直接兑现成**结果数组**，不能再交给 nativeAllSettled：那样每个元素会被再包一层
-                   （返回 [{status:'fulfilled', value:{status:'rejected', reason:…}}]），
-                   allSettled 的语义就废了 —— 元素的 status/reason 全被吞掉。 */
-                return new Promise(function (resolve) { resolve(out); });
-              }
-              return new Promise(function (resolve, reject) {
-                for (var k = 0; k < items.length; k++) {
-                  try { globalThis.__adsh_wire(wires[k], items[k].name); }
-                  catch (e) { reject(e); return; }
-                }
-                var values = [];
-                for (var m = 0; m < items.length; m++) values.push(globalThis.__adsh_wire(wires[m], items[m].name));
-                resolve(values);
-              });
-            };
-            Promise.all = function (items) {
-              if (Array.isArray(items) && globalThis.__adsh_allLazy(items)) return globalThis.__adsh_runAll(items, false);
-              return globalThis.__adsh_nativeAll(items);
-            };
-            Promise.allSettled = function (items) {
-              if (Array.isArray(items) && globalThis.__adsh_allLazy(items)) return globalThis.__adsh_runAll(items, true);
-              return globalThis.__adsh_nativeAllSettled(items);
-            };
+            /* Promise.all / allSettled 不再特判（第 186 轮）：绑定返回的是**真的 Promise**，
+               原生那套就是对的 —— 谁先发谁先跑，宿主侧的调度器决定并发。以前为了让一次批量 RPC
+               看起来像 Promise.all，这里替换过原生实现、还特判过「全是惰性 handle」；
+               那套补丁与 __adsh_runAll / __adsh_callAll__ 一起删掉了。 */
         """.trimIndent()
     }
 }

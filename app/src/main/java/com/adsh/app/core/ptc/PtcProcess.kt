@@ -13,6 +13,8 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.launch
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -126,10 +128,20 @@ internal object PtcProcess {
         private val pid = AtomicInteger(-1)
         private val channelName = "adsh.ptc." + Process.myPid() + "." + channelSeq.incrementAndGet()
 
-        /** 工具执行的线程：收帧的线程不能停在这里（否则通道断了没人知道） */
+        /**
+         * 工具派发的**单线程**执行器（第 186 轮）：每次 `tools.x()` 在这里 launch 一个协程。
+         *
+         * 为什么必须是单线程：调度位要按**到达顺序**登记（dsh 的 submission order），而登记发生在
+         * 协程开始跑的那一刻 —— 单线程保证 launch 顺序 = 开始顺序。工具真正跑起来之后由
+         * [PtcToolRunner.call] 让出这根线程（工具体在 Dispatchers.IO 上），所以派发不会被挡住。
+         */
         private val caller = Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "adsh-ptc-calls").apply { isDaemon = true }
+            Thread(runnable, "adsh-ptc-dispatch").apply { isDaemon = true }
         }
+        private val scope = kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.SupervisorJob() + caller.asCoroutineDispatcher(),
+        )
+
         private val thread = Thread({ serve() }, "adsh-ptc-host").apply { isDaemon = true }
 
         @Volatile private var server: LocalServerSocket? = null
@@ -235,33 +247,30 @@ internal object PtcProcess {
                 ?: throw PtcProtocolException("invalid binding call identity")
             if (id != expectedId + 1) throw PtcProtocolException("invalid binding call identity")
             expectedId = id
-            val all = PtcProtocol.flag(frame, PtcProtocol.FIELD_ALL)
             val name = PtcProtocol.text(frame, PtcProtocol.FIELD_NAME).orEmpty()
             val args = PtcProtocol.text(frame, PtcProtocol.FIELD_ARGS) ?: "{}"
             // dsh 的 protocolFailure("program requested an undeclared binding")
-            if (!all && toolNames.none { it == name }) {
+            if (toolNames.none { it == name }) {
                 throw PtcProtocolException("program requested an undeclared binding")
             }
-            caller.execute { reply(id, all, name, args) }
-        }
-
-        /** 同步跑一次工具（或一批），把信封发回 worker —— worker 的引擎线程正等在这一帧上 */
-        private fun reply(id: Int, all: Boolean, name: String, args: String) {
-            val wire = try {
-                if (all) runner.callAll(args) else runner.call(name, args)
-            } catch (t: Throwable) {
-                // 工具侧的异常不能把主进程带走（第 184 轮之前那条 Binder 路径上它是 FATAL）
-                toolErrorWire(name, args, t.message ?: t::class.java.simpleName)
+            // 每次调用各自一个协程（第 186 轮）：闸门（ToolConcurrency）决定谁与谁重叠，
+            // 单线程派发器保证「谁先到谁先登记」= dsh 的 submission order
+            scope.launch {
+                val wire = try {
+                    runner.call(name, args)
+                } catch (t: Throwable) {
+                    // 工具侧的异常不能把主进程带走（第 184 轮之前那条 Binder 路径上它是 FATAL）
+                    toolErrorWire(name, args, t.message ?: t::class.java.simpleName)
+                }
+                send(
+                    buildJsonObject {
+                        put(PtcProtocol.TYPE, PtcProtocol.TYPE_REPLY)
+                        put(PtcProtocol.FIELD_ID, id)
+                        put(PtcProtocol.FIELD_WIRE, wire)
+                    },
+                )
             }
-            send(
-                buildJsonObject {
-                    put(PtcProtocol.TYPE, PtcProtocol.TYPE_REPLY)
-                    put(PtcProtocol.FIELD_ID, id)
-                    put(PtcProtocol.FIELD_WIRE, wire)
-                },
-            )
         }
-
         private fun send(frame: JsonObject) {
             try {
                 channel?.send(frame)
@@ -325,7 +334,9 @@ internal object PtcProcess {
             runCatching { channel?.close() }
             runCatching { client?.close() }
             runCatching { server?.close() }
-            caller.shutdownNow()
+            // 只 shutdown，不 interrupt（第 186 轮）：不等 await 的调用在 dsh 里也照样跑完，
+            // 结果丢掉而已 —— interrupt 会把一次已经发出去的写操作掐断在半路
+            caller.shutdown()
         }
     }
 }

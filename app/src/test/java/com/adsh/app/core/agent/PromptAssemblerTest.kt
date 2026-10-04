@@ -325,7 +325,9 @@ class PromptAssemblerTest {
     fun presentRuleIsDecidable() {
         assertTrue(ToolSdk.PRESENT_DESCRIPTION.contains("whether you created it or rewrote it"))
         assertTrue(ToolSdk.PRESENT_DESCRIPTION.contains("present it again in a later step if you change it"))
-        assertTrue(ToolSdk.PRESENT_DESCRIPTION.contains("not a deliverable"))
+        // 第 186 轮：删掉两句自创的话（dsh 的 present 描述里没有它们，返回值也没有 inside/outside）
+        assertFalse(ToolSdk.PRESENT_DESCRIPTION.contains("not a deliverable"))
+        assertFalse(ToolSdk.PRESENT_DESCRIPTION.contains("landed inside"))
     }
 
     /**
@@ -347,13 +349,15 @@ class PromptAssemblerTest {
         assertTrue("npm's prefix/cache point at scratch", fenced.contains("--prefix \$ADSH_SCRATCH --cache \$ADSH_SCRATCH/.npm-cache"))
         assertTrue("the workspace is called out as a bad install target", fenced.contains("silently drops the executable bit"))
         assertTrue("deliverables must come back before present", fenced.contains("before you present them"))
-        // 第 93 轮（真机实测）：present **不校验根路径**；第 105 轮起它会回报每一段落点，
-        // 所以那句改成「它只报告、不拒绝，照警告做（把文件搬进工作区）仍然是你的活」。
+        // 第 93 轮（真机实测）：present **不校验根路径**。第 186 轮按 dsh 核过之后删掉了「它会回报
+        // 每一段落点、并在工作区外时警告」那半句 —— dsh 的 present 不做这个判定
+        // （dsh-tool-present/lib/index.js 的描述与 {turn, files} 里都没有），ADSH 的回执也回到
+        // dsh 的 Presented <path>。留下的这句只说事实：不拒绝，搬进工作区是模型自己的活。
         assertTrue(
             "present's missing root check is stated",
             fenced.contains("`present` does not reject a path outside the workspace") &&
-                fenced.contains("acting on that warning") &&
-                fenced.contains("is your job, not the tool's"),
+                fenced.contains("is your job, not the tool's") &&
+                !fenced.contains("warns when it is outside"),
         )
         assertTrue("\$ADSH_WORKSPACE is tied to the bound workspace", fenced.contains("exported to every command as \$ADSH_WORKSPACE"))
         // 第 114 轮：硬链接现在两种结局都打 [fs:]（退化成复制 / 建不出来），所以这句从
@@ -484,7 +488,8 @@ class PromptAssemblerTest {
                 assertFalse("stale term: " + term, lower.contains(term))
             }
         }
-        assertTrue(ToolSdk.PRESENT_DESCRIPTION.contains("not a deliverable"))
+        // 第 186 轮：present 描述与回执都回到 dsh（不再有自创的「落在工作区内/外」那半句）
+        assertFalse(ToolSdk.PRESENT_DESCRIPTION.contains("landed inside"))
     }
 
     /** 审查报告 C-5：grep 与 glob 的可见集不同，必须在 grep 的说明里点出来 */

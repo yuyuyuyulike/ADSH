@@ -14,9 +14,6 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * PTC 程序的宿主进程（`android:process=":ptc"`）：**每次调用一个新进程**，到点由主进程杀掉
@@ -47,9 +44,8 @@ class PtcWorkerService : Service() {
     /** 一次绑定的会话：连通道 → 收 boot → 跑程序 → 回信封 */
     private inner class Worker(private val channelName: String) {
 
-        /** 等宿主信封的引擎线程：id → 只放一个回复的队列 */
-        private val pending = ConcurrentHashMap<Int, ArrayBlockingQueue<String>>()
-        private val requestSeq = AtomicInteger(0)
+        /** 已经到达、还没被泵循环取走的回执（id → wire）；写的是收帧线程，读的是引擎线程 */
+        private val replies = java.util.concurrent.ConcurrentLinkedQueue<Pair<Int, String>>()
 
         fun serve() {
             var channel: PtcChannel? = null
@@ -75,17 +71,32 @@ class PtcWorkerService : Service() {
             } catch (t: Throwable) {
                 Log.w(TAG, "PTC 通道结束", t)
             } finally {
-                wakePending()
                 runCatching { channel?.close() }
             }
         }
 
-        /** 宿主回的 reply：把等在那儿的引擎线程放行 */
+        /**
+         * 宿主回的 reply：**只入队**，不叫醒谁（第 186 轮）。
+         *
+         * 以前这里是把等在某条队列上的引擎线程放行 —— 那意味着 JS 线程在工具跑完之前一直阻塞。
+         * 现在回执进 replies，引擎线程的泵循环自己来取（takeReplies），谁都不等谁；
+         * 通道断了也不用「叫醒所有等待者」，因为没人等。
+         */
         private fun deliver(frame: JsonObject): Boolean {
             if (PtcProtocol.typeOf(frame) != PtcProtocol.TYPE_REPLY) return false
             val id = PtcProtocol.int(frame, PtcProtocol.FIELD_ID) ?: return false
-            pending.remove(id)?.offer(PtcProtocol.text(frame, PtcProtocol.FIELD_WIRE) ?: "null")
+            replies += id to (PtcProtocol.text(frame, PtcProtocol.FIELD_WIRE) ?: "null")
             return true
+        }
+
+        /** 已经到达、还没兑现的回执（引擎线程的泵循环按 tick 取走） */
+        private fun takeReplies(): List<Pair<Int, String>> {
+            val out = ArrayList<Pair<Int, String>>()
+            while (true) {
+                val next = replies.poll() ?: break
+                out += next
+            }
+            return out
         }
 
         private fun startEngine(channel: PtcChannel, boot: JsonObject) {
@@ -110,8 +121,8 @@ class PtcWorkerService : Service() {
                 QuickJsRuntime().run(
                     program = program,
                     toolNames = names,
-                    invoke = { name, args -> callHost(channel, false, name, args) },
-                    invokeAll = { payload -> callHost(channel, true, "", payload) },
+                    postCall = { id, name, args -> postCall(channel, id, name, args) },
+                    takeReplies = { takeReplies() },
                     timeoutMs = timeoutMs,
                     onLog = { line -> sendLog(channel, line) },
                 )
@@ -161,37 +172,19 @@ class PtcWorkerService : Service() {
             }
         }
 
-        /** 同步 RPC：把一次 tools.x() 交给宿主跑，拿到信封再继续（引擎线程在这里阻塞） */
-        private fun callHost(channel: PtcChannel, all: Boolean, name: String, args: String): String {
-            val id = requestSeq.incrementAndGet()
-            val queue = ArrayBlockingQueue<String>(1)
-            pending[id] = queue
-            val frame = buildJsonObject {
-                put(PtcProtocol.TYPE, PtcProtocol.TYPE_CALL)
-                put(PtcProtocol.FIELD_ID, id)
-                put(PtcProtocol.FIELD_ALL, all)
-                put(PtcProtocol.FIELD_NAME, name)
-                put(PtcProtocol.FIELD_ARGS, args)
-            }
-            try {
-                channel.send(frame)
-            } catch (t: Throwable) {
-                pending.remove(id)
-                return toolErrorWire(name, args, PtcProtocol.CHANNEL_ENDED)
-            }
-            return try {
-                queue.take()
-            } catch (t: InterruptedException) {
-                Thread.currentThread().interrupt()
-                toolErrorWire(name, args, PtcProtocol.CHANNEL_ENDED)
-            }
-        }
-
-        /** 通道断了：把还等着的引擎线程全部放行（否则它会一直挂在 take() 上） */
-        private fun wakePending() {
-            val wake = toolErrorWire("", "", PtcProtocol.CHANNEL_ENDED)
-            pending.values.forEach { it.offer(wake) }
-            pending.clear()
+        /**
+         * 发起一次 tools.x()：**只把调用帧写出去**（dsh 的子进程 postMessage 同形）。
+         * 写不出去就把异常抛给 JS —— 那条 Promise 当场 reject，程序自己去 catch。
+         */
+        private fun postCall(channel: PtcChannel, id: Int, name: String, args: String) {
+            channel.send(
+                buildJsonObject {
+                    put(PtcProtocol.TYPE, PtcProtocol.TYPE_CALL)
+                    put(PtcProtocol.FIELD_ID, id)
+                    put(PtcProtocol.FIELD_NAME, name)
+                    put(PtcProtocol.FIELD_ARGS, args)
+                },
+            )
         }
     }
 

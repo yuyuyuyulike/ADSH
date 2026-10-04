@@ -498,9 +498,9 @@ object PromptAssembler {
                 "exported to every command; it persists across turns, so keep downloads and build caches " +
                 "there), and the finished deliverables are copied back into the " +
                 "workspace **before you present them**: `present` does not reject a path outside the " +
-                "workspace (it reports which side each file landed on, and warns when it is outside), so " +
-                "acting on that warning — copying the file into the workspace — is your job, not the " +
-                "tool's. Repairing an existing file in place is normal work." +
+                "workspace, so copying the file into the workspace is your job, not the tool's " +
+                "(第 186 轮删掉「它会回报每个文件落在哪一侧、并在工作区外时警告」那半句：dsh 的 " +
+                "present 不做这个判定). Repairing an existing file in place is normal work." +
                 "\n  Copying a deliverable back into the workspace is lossy: symlinks are materialized " +
                 "and executable bits are dropped, silently — a shell script or a symlinked tree shipped " +
                 "that way arrives broken, so deliver an archive or state the chmod instead.")

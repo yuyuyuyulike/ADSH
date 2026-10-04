@@ -2,9 +2,11 @@ package com.adsh.app.core.tools
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
@@ -204,73 +206,99 @@ class ToolConcurrencyTest {
         assertTrue(!ToolConcurrency.isSafe("some-future-tool"))
     }
 
-    // ------------------------------------------------- Promise.all 批调用的提交顺序（第 98 轮）
+    // ------------------------------------------------- 独立调用（第 186 轮）：提交顺序 + 并发
 
     /**
-     * 写类子调用必须**按提交顺序**跑（测试报告 1.1 的真机实测：10 个并发 bash 的顺序是
-     * 2,1,3,5,6,7,8,10,9,4；6 个 write 抢同一个文件时赢的是 writer3/writer2/writer4/writer5）。
-     *
-     * SDK 段逐字写着 dsh 的 "mutating calls run alone, in submission order" —— 串行只是其中一半。
+     * 生产形状的骨架：宿主用一个**单线程派发器**按到达顺序 launch 每个调用（[com.adsh.app.core.ptc.PtcProcess]），
+     * 调用在里面先登记调度位、再把工具体挪到 IO。顺序保证来自「单线程派发 → 登记顺序 = 到达顺序」，
+     * 并发保证来自闸门。这三条用例就是把这两件事钉住。
+     */
+    private fun submitInOrder(count: Int, block: suspend (Int) -> Unit) = runBlocking {
+        val dispatch = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val scope = kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.SupervisorJob() + dispatch.asCoroutineDispatcher(),
+        )
+        try {
+            (0 until count).map { index -> scope.launch { block(index) } }.forEach { it.join() }
+        } finally {
+            dispatch.shutdown()
+        }
+    }
+
+    /**
+     * 写类调用必须**按提交顺序**跑（测试报告 1.1 的真机实测：10 个并发 bash 的顺序是
+     * 2,1,3,5,6,7,8,10,9,4）。SDK 段逐字写着 dsh 的 "mutating calls run alone, in submission
+     * order" —— 串行只是其中一半，顺序是另一半。
      */
     @Test(timeout = 30_000)
-    fun batchRunsMutatingCallsInSubmissionOrder() = runBlocking {
+    fun mutatingCallsRunInSubmissionOrder() {
         ToolConcurrency.resetForTest(10)
-        val names = List(10) { "bash" }
         val order = java.util.Collections.synchronizedList(ArrayList<Int>())
-        val results = ToolConcurrency.runBatch(names) { index ->
-            order.add(index)
-            Thread.sleep(3)
-            index * 2
+        submitInOrder(10) { index ->
+            ToolConcurrency.withToolPermit("bash") {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    order.add(index)
+                    Thread.sleep(3)
+                }
+            }
         }
-        assertEquals("写类子调用的执行顺序必须等于提交顺序", (0..9).toList(), order.toList())
-        assertEquals("返回值仍然与下标一一对应", (0..9).map { it * 2 }, results)
+        assertEquals("写类调用的执行顺序必须等于提交顺序", (0..9).toList(), order.toList())
         assertEquals(0, ToolConcurrency.running)
     }
 
-    /** 同一批里读类照样能重叠：顺序保证不能把并行也一起吃掉（名额仍由闸门管，见 withToolPermit） */
+    /** 读类调用照样能重叠：顺序保证不能把并行一起吃掉（名额仍由闸门管） */
     @Test(timeout = 30_000)
-    fun batchStillOverlapsSafeCalls() = runBlocking {
+    fun safeCallsOverlap() {
         ToolConcurrency.resetForTest(4)
         val peak = java.util.concurrent.atomic.AtomicInteger(0)
         val running = java.util.concurrent.atomic.AtomicInteger(0)
-        val names = List(8) { "read" }
-        // 真实形状（QuickJsRuntime.runOne）：批调度只排顺序，名额由每个子调用自己过闸
-        ToolConcurrency.runBatch(names) { index ->
-            ToolConcurrency.withToolPermit(names[index]) {
-                val now = running.incrementAndGet()
-                peak.updateAndGet { maxOf(it, now) }
-                Thread.sleep(5)
-                running.decrementAndGet()
-                index
+        submitInOrder(8) {
+            ToolConcurrency.withToolPermit("read") {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    val now = running.incrementAndGet()
+                    peak.updateAndGet { maxOf(it, now) }
+                    Thread.sleep(5)
+                    running.decrementAndGet()
+                }
             }
         }
-        assertTrue("读类子调用没有重叠（peak=$peak）", peak.get() > 1)
-        assertTrue("读类子调用超过了上限（peak=$peak）", peak.get() <= 4)
+        assertTrue("读类调用没有重叠（peak=$peak）", peak.get() > 1)
+        assertTrue("读类调用超过了上限（peak=$peak）", peak.get() <= 4)
         assertEquals(0, ToolConcurrency.running)
     }
 
-    /** 混批：写类仍然独占（跑的时候没有任何读类在跑） */
+    /**
+     * 混批：队头的读类彼此重叠，随后的写类**独占**（跑的时候没有任何别的调用在跑）且按提交顺序。
+     *
+     * 注意顺序构造：调度器是**提交顺序 + 队头阻塞**（dsh 的 pendingQueue）—— 队首是写类时，
+     * 它后面的读类也要等它跑完（不让写类被后面源源不断的读类饿死）。所以「读类重叠」这条
+     * 要在写类**之前**提交才能观察到。
+     */
     @Test(timeout = 30_000)
-    fun batchKeepsMutatingCallsExclusive() = runBlocking {
+    fun mutatingCallsStayExclusiveAmongSafeOnes() {
         ToolConcurrency.resetForTest(4)
         val inside = java.util.concurrent.atomic.AtomicInteger(0)
         val writerOverlapped = java.util.concurrent.atomic.AtomicBoolean(false)
         val writersSeen = java.util.concurrent.atomic.AtomicInteger(0)
-        val names = listOf("read", "bash", "read", "edit", "read", "write", "grep")
-        ToolConcurrency.runBatch(names) { index ->
+        val peakSafe = java.util.concurrent.atomic.AtomicInteger(0)
+        val names = listOf("read", "read", "read", "bash", "edit", "write")
+        submitInOrder(names.size) { index ->
             ToolConcurrency.withToolPermit(names[index]) {
-                val now = inside.incrementAndGet()
-                if (!ToolConcurrency.isSafe(names[index])) {
-                    writersSeen.incrementAndGet()
-                    if (now > 1) writerOverlapped.set(true)
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    val now = inside.incrementAndGet()
+                    if (ToolConcurrency.isSafe(names[index])) peakSafe.updateAndGet { maxOf(it, now) }
+                    if (!ToolConcurrency.isSafe(names[index])) {
+                        writersSeen.incrementAndGet()
+                        if (now > 1) writerOverlapped.set(true)
+                    }
+                    Thread.sleep(4)
+                    inside.decrementAndGet()
                 }
-                Thread.sleep(4)
-                inside.decrementAndGet()
-                index
             }
         }
-        assertEquals("三个写类子调用都要跑", 3, writersSeen.get())
+        assertEquals("三个写类调用都要跑", 3, writersSeen.get())
         assertTrue("写类调用与别的调用重叠了", !writerOverlapped.get())
+        assertTrue("读类一条都没重叠（peak=$peakSafe）", peakSafe.get() > 1)
         assertEquals(0, ToolConcurrency.running)
     }
 

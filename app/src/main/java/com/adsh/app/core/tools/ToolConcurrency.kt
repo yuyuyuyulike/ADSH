@@ -1,9 +1,6 @@
 package com.adsh.app.core.tools
 
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
@@ -147,38 +144,13 @@ object ToolConcurrency {
         schedule(exclusive = !isSafe(toolName), block)
 
     /**
-     * `Promise.all([tools.a(), tools.b(), …])` 形态的批调用：**读类各自并发，写类按数组顺序逐个跑**。
-     *
-     * 为什么写类不能只是「各自 async 去抢闸门」（第 98 轮，真机测试报告 1.1）：
-     * 闸门保证的是**串行**，而串行的**先后**由协程调度决定 —— 实测同一程序里 `Promise.all`
-     * 提交 10 个 bash，执行顺序是 2,1,3,5,6,7,8,10,9,4；6 个 `write` 抢同一个文件时赢的是
-     * writer3 / writer2 / writer4 / writer5。而 SDK 段逐字写着 dsh 的
-     * "safe calls run concurrently; mutating calls run alone, in submission order" ——
-     * 提交顺序是模型唯一能依赖的保证（它按顺序写同一个文件时就靠这个）。所以写类子调用在这里
-     * 由**一个协程按下标逐个跑**：第 i 个跑完才开始第 i+1 个，独占性仍然由闸门负责。
-     *
-     * @param names 这一批子调用的工具名，下标 = 提交顺序（返回值与它一一对应）
-     * @param run 跑第 i 个；返回它的结果
+     * 批调用（`Promise.all`）那套序号链在第 186 轮删掉了：绑定现在**每次调用各自一帧、各自异步**
+     * （见 [com.adsh.app.core.ptc.QuickJsRuntime] 的 PREAMBLE），宿主把它们按
+     * **到达顺序**登记到这张队列上 —— 派发器是单线程的（[com.adsh.app.core.ptc.PtcProcess]），
+     * 所以「谁的调度位在前」就等于「模型写的顺序」：写类调用照样独占、照样按提交顺序跑，
+     * 读类照样彼此重叠。旧实现（第 98 轮）为了让**一次批量 RPC** 里的顺序可依赖，在批内按
+     * 下标逐个跑写类；那条约束现在由生产者侧保证，闸门这边只剩 [withToolPermit] 一个入口。
      */
-    suspend fun <T> runBatch(names: List<String>, run: suspend (Int) -> T): List<T> {
-        val results: Array<Any?> = coroutineScope {
-            val slots = arrayOfNulls<Any?>(names.size)
-            // 读类：各自 async，能重叠就重叠（名额仍然由闸门统一管）
-            val safeJobs = names.indices.filter { isSafe(names[it]) }
-                .map { index -> async(kotlinx.coroutines.Dispatchers.IO) { slots[index] = run(index) } }
-            // 写类：一条顺序链（见上面的长注释）
-            val exclusiveJob = launch(kotlinx.coroutines.Dispatchers.IO) {
-                names.indices.filter { !isSafe(names[it]) }.forEach { index -> slots[index] = run(index) }
-            }
-            // 读类先各自跑完，再等写类那条链（写类本来就要等池子排空）
-            safeJobs.forEach { it.await() }
-            exclusiveJob.join()
-            slots
-        }
-        @Suppress("UNCHECKED_CAST")
-        return results.map { it as T }
-    }
-
     private suspend fun <T> schedule(exclusive: Boolean, block: suspend () -> T): T {
         // 嵌套调用（工具内部的并发）不占新的名额 —— 判据必须在**入队之前**，
         // 否则它会留下一个永远没人跑的调度位，把整个队列堵死

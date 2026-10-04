@@ -20,9 +20,9 @@ import kotlinx.serialization.json.jsonPrimitive
  * | [TYPE_REPLY] | 宿主 → worker | `{type:"reply", id, ok, value}`：那一次调用的信封 |
  * | [TYPE_DONE] | worker → 宿主 | `{type:"done", value}` 或 `{type:"done", error:{kind,message}}` |
  *
- * ADSH 的两处差异（都在 KDoc 里写明，不藏着）：`pid` 是安卓特有的（没有「spawn 返回 pid」，
- * 宿主要靠它才能在到点时杀进程）；`all` 是批量调用的标记（dsh 把 `Promise.all` 拆成
- * 若干个独立 `call`，ADSH 的并发闸门与子调用轨迹按批处理，见 [PtcToolRunner.callAll]）。
+ * ADSH 唯一的结构差异：`pid` 是安卓特有的（没有「spawn 返回 pid」，宿主要靠它才能在到点时
+ * 杀进程）。第 186 轮起 `call` 与 dsh 逐字同形 —— **每次 `tools.x()` 一帧、各自异步**，
+ * 不再有批量标记（`Promise.all` 就是原生语义，见 [QuickJsRuntime] 的 PREAMBLE）。
  */
 internal object PtcProtocol {
 
@@ -42,7 +42,6 @@ internal object PtcProtocol {
     const val FIELD_TOOLS = "tools"
     const val FIELD_TIMEOUT_MS = "timeoutMs"
     const val FIELD_ID = "id"
-    const val FIELD_ALL = "all"
     const val FIELD_NAME = "name"
     const val FIELD_ARGS = "args"
     const val FIELD_WIRE = "wire"
@@ -69,8 +68,6 @@ internal object PtcProtocol {
     fun long(frame: JsonObject?, key: String): Long? = text(frame, key)?.toLongOrNull()
 
     fun int(frame: JsonObject?, key: String): Int? = text(frame, key)?.toIntOrNull()
-
-    fun flag(frame: JsonObject?, key: String): Boolean = text(frame, key) == "true"
 
     fun strings(frame: JsonObject?, key: String): List<String> =
         (frame?.get(key) as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()

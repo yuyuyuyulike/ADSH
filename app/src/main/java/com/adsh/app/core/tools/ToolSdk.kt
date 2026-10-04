@@ -101,6 +101,13 @@ object ToolSdk {
      *    与「你必须 present」叠在一起时，模型会把每次就地修文件都当成交付物；
      *  - **第九十一轮**（审查报告 S1）：把「新建还是改写」这个灰区写成可判定的规则 ——
      *    用户要求收的文件，改写也算；后面哪一轮又改了，就再 present 一次。
+     *
+     * **第 186 轮删掉两句自创的话**（测试 agent 报告 §3.3：文档说「结果会说每个文件落在工作区内还是
+     * 外、不在就警告」，而返回值里没有这个字段）：把 dsh 的 dsh-tool-present/lib/index.js 取出来核过
+     * —— 它的描述里根本没有这两句，返回值也固定是 {turn, files:[{path, description?}]}（它的客户端
+     * 按绝对路径开文件，不做内外判定）。删掉的是 A path outside the workspace is not rejected — the
+     * result says whether each file landed inside it and warns when it did not… 与 Repairing a
+     * workspace file the user did not ask to receive is not a deliverable. 上面三条本项目调整不变。
      */
     const val PRESENT_DESCRIPTION: String =
         "Declare existing files as final deliverables for the user. Present every file the user asked to " +
@@ -108,10 +115,7 @@ object ToolSdk {
             "response, including files created through Bash or code execution; present it again in a later " +
             "step if you change it afterwards. Mentioning its path in your reply does not replace this " +
             "call. The files must already exist. The user opens the current source files; their contents " +
-            "are not copied or preserved. A path outside the workspace is not rejected — the result says " +
-            "whether each file landed inside it and warns when it did not, and moving the file into the " +
-            "workspace is then on you. Repairing a workspace file the user did not ask to receive is " +
-            "not a deliverable."
+            "are not copied or preserved."
 
     /**
      * dsh-tool-bash 的 bashDescription(backgroundEnabled = true, escalationModes = 非空)。
@@ -273,7 +277,8 @@ object ToolSdk {
                     justification?: string;
                   }
             """.trimIndent(),
-            // dsh 的 bash 输出：退出码是字段，stdout/stderr 分开（截断时 dsh 还有 spillPath，这里没有落盘）
+            // dsh 的 bash 输出：退出码是字段，stdout/stderr 分开；截断时 dsh 会给 spillPath
+            // （第 185 轮起 ADSH 也有落盘，字段与 dsh 逐字同形，见 OutputCollector / Spill）
             // dsh 的 bash 输出是一个三选一的联合（后台句柄 / 超时转后台 / 普通前台结果）
             output = """
                 {
@@ -294,10 +299,12 @@ object ToolSdk {
                     stdout: {
                       text: string;
                       truncated: boolean;
+                      spillPath?: string;
                     };
                     stderr: {
                       text: string;
                       truncated: boolean;
+                      spillPath?: string;
                     };
                   }
             """.trimIndent(),

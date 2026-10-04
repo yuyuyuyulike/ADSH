@@ -7,13 +7,8 @@ import com.adsh.app.core.tools.ToolResult
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -25,9 +20,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * 程序搬进 `:ptc` 进程（见 [PtcWorkerService]），**工具执行留在主进程**（这里）：工具要用的
  * `ToolContext`（工作区 / 沙箱 / 设置 / 会话）本来就在主进程，跨进程搬过去没有意义。
  *
- * 所以这个类就是那条 RPC 的服务端：`call` / `callAll` 是**同步**入口（worker 里的 JS 线程
- * 会一直等到信封回来），闸门（[com.adsh.app.core.tools.ToolConcurrency]）、用户中断探针、
- * 子调用轨迹（界面那几行 + 落库）全在这里，和搬走之前一模一样。
+ * 所以这个类就是那条 RPC 的服务端：`call` 是**一次工具调用的执行体**（第 186 轮起不再有
+ * 「批调用」这个入口 —— JS 那边每次 `tools.x()` 各自发一帧、各自异步，谁与谁重叠由闸门决定），
+ * 闸门（[com.adsh.app.core.tools.ToolConcurrency]）、用户中断探针、子调用轨迹（界面那几行 +
+ * 落库）全在这里，和搬走之前一模一样。
  */
 internal class PtcToolRunner(
     private val tools: List<Tool>,
@@ -79,16 +75,25 @@ internal class PtcToolRunner(
         SubCallTrace.record(listOf(entry))
     }
 
-    /** 一次 `await tools.x()`：同步跑一个工具，返回给程序的 wire 信封 */
-    fun call(name: String, rawArgs: String): String {
+    /**
+     * 一次 `await tools.x()`：跑一个工具，返回给程序的 wire 信封。
+     *
+     * **第 186 轮起是 suspend 的**（以前是 `runBlocking` 的同步入口）：宿主把它 launch 在一个
+     * 单线程派发器上 —— 每个调用**先按到达顺序登记调度位**（[com.adsh.app.core.tools.ToolConcurrency]），
+     * 然后**立刻让出那根线程**；真正跑工具的那段挪到 `Dispatchers.IO`。这样：
+     *  - 读类调用各自在自己的 IO 线程上跑，真正重叠（以前是「一次批量 RPC」才重叠）；
+     *  - 写类调用仍然独占、顺序 = 提交顺序（调度位是按到达顺序登记的）；
+     *  - 派发线程永远不被工具挡住，后面到的调用照样能马上登记。
+     */
+    suspend fun call(name: String, rawArgs: String): String {
         val id = nextSubId()
         announce(name, rawArgs, id)
         val started = System.currentTimeMillis()
         val outcome = try {
-            runBlocking {
-                com.adsh.app.core.tools.ToolConcurrency.configure(context.maxParallelSubCalls)
-                watchCancel {
-                    com.adsh.app.core.tools.ToolConcurrency.withToolPermit(name) {
+            com.adsh.app.core.tools.ToolConcurrency.configure(context.maxParallelSubCalls)
+            watchCancel {
+                com.adsh.app.core.tools.ToolConcurrency.withToolPermit(name) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                         callToolSuspend(name, rawArgs)
                     }
                 }
@@ -112,69 +117,7 @@ internal class PtcToolRunner(
         return outcome.wire
     }
 
-    /**
-     * `Promise.all([tools.a(), tools.b()])`：一次 RPC 里并发跑一批。
-     *
-     * 提交序 = 程序序（dsh 的 pendingQueue / commitQueue，spec-log §4.1-B）：id 在任何挂起之前
-     * 一次分完、「开始」也按这个顺序宣布；结算按提交序入日志（[SubCallOrder] 的队头阻塞）。
-     * 于是子行的顺序、id 序号、交付物与图片的收集顺序都等于模型写下的顺序。
-     */
-    fun callAll(payload: String): String {
-        val entries = runCatching { json.parseToJsonElement(payload).jsonArray }.getOrNull() ?: return "[]"
-        val parsed = entries.mapNotNull { element ->
-            val pair = element as? JsonArray ?: return@mapNotNull null
-            val name = pair.getOrNull(0)?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-            val rawArgs = pair.getOrNull(1)?.jsonPrimitive?.contentOrNull ?: "{}"
-            name to rawArgs
-        }
-        if (parsed.isEmpty()) return "[]"
-        val ids = parsed.map { nextSubId() }
-        ids.forEachIndexed { index, id -> announce(parsed[index].first, parsed[index].second, id) }
-        val order = SubCallOrder(parsed.size)
-        com.adsh.app.core.tools.ToolConcurrency.configure(context.maxParallelSubCalls)
-        val wires = arrayOfNulls<String>(parsed.size)
 
-        suspend fun runOne(index: Int): String {
-            val (name, rawArgs) = parsed[index]
-            return com.adsh.app.core.tools.ToolConcurrency.withToolPermit(name) {
-                calls.incrementAndGet()
-                val callStarted = System.currentTimeMillis()
-                val outcome = callToolSuspend(name, rawArgs)
-                order.settle(
-                    index,
-                    SubCall(
-                        name = name,
-                        args = rawArgs,
-                        ok = outcome.ok,
-                        result = outcome.text,
-                        durationMs = System.currentTimeMillis() - callStarted,
-                        id = ids[index],
-                        images = outcome.images,
-                        deliverables = outcome.deliverables,
-                    ),
-                ).forEach(::record)
-                outcome.wire
-            }
-        }
-
-        try {
-            runBlocking {
-                watchCancel {
-                    // 读类并发、写类按提交顺序（见 ToolConcurrency.runBatch 的长注释）
-                    com.adsh.app.core.tools.ToolConcurrency.runBatch(parsed.map { it.first }) { index ->
-                        wires[index] = runOne(index)
-                    }
-                }
-            }
-        } catch (cancelSignal: kotlinx.coroutines.CancellationException) {
-            // 中断：已经跑完的那些仍按提交序入日志（没跑完的号永远不进日志，dsh 的 abandon()）
-            order.drain().forEach(::record)
-            return parsed.joinToString(separator = ",", prefix = "[", postfix = "]") { (name, rawArgs) ->
-                interruptedOutcome(name, rawArgs).wire
-            }
-        }
-        return wires.joinToString(separator = ",", prefix = "[", postfix = "]") { it ?: "null" }
-    }
 
     /** 一次工具调用的结果：wire 给程序、text 给轨迹与日志、images 给轨迹与模型 */
     private data class CallOutcome(
@@ -201,8 +144,8 @@ internal class PtcToolRunner(
     /**
      * 中断看门狗：探针命中就把这一段协程作用域取消掉。
      *
-     * 子调用是在 `runBlocking` 里同步跑的（RPC 的 JS 线程要等信封），所以外层的协程取消
-     * **传不进来** —— 没有这个看门狗，程序里一个 120s 的 bash 就让「停止」等两分钟。看门狗每
+     * 子调用跑在宿主自己的协程里（不是外层那一轮协程的子节点），所以外层的取消**传不进来**
+     * —— 没有这个看门狗，程序里一个 120s 的 bash 就让「停止」等两分钟。看门狗每
      * [CANCEL_PROBE_MS] 问一次，命中即取消：正在跑的工具（bash 的 Process.waitFor、文件读写）
      * 会看到自己的 job 已经取消，各自按可中断路径收尾。
      */

@@ -139,7 +139,6 @@ class PtcFrameAccessTest {
         val frame = buildJsonObject {
             put("type", PtcProtocol.TYPE_CALL)
             put("id", 7)
-            put("all", true)
             put("text", kotlinx.serialization.json.JsonNull)
             put("tools", buildJsonArray {
                 add("bash")
@@ -150,8 +149,6 @@ class PtcFrameAccessTest {
         assertEquals(PtcProtocol.TYPE_CALL, PtcProtocol.typeOf(frame))
         assertEquals(7, PtcProtocol.int(frame, "id"))
         assertEquals(7L, PtcProtocol.long(frame, "id"))
-        assertTrue(PtcProtocol.flag(frame, "all"))
-        assertFalse(PtcProtocol.flag(frame, "missing"))
         assertNull(PtcProtocol.text(frame, "text"))
         assertNull(PtcProtocol.text(frame, "missing"))
         assertNull(PtcProtocol.text(frame, "object"))

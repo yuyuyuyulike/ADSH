@@ -113,10 +113,12 @@ object PresentTool : Tool {
         }
         // given（模型给的原样路径） / description / shown（卡片用的展示路径，裁过工作区前缀）
         val accepted = ArrayList<Triple<String, String?, String>>()
-        // 逐条回一句「在不在工作区内」（第 105 轮，实测报告问题 6）：present 是专门用来保证
-        // 「用户拿得到」的工具，却只报一句 Presented —— 文件在工作区外（例如 scratch）时照样
-        // 静默成功，核对只能靠模型自己 `ls`。现在把判定写进返回值（dsh 的契约仍然是
-        // 「present 不检查根、也不拒绝」，所以这里只是**说清楚**，不改成失败）。
+        // 回执逐字对齐 dsh 的 render：每个文件一行 Presented <path>。
+        // 第 186 轮删掉了第 105 轮加的两句自创提示（"(inside the workspace)" 与工作区外那句
+        // WARNING）：① dsh 的 present 不做内外判定，描述里也没承诺过这件事（核过
+        // dsh-tool-present/lib/index.js）；② 那句 WARNING 本身也不准 —— 轮尾交付卡片并不按工作区
+        // 过滤（见 core/agent/TurnFiles.kt 的 mergeTurnFiles：工作区外的路径照样成行、照样点得开），
+        // "the user may not be able to open it" 是错的。
         val lines = ArrayList<String>()
         raw.forEach { element ->
             val obj = element as? JsonObject ?: return ToolResult.Error("present requires { path, description? } objects")
@@ -139,13 +141,7 @@ object PresentTool : Tool {
             // 回执回显**模型给出的那个路径**（第 108 轮，实测报告问题 5）：以前回的是工作区相对
             // 路径（输入绝对路径、回来相对路径），模型据此记下的路径就是错的。展示路径仍按
             // 第 85 轮的口径裁前缀，只用在轮尾那张卡片上，不参与回执。
-            lines += if (Args.inside(ctx, file)) {
-                "Presented " + path + " (inside the workspace)"
-            } else {
-                "Presented " + path + " — WARNING: this path is outside the workspace, so the user may " +
-                    "not be able to open it. Copy the file into the workspace and present it again " +
-                    "before you finish."
-            }
+            lines += "Presented " + path
         }
         val value = buildJsonObject {
             put("turn", ctx.turn)
