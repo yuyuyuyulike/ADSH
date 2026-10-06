@@ -10,18 +10,22 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 - 工作区：`D:\WSN2005\Android1\App\ADSH`。dsh 的参考源码在 `D:\tmpdsh-work`（**不要删**：里面的
   `spec-ui.md` / `spec-log.md` 是展示层的规格依据），解包产物与 `asar-tool.js` 在 `D:\tmp`。
 
-## 当前状态（2026-10-04；**已发布** 0.2.1 / code 13）
+## 当前状态（2026-10-06；**已发布** 0.2.2 / code 14）
 
 - **仓库**：历史在第 104 / 107 / 121 / 124 轮各压平过一次，最后一次压平之后又线性累积了一百多个提交
-  （R0 起）。**源码已推到 `origin/main`**（第 186 轮的发布把本地积压的 14 个提交一起推了上去）；
-  本地快照标签只留最新一个（`snapshot-r100`，旧的在同轮清掉）。
-- **当前发布**：tag `v0.2.1-20261004`、资产 `ADSH-0.2.1-release.apk`（R8 minify + shrinkResources，
-  含 baseline profile，44,623,378 字节）。README 的下载链接指向它；按用户口径**旧的 release 不删**
-  （GitHub 上同时留着 0.2.0 与 0.2.1）。
+  （R0 起）。**源码在远端 `main` 上始终是最新的**；本地快照标签只留最新一个（`snapshot-r198`，旧的在同轮清掉）。
+  **注意 github.com:443 在这台机器上是连不上的**（api.github.com / uploads.github.com / codeload 通，
+  raw.githubusercontent.com 也不通）—— `git push` 会 `Connection reset`。R198 起改用
+  `scripts/push-via-api.py <远端当前那个提交>`：把 `base..HEAD` 的提交用 gh 的 git-data 接口逐个重建到远端
+  （blobs → trees → commits → PATCH ref），最后比对「远端 tree == 本地 HEAD tree」才算成功。
+  远端那串提交的 **SHA 与本地不同**（内容逐字节相同）：下次要 push 之前先 `git fetch`（需要代理）或者继续用它推。
+- **当前发布**：tag `v0.2.2-20261006`、资产 `ADSH-0.2.2-release.apk`（R8 minify + shrinkResources，
+  含 baseline profile，44,633,198 字节，sha256 `c0162667be95…`）。README 的下载链接指向它；按用户口径
+  **旧的 release 不删**（GitHub 上同时留着 0.1.9 / 0.2.0 / 0.2.1）。
   用户在网页上改过 README（`c3f39b6`，删掉了 `adsh-env-check` 那一行）—— 压平/改写 README 前先把工作区
   同步成他那一版，否则 orphan 提交会把他的修改顶掉。
-- **发布物**：`dist/ADSH-0.2.1-release.apk`（已装机冒烟：`run_code` + `bash` + `present`，无 FATAL）与
-  `dist/ADSH-0.2.1-debug.apk`（**可 `run-as`**：拉库 / 进沙箱 / 看文件系统现场都用它）。
+- **发布物**：`dist/ADSH-0.2.2-release.apk`（已装机冒烟：新会话一轮问答正常、无 FATAL）与
+  `dist/ADSH-0.2.2-debug.apk`（**可 `run-as`**：拉库 / 进沙箱 / 看文件系统现场都用它）。
   release 包不可调试（`run-as` 会被拒）—— 要深度诊断就装 debug 包，两者同包名同签名，`install -r`
   可互相覆盖且不动数据。
 - **验证基线**：单测 **858 全过**（每次提交都重跑；第二阶段起恢复为默认门禁，见上面「第二阶段」一节，逐条数字看 R 表）。第 117 轮起按用户要求**不再跑测试**，只保证编译通过、
@@ -162,6 +166,8 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 
 
 | R197 | **用户第 196 轮：测试 agent 的深度测试报告 + 一次闪退**（原话：「我刚让测试agent深度测试了一下harness，你可以看看手机日志与他写的报告，过程中adsh闪退了一次，后面就没闪退了，查查怎么回事。harness的几个问题你确定是真问题后多参照dsh来改」）。**① 闪退根因 = Java 堆 OOM**（不是 ANR、也不在业务代码里）：`logcat -b crash` 是 `Fatal signal 6 (SIGABRT)`，Abort message = `JNI DETECTED ERROR … java.lang.OutOfMemoryError: Failed to allocate a 48 byte allocation with 1944 free bytes … target footprint 268435456`；测试 agent 那条会话的最后一步正是「5MB 单行文件 + grep + 2MB write」的 run_code（它报告的第 4 条「一次调用被中断、结果全丢」就是这次死亡）。**真机复现**：同一段压力测试再跑一次，轮询 `dumpsys meminfo` 看到堆反复冲到 256MB（alloc 255.3MB / free 0.7MB），最后一轮 grep 之后 `Killing 8336:com.termux (adj 0): crash` + `OutOfMemoryError`（18:22:27），与用户那次 18:05:08 的形状逐字一致。**② 按 dsh 补齐三处输出上限**（dsh 有、ADSH 漏的，数值全部取自 dsh 源码）：read 单行 2000 字符（`... (line truncated to 2000 chars)`）+ 整次 51200 字节（`(Output capped. Showing lines X-Y. Use offset=Z to continue.)`）+ offset 越界**报错**（`offset N is out of range for "p" (M lines)`，ADSH 原来安静返回 0 行）；grep 的原始 rg stdout 20,000,000 字节上限（**边读边记账**，超了整次失败：`grep produced N bytes of raw output, over the 20000000-byte cap; …`）；run_code 的 64MiB 输出记账（logs + 返回值合并计，超了 `outer output exceeded 67108864 bytes`、kind = output-limit）。**③ 两处 ADSH 侧的手机特化（有意偏离 dsh，理由写在 KDoc 里）**：grep 的**值**也按单行 2000 字节截（值要跨进程进 :ptc，5MB 单行的值在两端各留几份 ⇒ 实测把 app 打爆；dsh 的 V8 堆大得多、值只在自己进程里），被截过的命中补 `truncated` 标记；PTC 子调用的值再加一条 4MiB 硬上限（超过 = 这次子调用失败，文案提示改窄请求或用 bash 处理文件）。**④ 报告里另外两条不是 bug**（逐字就是 dsh 的行为）：`limit > 2000` / `offset < 1` 本来就是**报错不夹取**（dsh-tool-fs 的 parsePositiveInteger 与 limit 上限检查）；`read_image` 对「有扩展名但不是图片扩展名」本来就是**直接拒绝、不嗅探内容**（只有无扩展名才按 magic 嗅探）。**⑤ 报告第 1 条（mkdir -p 打假拒绝）是真 bug，已修**：GNU coreutils 的 `mkdir -p` 会沿路径**逐级 mkdir**（已存在的祖先也各调一次），围栏把这些「只会返回 EEXIST、什么都不写」的探针也判越权 —— 既打三组 `[sandbox: file access denied …]` 假标记，又把 errno 从 EEXIST 改成 EACCES。fence.c 现在对 mkdir/mkdirat 先问一句「目标已存在吗」（原始 faccessat 系统调用，绕开自己的拦截），存在就直接交给内核返回 EEXIST；真越权照旧拒绝（实测 `/data/data/com.termux/files/home/nope` 仍被拒 + 打标记）。 | 单测 **854 → 858 全绿**（+ReadShapeTest 4 例：2000 字符截断 / 5MB 单行只回 2000 字符 / 50KiB 预算 + Output capped 页脚 / 三条页脚；FsSearchCapsTest 那条「值保留完整行」改成「值也截 + truncated 标记」）；lint 0 error（66 warning / 10 hint）；死代码 0 候选；装机复测：同一段 5MB/2MB 压力测试堆**峰值 40.8MB**（改前 256MB + 闪退）、`tools.grep` 命中 5MB 单行时按 4MiB 上限报错、read 读 4,194,304 字节的单行文件只回 2034 字符（= 2000 + 标注）、`mkdir -p` 不再打假标记；测试会话 174/175 已删，`last_conversation_id` 回到 165
+
+| R198 | **用户第 197 轮：发布 0.2.2 + 整理工作区**（原话：「构建release apk安装。然后：1.git快照当前项目源码，并清理所有旧快照。2.用git push更新GitHub上的源码，用gh发新release包，更新内容一定要简短的写，参照我上一个包的。3.整理工作区，清理无用垃圾、无用的临时文件（保留构建依赖、最新的debug、release apk、dsh 的源码）」）。**① release 包**：`:app:assembleRelease` → `dist/ADSH-0.2.2-release.apk`（44,633,198 字节，sha256 `c0162667be95…`），装机后在新会话跑了一轮问答（标题、dock 的 tok/s 都正常，无 FATAL）。**② 快照**：`snapshot-r198`（旧的两个 `snapshot-r100` / `snapshot-r104` 删掉），release tag `v0.2.2-20261006`。**③ 源码上 GitHub：`git push` 走不通** —— github.com:443 在这台机器上是 `Connection reset`（api.github.com / uploads.github.com / codeload 通，raw.githubusercontent.com 也不通）。改用 **gh 的 REST git-data 接口**把 R101～R197 这 10 个提交逐个重建到远端（blobs → trees 带 base_tree → commits（作者/提交者/时间/信息照抄）→ PATCH refs/heads/main），判据是「远端 tree sha == 本地 HEAD tree sha」—— 实测两边都是 `1bfffbf0…`，内容逐字节一致；这套流程固化成了 `scripts/push-via-api.py`（README 那次提交也用它推的，远端 main 现在 85fb09b4）。**④ 发 release**：`gh release create v0.2.2-20261006 dist/ADSH-0.2.2-release.apk --target <远端 R197 提交> --title "ADSH 0.2.2" --notes-file …`，说明照上一个包的版式写（`## ADSH 0.2.2` / **新增** 4 条 / **修复** 4 条 / 结尾一句附件说明），旧的 release 一个没动；README 的下载链接改成 0.2.2。**⑤ 整理**：仓库的 `.scratch` 清掉、`dist/` 只留最新的 debug + release（0.2.1 那份删掉，GitHub 上仍在）；`D:\tmp` 从 1.1G 清到 799M —— **只删自己这几十轮留下的截图 / 探针脚本 / asar 解包产物，`Tencent Files/` 原样没动**；`D:\tmpdsh-work` 从 199M 清到 7.2M（删掉本轮子代理下载的 tarball 与解包中间产物，保留 `src/` 的 dsh 开发树、`spec-*.md`、`gh-src/`、`steering-report.md`）。 | 单测 858 全绿（发布前跑过）；`assembleRelease` 成功（R8 + lintVitalRelease 无 error）；release 包装机冒烟一轮问答无 FATAL；远端 `main` 的 tree 与本地 HEAD 一致；`dist/` 两个包都同步到 0.2.2
 
 ### 复现「工具输出把 app 打爆」的做法（R197 用过一次）
 
