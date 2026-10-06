@@ -60,18 +60,23 @@ class TurnDecisionsTest {
     }
 
     /**
-     * **标题那次小调用默认关思考**（dsh 的 purpose = session-title 口径），字段按路由族给。
+     * 标题那次小调用该发的思考字段：**逐路由按 dsh 的适配器口径**（用户第 195 轮口径：
+     * 向 dsh 看齐，标题慢一点就慢一点 —— 不做比 dsh 更硬的事）。
+     *
+     * dsh 那边：标题调用带 purpose = session-title，**怎么落由各适配器决定** ——
+     * dsh-llm-deepseek 落成 thinking=disabled；dsh-llm-pi-ai（其余提供方）落成「省略 reasoning 字段」，
+     * 也就是走提供方默认（那里的注释明说：会思考的提供方选了 off 也照样思考）。
      *
      * 实测（2026-10-06，真机 + 同一把 key 直连复现，标题那次的提示词与 max_tokens=64）：
-     *  - 不关思考：推理 187-290 字、2.8-7.3 秒、content 为空 ⇒ 标题永远退回兜底值；
+     *  - qwen 路由不关思考：推理 187-290 字、2.8-7.3 秒、content 为空 ⇒ 标题退回兜底值；
      *  - qwen 路由发 enable_thinking=false：推理 0 字、1.6 秒、标题正常；
-     *  - 同一条 qwen 路由发 thinking={type:disabled}：0 字推理但要 4.4-9.9 秒；
+     *  - 同一条 qwen 路由改发 thinking={type:disabled}：0 字推理但要 4.4-9.9 秒（两个一起发 9.9 秒）；
      *  - DeepSeek（R79 那次）：不关是 finish=length / content 0 字 / reasoning 175 字，
      *    关掉是 finish=stop / 10 字 / 6 个 token。
      */
     @Test
-    fun titleCallTurnsThinkingOffOnEveryRouteItCan() {
-        // DeepSeek 官方与「只改地址 / 只改模型名」的自建中转：thinking = disabled
+    fun titleCallFollowsTheAdapterRuleOfEachRoute() {
+        // DeepSeek 路由（含只改地址 / 只改模型名的自建中转）：thinking = disabled
         listOf(
             Triple("deepseek", "https://api.deepseek.com/v1", "deepseek-flash"),
             Triple("custom", "https://my-proxy.example/deepseek", "glm-5.3"),
@@ -84,7 +89,7 @@ class TurnDecisionsTest {
             assertNull(wire.enableThinking)
         }
 
-        // DashScope 兼容模式（qwen 系）：只发 enable_thinking=false，**不发** thinking
+        // DashScope 兼容模式（qwen 系，ADSH 自己的路由知识）：只发 enable_thinking=false
         listOf(
             Triple("qwen", "https://ws-x.maas.aliyuncs.com/compatible-mode/v1", "qwen3.8-flash"),
             Triple("custom", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3-max"),
@@ -94,15 +99,12 @@ class TurnDecisionsTest {
             assertNull("两个一起发实测要 4-10 秒", wire.thinking)
         }
 
-        // 其余路由**默认也关**（智谱 GLM 这类认识 thinking 的，与主请求选 Off 同一个字段）
-        assertEquals("disabled", titleNoThink("zai", "https://api.z.ai/api/coding/paas/v4", "glm-5.3").thinking?.type)
-        assertEquals("disabled", titleNoThink("openai", "https://api.openai.com/v1", "gpt-5.6-sol").thinking?.type)
-
-        // 目录里写明「这个模型没有推理能力」的（pi-ai reasoning:false，掩码 0）一个字段都不发 ——
-        // 发了只会 400，而且它本来也不会推理（gpt-4o / Ling-2.6-flash 在目录里都是掩码 0）
+        // 其余路由：一个字段都不发（= dsh 的 pi-ai：off 就是省略 reasoning，走提供方默认）
         listOf(
-            Triple("ant-ling", "https://api.example/v1", "Ling-2.6-flash"),
+            Triple("openai", "https://api.openai.com/v1", "gpt-5.6-sol"),
+            Triple("zai", "https://api.z.ai/api/coding/paas/v4", "glm-5.3"),
             Triple("custom", "https://my-proxy.example/v1", "gpt-4o"),
+            Triple("ant-ling", "https://api.example/v1", "Ling-2.6-flash"),
         ).forEach { (provider, base, model) ->
             val wire = titleNoThink(provider, base, model)
             assertNull(wire.thinking)

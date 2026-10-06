@@ -65,21 +65,29 @@ internal fun thinkingWire(effort: String?): ThinkingWire = ThinkingWire(
  *    真机上那条会话的标题就是首条消息前 5 个词 —— 模型标题从没落地过。
  *  - 关掉之后：DeepSeek finish=stop / 10 字 / 6 token；qwen 推理 0 字 / 1.6 秒 / 标题正常。
  *
- * 字段名逐路由不同，所以这里给的是**这个路由认识的那一组**：
- *  - **DashScope 兼容模式（qwen 系）**：认识的是 enable_thinking。这条路由**不能再发** thinking ——
- *    两个一起发实测 4.4-9.9 秒（同一把 key 直连，比只发 enable_thinking 的 1.5 秒差一个量级）。
- *  - **其余路由**：thinking = disabled —— 与主请求选 Off 时发的是同一组字段（[thinkingWire]），
- *    于是「标题默认关思考」与用户手动选 Off 的行为完全一致（DeepSeek 官方、智谱 GLM 等都是它）。
- *  - **目录里写明「这个模型没有推理能力」的**（pi-ai 的 reasoning: false，掩码 0）：一个字段都不发 ——
- *    发了只会 400，而且它本来就不会推理。
+ * 但**落到哪个字段、要不要落**，dsh 是交给各适配器自己决定的（用户第 195 轮口径：
+ * 「向 dsh 看齐，标题慢一点就慢一点」）：
+ *  - dsh-llm-deepseek：serialize 里 purpose === 'session-title' ? 'off' : …，off 出来就是
+ *    thinking = {type: disabled} —— 所以 DeepSeek 这条路上标题一定不思考；
+ *  - dsh-llm-pi-ai（其余提供方走的通用适配器）：off = **省略 reasoning 字段**，那里的注释写得很直白：
+ *    a provider whose own default is to think would keep thinking with off selected。
+ *    也就是「关不掉就交给提供方默认」，**不硬塞字段**。
+ *
+ * ADSH 就照这个规则落成一条 when：
+ *  - **DeepSeek 路由** → thinking = disabled（与 dsh-llm-deepseek 逐字同形，也是主请求选 Off 时
+ *    发的那组字段）；
+ *  - **DashScope 兼容模式（qwen 系）** → enable_thinking = false。这一条是 ADSH 自己的路由知识：
+ *    dsh 没有这个适配器（无从对齐），而 ADSH 的提供方预设里就有阿里云 maas。实测它是这条路由上
+ *    唯一有效的字段：0 字推理 / 1.6 秒 / 标题正常；改发 thinking 要 4.4-9.9 秒，两个一起发 9.9 秒；
+ *  - **其余路由** → 一个字段都不发，就是 dsh 的 pi-ai 那条路（走提供方默认）。代价接受：
+ *    会思考的模型会把 64 个输出 token 花在推理上，标题可能多等几秒、甚至退回兜底值。
  *
  * 为什么不看当前选的档位：dsh 的标题调用固定按 off 走（purpose 优先于会话档位）。
  */
 internal fun titleNoThink(providerId: String, baseUrl: String, model: String): ThinkingWire = when {
     isDashScopeRoute(providerId, baseUrl, model) -> ThinkingWire(null, null, enableThinking = false)
-    com.adsh.app.core.data.Reasoning.catalogLevels(providerId, model)?.isEmpty() == true ->
-        ThinkingWire(null, null)
-    else -> thinkingWire("off")
+    isDeepSeekRoute(providerId, baseUrl, model) -> thinkingWire("off")
+    else -> ThinkingWire(null, null)
 }
 
 /** DashScope 兼容模式的路由判据（[titleNoThink] 用；与 [isDeepSeekRoute] 同一层含义） */
