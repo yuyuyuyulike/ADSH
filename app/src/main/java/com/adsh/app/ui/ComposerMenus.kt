@@ -50,7 +50,7 @@ private val MODEL_MENU_HEIGHT = 108.dp
 
 /** 子页（模型清单 / 推理等级）的高度上限（dsh 的菜单是 min(360px, 100vh-96px)） */
 private val MODEL_MENU_MAX_HEIGHT = 360.dp
-/** 模型窗口宽度：与上下文占用窗口一致（dsh 的 .JObwrW_panel 也是 264px） */
+/** 模型窗口宽度：与上下文占用窗口一致（dsh 的 ._2WTFBq_panel 也是 264px） */
 private val MODEL_MENU_WIDTH = 264.dp
 /** 卡片底边与触发按钮之间的间距（dsh 的 `bottom: calc(100% + 8px)`）：底边恒定锚在这里 */
 private val MODEL_MENU_GAP = 8.dp
@@ -145,10 +145,10 @@ internal fun ModelMenuTrigger(
     /** 当前子页：root（两行）/ model / effort（见 MODEL_MENU_HEIGHT 的注释） */
     var pane by remember { mutableStateOf("root") }
     val palette = LocalDshPalette.current
-    // 模型：与设置页「模型」分节同一枚图标（IconDataOutline16）+ 可转动倒角
+    // 模型：**模型名 + 可转动倒角**（dsh 的 ModelSelect 触发器就是文字；图标只在窄容器下才出现）
     // -> 「模型 / 推理等级」两级菜单
     Box(Modifier.onGloballyPositioned { triggerTop = it.positionInRoot().y }) {
-        TriggerPill(icon = DshSettingIcons.Data, contentDescription = "模型与推理等级", open = open) {
+        ModelTriggerPill(label = currentModel, open = open) {
             pane = "root"
             onOpenChange(!open)
         }

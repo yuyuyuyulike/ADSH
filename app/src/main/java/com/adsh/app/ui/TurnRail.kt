@@ -1129,7 +1129,9 @@ private fun RailUsagePill(usage: TurnUsage) {
             onClick = { open = !open },
         )
         if (open) {
-            DshPopup(onDismiss = { open = false }) {
+            // 气泡与触发器左对齐、上留 8dp、离屏幕边 12dp（dsh 的 useAnchoredPosition：
+            // 统计类浮层都是 side:top / gap:8 / margin:12）
+            DshPopup(onDismiss = { open = false }, alignStart = true, margin = DshSpacing.Xxxl) {
                 StatPanel(
                     title = "本轮用量",
                     icon = DshIcons.Database,
@@ -1168,7 +1170,7 @@ private fun RailTimePill(runMillis: Long, usage: TurnUsage?) {
             onClick = { open = !open },
         )
         if (open) {
-            DshPopup(onDismiss = { open = false }) {
+            DshPopup(onDismiss = { open = false }, alignStart = true, margin = DshSpacing.Xxxl) {
                 StatPanel(
                     title = "本轮用时和速度",
                     icon = DshToolIcons.Clock,

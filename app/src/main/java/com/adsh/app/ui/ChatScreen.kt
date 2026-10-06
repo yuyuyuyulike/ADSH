@@ -67,6 +67,8 @@ private object ChatScrollStore {
 @Composable
 fun ChatScreen(
     state: ChatUiState,
+    /** 当前会话标题（左上角显示；来自抽屉那份会话列表，见 AppRoot） */
+    title: String,
     onSend: (String) -> Unit,
     onCancel: () -> Unit,
     onClearError: () -> Unit,
@@ -313,10 +315,8 @@ fun ChatScreen(
         if (hasConversation) {
             // 顶栏整块在 ChatBars.kt（R14 第三步搬出主函数）
             ChatTopBar(
-                state = state,
-                overlays = overlays,
-                onOverlaysChange = { overlays = it },
-                draft = draft,
+                title = title,
+                conversationId = state.conversationId,
                 readerAction = readerAction,
                 onOpenWorkspaceFiles = onOpenWorkspaceFiles,
             )
@@ -404,8 +404,22 @@ fun ChatScreen(
                     overlays = overlays.paletteVisibility(want, draft)
                 },
                 onPaletteDismiss = dismissPalette,
-                menu = overlays.composerMenu,
+                // 输入框的弹层与下方那一排胶囊共用 ChatOverlays 的唯一一个槽；
+                // 输入框只认自己那三个 id，别的 id 进来等于「三个都没开」。
+                menu = overlays.open,
                 onMenuChange = { value -> overlays = overlays.menuChanged(value, draft) },
+                // 输入框下方那一排（dsh 的 composer dock）：会话统计 / Token 用量 / 上下文占用。
+                // 只在有会话时出现 —— 新会话（hero）阶段没有任何统计可看。
+                dock = {
+                    if (hasConversation) {
+                        ChatStatsDock(
+                            stats = state.stats,
+                            context = state.context,
+                            open = overlays.open,
+                            onToggle = { id -> overlays = overlays.toggled(id) },
+                        )
+                    }
+                },
                 requestPermission = requestPermission,
                 onRequestHandled = { requestPermission = false },
                 showWorkspace = !hasConversation,

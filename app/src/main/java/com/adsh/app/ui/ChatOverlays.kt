@@ -9,18 +9,18 @@ import androidx.compose.runtime.saveable.listSaver
  * 「统计浮窗与输入框弹层互斥」和「dsh 的 dismissed」（关掉触发菜单之后，同一个 token +
  * 同一份查询不再自动召回）都只能靠真机目视。搬出来之后每一条都有断言钉着。
  *
- * 状态仍由 ChatScreen 持有（它得跟着会话生命周期与重组走，见那边采样一段的注释），
- * 这里只放「当前状态 + 这一次动作 → 下一个状态」的纯判定。
+ * **一次只开一个**（第 185 轮起）：输入框的三个弹层与输入框下方那一排胶囊共用 [open] 一个槽。
+ * dsh 就是这个形状 —— 统计 / 用量两个胶囊共用一个 openPill，上下文那个用自己那一个 open；
+ * 两处同时开在界面上也没有意义（两个气泡会叠在一起）。用「一个槽」表达之后，互斥不再是一条
+ * 需要维护的规则，而是**结构上没有第二个位置可以开**：写进去的那个 id 就是唯一开着的浮层。
  */
 internal data class ChatOverlays(
     /** 「+」打开的全量菜单记下按下那一刻的草稿；草稿一变就交回「键入 /」那条路径（dsh 的 track） */
     val launcherDraft: String? = null,
     /** 用户关掉的那一份草稿（dsh 的 dismissed）：输入新查询或再按一次「+」才重新武装 */
     val paletteMuted: String? = null,
-    /** 输入框弹出的三个层之一（"permission" / "model" / "context"）；null = 没开 */
-    val composerMenu: String? = null,
-    /** 顶栏的会话统计浮窗 */
-    val statsOpen: Boolean = false,
+    /** 当前打开的那一个浮层（取值见 OPEN_*）；null = 全关 */
+    val open: String? = null,
 ) {
 
     /** 「+」那条路径还挂着吗：只有草稿与按下那一刻**完全一致**时才算 */
@@ -33,18 +33,18 @@ internal data class ChatOverlays(
     fun typedOpen(query: String?, complete: Boolean, draft: String): Boolean =
         query != null && !complete && paletteMuted != draft
 
-    /** 点顶栏的统计图标：开关自己，并且**总是**把输入框弹层收掉（互斥） */
-    fun statsToggled(): ChatOverlays = copy(statsOpen = !statsOpen, composerMenu = null)
+    /** 某个触发器的开关：点一下同一个 id 就是关掉它 */
+    fun toggled(id: String): ChatOverlays = copy(open = if (open == id) null else id)
 
     /**
-     * 输入框弹层改开成 [menu]（null = 关掉）：开的时候统计浮窗收掉，触发菜单按
-     * 「这一份草稿已被忽略」收掉（与 [paletteDismissed] 同一套语义）。
+     * 输入框弹层改开成 [menu]（null = 关掉）：开的时候触发菜单按「这一份草稿已被忽略」收掉
+     * （与 [paletteDismissed] 同一套语义）。
      */
     fun menuChanged(menu: String?, draft: String): ChatOverlays =
         if (menu == null) {
-            copy(composerMenu = null)
+            copy(open = null)
         } else {
-            copy(composerMenu = menu, statsOpen = false, launcherDraft = null, paletteMuted = draft)
+            copy(open = menu, launcherDraft = null, paletteMuted = draft)
         }
 
     /** 「+」/「键入 /」自己报上来的可见性变化（dsh 的 toggleCommandMenu） */
@@ -55,15 +55,25 @@ internal data class ChatOverlays(
     fun paletteDismissed(draft: String): ChatOverlays =
         copy(launcherDraft = null, paletteMuted = draft)
 
-    /** 发出去一条消息：两种触发菜单的状态都归零（弹层与统计不受影响） */
+    /** 发出去一条消息：两种触发菜单的状态都归零（浮层不受影响） */
     fun sent(): ChatOverlays = copy(launcherDraft = null, paletteMuted = null)
 }
 
+/** [ChatOverlays.open] 的取值：输入框里的三个弹层（dsh 的输入栏触发器） */
+internal const val OPEN_PERMISSION = "permission"
+internal const val OPEN_MODEL = "model"
+internal const val OPEN_WORKSPACE = "workspace"
+
+/** [ChatOverlays.open] 的取值：输入框下方那一排（dsh 的 ContextMeter + composer dock） */
+internal const val OPEN_CONTEXT = "context"
+internal const val OPEN_STATS = "stats"
+internal const val OPEN_USAGE = "usage"
+
 /**
- * 只把「统计浮窗开着没有」存过进程重建 —— 与搬出来之前**逐字一致**：触发菜单与输入框弹层
- * 本来就不跨进程恢复（它们绑在这一屏的草稿上），别顺手把它们也存了。
+ * 只把「哪个浮层开着」存过进程重建。草稿那两份状态不存 —— 它们绑在这一屏的草稿上
+ * （与搬出来之前一致：原来也只存了统计那一个布尔）。
  */
-internal val ChatOverlaysSaver = listSaver<ChatOverlays, Boolean>(
-    save = { listOf(it.statsOpen) },
-    restore = { ChatOverlays(statsOpen = it[0]) },
+internal val ChatOverlaysSaver = listSaver<ChatOverlays, String>(
+    save = { listOf(it.open.orEmpty()) },
+    restore = { ChatOverlays(open = it[0].ifEmpty { null }) },
 )

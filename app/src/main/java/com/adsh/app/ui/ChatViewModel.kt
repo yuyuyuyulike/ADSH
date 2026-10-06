@@ -1030,6 +1030,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val noThink = com.adsh.app.core.agent.noThinkFor(config.providerId, config.baseUrl, config.model)
             runCatching {
                 generateSessionTitleIfNeeded(compactLlm, repository, settings.model, conversationId, noThink)
+            }.onSuccess { title ->
+                // 标题是模型写回库的：左上角与抽屉都读那份会话列表，这里不刷就一直是兜底标题
+                if (title != null) refreshConversations()
             }.onFailure {
                 // 这一路以前是静默的：模型只回推理 / 被截断 / 提供方报错，界面上都只是「标题没变」。
                 android.util.Log.w("ADSH", "会话标题生成失败（保留兜底标题）", it)

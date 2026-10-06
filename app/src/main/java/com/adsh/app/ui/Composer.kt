@@ -72,6 +72,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -255,12 +256,20 @@ fun DshPopup(
     liftBottom: androidx.compose.ui.unit.Dp = 0.dp,
     /** 与锚点之间的间距（dsh 的触发菜单是 4px，其余浮层是 8px） */
     gap: androidx.compose.ui.unit.Dp = 8.dp,
+    /**
+     * 与**窗口边**之间至少留出的距离（dsh 的 useAnchoredPosition margin，默认等于 [gap]）。
+     *
+     * dsh 的浮层定位是「先按锚点摆，再夹进视口」：左边界 = 锚点左边（[alignStart]）或右边界减浮层
+     * 宽度，然后夹进 [margin, 窗口宽 - 浮层宽 - margin]；上下同理，上方浮层 = 锚点上边减间距减高度。
+     * 统计 / 用量 / 上下文那几个面板取 12dp —— 它们贴着屏幕底边弹，夹边距决定气泡不顶到屏幕边缘。
+     */
+    margin: androidx.compose.ui.unit.Dp = gap,
     content: @Composable () -> Unit,
 ) {
     RegisterOverlayDismiss(onDismiss)
     val density = LocalDensity.current
     val lift = with(density) { liftBottom.roundToPx() }
-    val provider = remember(density, alignStart, below, lift, gap) {
+    val provider = remember(density, alignStart, below, lift, gap, margin) {
         object : PopupPositionProvider {
             override fun calculatePosition(
                 anchorBounds: IntRect,
@@ -269,15 +278,19 @@ fun DshPopup(
                 popupContentSize: IntSize,
             ): IntOffset {
                 val gapPx = with(density) { gap.roundToPx() }
-                val x = if (alignStart) anchorBounds.left else anchorBounds.right - popupContentSize.width
-                val maxX = (windowSize.width - popupContentSize.width - gapPx).coerceAtLeast(gapPx)
-                val maxY = (windowSize.height - popupContentSize.height - gapPx).coerceAtLeast(gapPx)
+                val marginPx = with(density) { margin.roundToPx() }
+                val width = popupContentSize.width
+                val height = popupContentSize.height
+                val x = if (alignStart) anchorBounds.left else anchorBounds.right - width
                 val y = if (below) {
-                    (anchorBounds.bottom + gapPx).coerceAtMost(maxY)
+                    anchorBounds.bottom + gapPx
                 } else {
-                    (anchorBounds.top - popupContentSize.height - gapPx - lift).coerceAtLeast(gapPx)
+                    anchorBounds.top - height - gapPx - lift
                 }
-                return IntOffset(x.coerceIn(gapPx, maxX), y)
+                // 宽 / 高还没测出来（=0）时不夹 —— 与 dsh 的 if (width > 0) 同一条
+                val clampedX = if (width > 0) minOf(maxOf(x, marginPx), windowSize.width - width - marginPx) else x
+                val clampedY = if (height > 0) minOf(maxOf(y, marginPx), windowSize.height - height - marginPx) else y
+                return IntOffset(clampedX, clampedY)
             }
         }
     }
@@ -291,6 +304,12 @@ fun DshPopup(
             focusable = focusable,
             dismissOnBackPress = false,
             dismissOnClickOutside = false,
+            // 不夹在父窗口里：默认的弹窗窗口**不含导航栏那一条**（真机 1280x2568，屏是 1280x2772），
+            // 而输入框下方那一排胶囊正好落在被切掉的那一段里 —— 定位算法按 dsh 的
+            // useAnchoredPosition 把浮层「夹进视口」时，用的就是这个小窗口，于是气泡被整整顶上去
+            // 33dp（实测 anchor.top 2636、窗口高 2568 → 只能摆到 2009）。关掉裁剪之后窗口就是整屏，
+            // 夹取才等于 dsh 里的 window.innerWidth/innerHeight。
+            clippingEnabled = false,
         ),
     ) { content() }
 }
@@ -306,7 +325,7 @@ fun DshPopup(
 @Composable
 fun DshMenuCard(
     modifier: Modifier = Modifier,
-    /** 统一 12dp：与上下文占用窗口（dsh 的 .JObwrW_panel / .bRhRbq_panel）一致 */
+    /** 统一 12dp：与上下文占用窗口（dsh 的 ._2WTFBq_panel）/ 统计卡（.Xt1eiG_panel）一致 */
     radius: Dp = 12.dp,
     padding: Dp = 4.dp,
     content: @Composable ColumnScope.() -> Unit,
@@ -397,43 +416,40 @@ fun DshMenuRow(
 // ------------------------------------------------------------------ 上下文占用
 
 /**
- * 上下文占用（dsh 的 ContextMeter，.JObwrW_trigger）：
- * **圆环 + 百分比**组成的胶囊（13/20 三级色、圆角 24、内边距 1px 8px、gap 6px），
- * 点开是 264dp 宽的白底面板 —— 「上下文已用 X% … ~已用 / 窗口」+ 4px 分段条 +
- * 系统提示词/工具定义/对话消息。
+ * 上下文占用（dsh 的 ContextMeter，._2WTFBq_trigger）：
+ * **圆环 + 百分比**组成的胶囊（14px 圆环 / 2px 线宽、8px 圆角底、内边距 1px 8px、gap 6px、
+ * 13/20 三级字色），点开是 264dp 宽的气泡 —— 「上下文已用 X% … ~已用 / 窗口」+ 4px 分段条 +
+ * 系统提示词 / 工具定义 / 对话消息。
  *
- * 位置在顶栏（会话统计图标右侧），所以 [below] = true：面板往**下**弹，不会盖住状态栏。
+ * 它在输入框下方那一排里（见 [ChatStatsDock]），所以气泡一律往**上**弹
+ * （dsh 的 side: "top"、gap 8、margin 12 —— 贴着屏幕底边弹也不会被切掉）。
  */
 @Composable
 fun ContextMeter(
     usage: ContextUsage,
     open: Boolean = false,
-    below: Boolean = false,
-    onOpenChange: (Boolean) -> Unit = {},
+    onToggle: () -> Unit = {},
 ) {
     val palette = LocalDshPalette.current
-    // 用户要求（第 75 轮）：圆环与顶栏其他图标（20dp）差不多大，线条与百分比再深一档。
-    // dsh 的 .JObwrW_fill 用 label-tertiary；这里按需求加深到 label-secondary（展开时到 primary）。
-    // 第 117 轮：圆环跟顶栏另外两个图标一起缩到 18、线宽 2 → 1.75，整块再往左挪 4（见下面 padding）。
-    val ink = if (open) palette.labelPrimary else palette.labelSecondary
+    // dsh 的 ._2WTFBq_fill / trigger 都是 label-tertiary；展开时换二级色 + hover 底
+    val ink = if (open) palette.labelSecondary else palette.labelTertiary
     Box {
         Row(
             modifier = Modifier
-                .height(26.dp)
-                .clip(RoundedCornerShape(24.dp))
+                .clip(RoundedCornerShape(8.dp))
                 .background(if (open) palette.hover else Color.Transparent)
-                .dshClickable(interactionSource = dshInteraction()) { onOpenChange(!open) }
+                .dshClickable(interactionSource = dshInteraction(), onClick = onToggle)
                 .semantics { contentDescription = "上下文已用 " + usage.percent + "%" }
-                // 左侧 8 → 4：用户点名「上下文的图标左移一点」（悬停底那点不对称看不出来）
-                .padding(start = DshSpacing.Md, end = DshSpacing.Xl),
+                .padding(horizontal = DshSpacing.Xl, vertical = DshSpacing.Xxs),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(DshSpacing.Lg),
         ) {
-            Canvas(Modifier.size(18.dp)) {
-                val stroke = 1.75.dp.toPx()
-                val radius = 8f / 20f * size.minDimension
+            // dsh 的圆环：viewBox 14、r=5.5、线宽 2、从 -90° 起画
+            Canvas(Modifier.size(14.dp)) {
+                val stroke = 2.dp.toPx()
+                val radius = 5.5f / 14f * size.minDimension
                 val center = Offset(size.width / 2f, size.height / 2f)
-                drawCircle(palette.borderL4, radius = radius, center = center, style = Stroke(stroke))
+                drawCircle(palette.borderL3, radius = radius, center = center, style = Stroke(stroke))
                 if (usage.percent > 0) {
                     drawArc(
                         color = ink,
@@ -448,7 +464,7 @@ fun ContextMeter(
             }
             Text(
                 text = usage.percent.toString() + "%",
-                fontSize = 14.sp,
+                fontSize = 13.sp,
                 lineHeight = 20.sp,
                 color = ink,
                 maxLines = 1,
@@ -456,18 +472,18 @@ fun ContextMeter(
             )
         }
         if (open) {
-            DshPopup(onDismiss = { onOpenChange(false) }, below = below) { ContextPanel(usage) }
+            DshPopup(onDismiss = onToggle, margin = DshSpacing.Xxxl) { ContextPanel(usage) }
         }
     }
 }
 
-/** dsh 的 .JObwrW_panel：264px 宽、12px 圆角、12px 内边距、12/20 字号 */
+/** dsh 的 ._2WTFBq_panel：264px 宽、16px 圆角（--dsw-radius-lg）、12px 内边距、12/20 字号 */
 @Composable
 private fun ContextPanel(usage: ContextUsage) {
     val palette = LocalDshPalette.current
     val (systemColor, toolsColor, messagesColor) = contextColors()
     val total = (usage.system + usage.tools + usage.messages).coerceAtLeast(1L)
-    DshMenuCard(modifier = Modifier.width(264.dp), radius = 12.dp, padding = 12.dp) {
+    DshMenuCard(modifier = Modifier.width(264.dp), radius = 16.dp, padding = 12.dp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("上下文已用", fontSize = 12.sp, lineHeight = 20.sp, color = palette.labelTertiary)
             Spacer(Modifier.width(6.dp))
@@ -557,8 +573,8 @@ private fun ContextRow(dot: Color, label: String, tokens: Long) {
  * 输入框（逐项对齐 dsh 的 InputBar）：
  * 左：＋（=触发菜单，与输入 `/` 同一个菜单，28dp 圆形 selector 底；「文件」是菜单里的一行）、
  * 权限预设（只留图标 + 可转动倒角）、Plan chip；
- * 右：模型（数据库图标 + 倒角，内含 模型 / 推理等级 两个子菜单）、发送/停止（34dp 圆形）。
- * 上下文占用不在这一行（在顶栏会话统计右侧），所以模型按钮的位置不随会话状态变化。
+ * 右：模型（**模型名** + 倒角，内含 模型 / 推理等级 两个子菜单）、发送/停止（34dp 圆形）。
+ * 上下文占用不在这一行（在卡片**下方**那一排，见 [dock]），所以模型按钮的位置不随会话状态变化。
  */
 @Composable
 fun DshComposer(
@@ -616,9 +632,17 @@ fun DshComposer(
      * 只有这个计数变化时输入框才会被外部回灌，见 fieldValue 的注释。
      */
     draftRevision: Int,
-    /** 当前打开的输入框弹层：null / "permission" / "model" / "context" / "workspace"（由 ChatScreen 托管） */
+    /** 当前打开的那一个浮层（[ChatOverlays.open]；本组件只认 [OPEN_PERMISSION] / [OPEN_MODEL] / [OPEN_WORKSPACE]） */
     menu: String?,
     onMenuChange: (String?) -> Unit,
+    /**
+     * 输入框**下方**那一排（dsh 的 InputBar dock：会话统计 / Token 用量 / 上下文占用）。
+     *
+     * 由调用方给内容：这一排要读会话统计与上下文占用，而它们不属于输入框的状态。
+     * 位置在这里（而不是调用点）是因为间距属于输入框那一摞：dsh 的 dock 就是卡片后面的
+     * 下一个兄弟节点，间距 4px 由它自己带（.RlGAzG_dock 的 padding-top）。
+     */
+    dock: @Composable () -> Unit = {},
 ) {
     val palette = LocalDshPalette.current
     // 三个弹层互斥；状态托管给 ChatScreen（弹层自己登记进全局登记处，不用再铺拦截层）
@@ -697,7 +721,8 @@ fun DshComposer(
         }
     }
 
-    Column(Modifier.fillMaxWidth().padding(horizontal = DshSpacing.Xxl).padding(bottom = DshSpacing.Xl)) {
+    // 下边距 4dp：dsh 的 .RlGAzG_root 就是 padding-bottom:4px（输入框那一摞的下沿）
+    Column(Modifier.fillMaxWidth().padding(horizontal = DshSpacing.Xxl).padding(bottom = DshSpacing.Md)) {
         // dsh 的 heroWorkspaceRow：输入框「外」左上角的工作区入口（文件夹图标 + 名称 + 倒角）
         // 只在「新对话且还没有内容」时出现（dsh 的 hero 阶段），开始对话后自动隐藏
         if (showWorkspace) WorkspaceChipRow(
@@ -828,9 +853,9 @@ fun DshComposer(
                         onSelectEffort = onSelectEffort,
                     )
 
-                    // 上下文占用不在这一行里：dsh 把它放在输入卡片**下方**的会话统计旁边，
-                    // 这里是顶栏「会话统计」图标的右侧（见 ChatScreen 的顶栏）。它以前在这一行
-                    // 的最右边，出现在会话开始之后 —— 一出现就把左边的模型按钮顶走一格。
+                    // 上下文占用不在这一行里：dsh 把它放在输入卡片**下方**的 dock 里
+                    // （见 dock 参数与 ChatStatsDock）。它以前在这一行的最右边，出现在会话
+                    // 开始之后 —— 一出现就把左边的模型按钮顶走一格。
                     SendButton(
                         sending = sending,
                         // 只有附件没有文字也能发（dsh 的 canSubmit = 文本非空或附件非空）：
@@ -844,6 +869,10 @@ fun DshComposer(
             }
         }
         }
+
+        // 输入框下方那一排（会话统计 / Token 用量 / 上下文占用）：dsh 的 .RlGAzG_dock，
+        // 在卡片**后面**、间距 4px；没有会话时调用方传空的 lambda，这一排整个不存在。
+        dock()
 
         // 触发菜单：锚点就是上面那张卡片（宽度与卡片一致、底边贴卡片上沿 4px，dsh 的 .menu）
         CommandPalette(
@@ -1129,7 +1158,7 @@ private fun CircleIconButton(
     }
 }
 
-/** dsh 的 PermissionSelect / ModelSelect trigger：28dp 高、圆角 24、图标 + 可转动倒角 */
+/** dsh 的 PermissionSelect trigger：28dp 高、圆角 24、图标 + 可转动倒角 */
 @Composable
 internal fun TriggerPill(
     icon: ImageVector,
@@ -1152,6 +1181,53 @@ internal fun TriggerPill(
         horizontalArrangement = Arrangement.spacedBy(DshSpacing.Md),
     ) {
         Icon(icon, contentDescription = contentDescription, tint = palette.labelSecondary, modifier = Modifier.size(14.dp))
+        Icon(
+            DshIcons.ChevronDown,
+            contentDescription = null,
+            tint = palette.labelCaption,
+            modifier = Modifier.size(14.dp).rotate(rotation),
+        )
+    }
+}
+
+/**
+ * dsh 的 ModelSelect 触发器（.wq12jW_trigger）：**模型名 + 倒角**，高 28、圆角 8（--dsw-radius-sm）、
+ * 内边距 0 4 0 8、gap 4、13/20 字、二级色。
+ *
+ * 两处刻意与 dsh 保持一致：
+ *  - 图标（IconDataOutline16）在 dsh 里是**窄容器专用的备用形态** ——
+ *    --dsh-composer-model-icon-display 默认 none，只有一行放不下时才换出来，所以这里不画；
+ *  - 推理等级是触发器里的另一个 span（dsh 的 triggerEffort），用户口径是**不显示**，
+ *    它仍然留在菜单的「推理等级」那一页里。
+ */
+@Composable
+internal fun ModelTriggerPill(label: String, open: Boolean, onClick: () -> Unit) {
+    val palette = LocalDshPalette.current
+    val rotation by animateFloatAsState(if (open) 180f else 0f, tween(120), label = "chevron")
+    // dsh 的 max-width 是 min(360px, 45cqw)，cqw 是**输入框那一行**的宽度（手机上是窗口宽减两侧留白）
+    val maxWidth = with(LocalDensity.current) {
+        (LocalWindowInfo.current.containerSize.width * 0.45f).toDp()
+    }
+    Row(
+        modifier = Modifier
+            .height(28.dp)
+            .widthIn(max = maxWidth)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (open) palette.hover else Color.Transparent)
+            .dshClickable(interactionSource = dshInteraction(), onClick = onClick)
+            .padding(start = DshSpacing.Xl, end = DshSpacing.Md),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(DshSpacing.Md),
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.weight(1f, fill = false),
+            fontSize = 13.sp,
+            lineHeight = 20.sp,
+            color = palette.labelSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         Icon(
             DshIcons.ChevronDown,
             contentDescription = null,

@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adsh.app.core.data.SettingsStore
 import com.adsh.app.ui.panels.TerminalPanel
+import com.adsh.app.ui.theme.LocalDshPalette
 import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.blur.HazeBlurStyle
 import dev.chrisbanes.haze.blur.hazeBlur
@@ -254,11 +255,19 @@ fun AppRoot(viewModel: ChatViewModel) {
     // 边缘防误触的带宽（dp）：第 99 轮起固定 12dp（设置项已撤，见 SettingsStore.EDGE_GUARD_WIDTH_DP）
     val edgeGuardDp = SettingsStore.EDGE_GUARD_WIDTH_DP
 
+    // 左上角的会话标题：抽屉那份会话列表里当前这一条（重命名、标题模型写回都会刷新它）
+    val title = conversations.firstOrNull { it.id == state.conversationId }?.title.orEmpty()
+    val palette = LocalDshPalette.current
     OverlayDismissHost(overlayDismiss) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            // 根底色 = **抽屉的底色**，不是会话页的底色：抽屉拉开后主内容带着圆角压在上面，
+            // 圆角缺口露出来的就是这一层。缺口只有贴着主内容左边缘的上下两个角（右边两个角
+            // 被位移顶到屏幕外），所以它读起来就是「抽屉从主内容底下穿过去」。
+            // 用会话页底色的话，深色下两块颜色一样、圆角整个看不见（用户报的第 5 条），
+            // 浅色下也只是靠 12dp 投影的暗边才勉强看得出形状。
+            .background(palette.sidebar)
             // 边缘防误触（见 EdgeTouchGuard.kt）：贴边那一条里的手指整根不参与手势。
             // 必须放在抽屉手势**之前**：同一元素上的多个 pointerInput 按链序派发，
             // Initial 阶段最外层先跑 —— 先摘掉的手指，后面的手势节点就再也看不到它了。
@@ -331,6 +340,7 @@ fun AppRoot(viewModel: ChatViewModel) {
             Box(Modifier.fillMaxSize().hazeSource(state = hazeState)) {
             ChatScreen(
                         state = state,
+                        title = title,
                         onSend = viewModel::send,
                         onCancel = viewModel::cancel,
                         onClearError = viewModel::clearError,

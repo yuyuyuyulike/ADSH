@@ -296,7 +296,7 @@ private fun GeneralSection(
         SelectorSetting(
             icon = DshSettingIcons.Send,
             title = "繁忙时的发送行为",
-            description = "智能体运行时，发送按钮与回车的行为",
+            description = "智能体运行时，发送按钮的行为",
             options = listOf(
                 SettingsStore.BUSY_QUEUE to "排队发送",
                 SettingsStore.BUSY_STEER to "插话发送",
@@ -333,7 +333,7 @@ private fun PermissionSetting(bindings: SettingsBindings, onRequestFullAccess: (
     SettingRow(
         icon = preset.icon,
         title = "权限",
-        description = "新会话的默认权限模式；当前会话可以在输入栏的盾牌里随时切换。",
+        description = "新会话的默认权限模式；可在输入框里随时切换",
     ) {
         Box {
             SelectorPill(preset.label, open) { open = !open }

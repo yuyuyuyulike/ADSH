@@ -39,22 +39,23 @@ class ChatOverlaysTest {
         assertTrue(ChatOverlays(paletteMuted = "/pl").typedOpen("/pla", complete = false, draft = "/pla"))
     }
 
-    // ---------- 互斥 ----------
+    // ---------- 互斥：一个槽，写进去谁就是唯一开着的 ----------
 
     @Test
-    fun statsToggleClosesTheComposerMenu() {
-        val both = ChatOverlays(composerMenu = "model")
-        assertEquals(ChatOverlays(statsOpen = true), both.statsToggled())
-        // 再点一次：关掉自己，弹层仍然是关的
-        assertEquals(ChatOverlays(), ChatOverlays(statsOpen = true).statsToggled())
+    fun togglingOneTriggerClosesWhateverElseWasOpen() {
+        // 模型弹层开着时点统计胶囊：模型弹层让位（同一个槽被覆盖）
+        assertEquals(ChatOverlays(open = OPEN_STATS), ChatOverlays(open = OPEN_MODEL).toggled(OPEN_STATS))
+        // 再点一次统计：关掉自己
+        assertEquals(ChatOverlays(), ChatOverlays(open = OPEN_STATS).toggled(OPEN_STATS))
+        // 上下文与统计之间同理
+        assertEquals(ChatOverlays(open = OPEN_CONTEXT), ChatOverlays(open = OPEN_STATS).toggled(OPEN_CONTEXT))
     }
 
     @Test
-    fun openingAComposerMenuClosesStatsAndDismissesThePalette() {
-        val before = ChatOverlays(launcherDraft = "/pl", statsOpen = true)
-        val after = before.menuChanged("model", draft = "/pl")
-        assertEquals("model", after.composerMenu)
-        assertFalse(after.statsOpen)
+    fun openingAComposerMenuClosesTheDockAndDismissesThePalette() {
+        val before = ChatOverlays(launcherDraft = "/pl", open = OPEN_STATS)
+        val after = before.menuChanged(OPEN_MODEL, draft = "/pl")
+        assertEquals(OPEN_MODEL, after.open)
         // 触发菜单按「这一份草稿已被忽略」收掉（与 paletteDismissed 同一套语义）
         assertNull(after.launcherDraft)
         assertEquals("/pl", after.paletteMuted)
@@ -62,8 +63,8 @@ class ChatOverlaysTest {
 
     @Test
     fun closingAComposerMenuTouchesNothingElse() {
-        val open = ChatOverlays(composerMenu = "context", paletteMuted = "/x", statsOpen = false)
-        assertEquals(open.copy(composerMenu = null), open.menuChanged(null, draft = "/x"))
+        val open = ChatOverlays(open = OPEN_CONTEXT, paletteMuted = "/x")
+        assertEquals(open.copy(open = null), open.menuChanged(null, draft = "/x"))
     }
 
     // ---------- 触发菜单的两条状态转移 ----------
@@ -90,23 +91,23 @@ class ChatOverlaysTest {
     }
 
     @Test
-    fun sendingClearsBothPaletteStatesButKeepsThePopups() {
-        val before = ChatOverlays(launcherDraft = "/pl", paletteMuted = "/pl", composerMenu = "model", statsOpen = true)
+    fun sendingClearsBothPaletteStatesButKeepsThePopup() {
+        val before = ChatOverlays(launcherDraft = "/pl", paletteMuted = "/pl", open = OPEN_MODEL)
         val after = before.sent()
         assertNull(after.launcherDraft)
         assertNull(after.paletteMuted)
-        // 发消息不关弹层与统计 —— 与改动前一致
-        assertEquals("model", after.composerMenu)
-        assertTrue(after.statsOpen)
+        // 发消息不关浮层 —— 与改动前一致
+        assertEquals(OPEN_MODEL, after.open)
     }
 
-    // ---------- 跨进程重建只存统计那一个开关 ----------
+    // ---------- 跨进程重建只存「哪个浮层开着」 ----------
 
     @Test
-    fun onlyTheStatsFlagSurvivesProcessRecreation() {
+    fun onlyTheOpenPopupSurvivesProcessRecreation() {
         val scope = SaverScope { true }
-        val before = ChatOverlays(launcherDraft = "/pl", paletteMuted = "/pl", composerMenu = "model", statsOpen = true)
+        val before = ChatOverlays(launcherDraft = "/pl", paletteMuted = "/pl", open = OPEN_USAGE)
         val saved = with(ChatOverlaysSaver) { scope.save(before) }
-        assertEquals(ChatOverlays(statsOpen = true), ChatOverlaysSaver.restore(saved!!))
+        assertEquals(ChatOverlays(open = OPEN_USAGE), ChatOverlaysSaver.restore(saved!!))
+        assertEquals(ChatOverlays(), ChatOverlaysSaver.restore(listOf("")))
     }
 }

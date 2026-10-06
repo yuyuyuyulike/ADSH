@@ -115,7 +115,7 @@ private fun PermissionRow(label: String, granted: Boolean?, first: Boolean, onCl
                 text = permissionStatusLabel(granted),
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
-                color = if (granted == true) palette.success else palette.labelTertiary,
+                color = palette.labelTertiary,
             )
             Icon(
                 imageVector = DshIcons.ChevronRight,
