@@ -61,6 +61,30 @@ internal fun noThinkFor(providerId: String, baseUrl: String, model: String): Thi
     if (isDeepSeekRoute(providerId, baseUrl, model)) thinkingWire("off").thinking else null
 
 /**
+ * 同一次小调用在 **DashScope 兼容模式（qwen 系）** 上要发的 enable_thinking：
+ * false = 这次不思考，null = 不发（别的路由没有这个字段）。
+ *
+ * 为什么要它（用户报的「生成标题」这条路上的实测，2026-10-06 真机 + 同一把 key 的直连复现）：
+ *  - 不关思考：标题这次 64 token 的调用先推理 187-290 字、2.8-7.3 秒，content 为空 ⇒
+ *    ADSH 只能写兜底标题（真机上那条会话的标题就是首条消息前 5 个词，模型标题从没落地）；
+ *  - enable_thinking=false：推理 0 字、1.6 秒、标题正常返回；
+ *  - thinking={type:disabled}（DeepSeek 那个字段）在这条路由上反而要 4.4-9.9 秒 ——
+ *    所以两条路由各发各认识的字段，判据都写在这里。
+ *
+ * 判据只认 DashScope 系端点（阿里云 maas / dashscope 域名，或用户按 qwen 建的提供方）：
+ * 别的网关（例如 Cerebras 上的 qwen 模型）不认识这个字段，发了只会 400。
+ */
+internal fun noThinkDashScope(providerId: String, baseUrl: String, model: String): Boolean? =
+    if (isDashScopeRoute(providerId, baseUrl, model)) false else null
+
+/** DashScope 兼容模式的路由判据（[noThinkDashScope] 用；与 [isDeepSeekRoute] 同一层含义） */
+internal fun isDashScopeRoute(providerId: String, baseUrl: String, model: String): Boolean =
+    providerId == "qwen" ||
+        baseUrl.contains("dashscope") ||
+        baseUrl.contains("aliyuncs.com") ||
+        baseUrl.contains("aliyun.com")
+
+/**
  * 死循环判据的签名：**同一个工具 + 同一份参数**。参数按原始 JSON 串比，不做任何规范化 ——
  * 宁可漏判，也不能把两次不同的调用算成一次（分隔符用 NUL：工具名与参数拼起来不会串味）。
  */

@@ -68,6 +68,19 @@ class SessionTitleTest {
     @Test
     fun `没有 thinking 时请求里没有这个字段`() {
         assertNull(titleRequest("qwen3.8-flash", "你好", null).thinking)
+        assertNull(titleRequest("qwen3.8-flash", "你好", null).enableThinking)
+    }
+
+    /**
+     * qwen 系走的是另一个字段：enable_thinking = false（判据见 noThinkDashScope 的 KDoc）。
+     * 两个字段不会同时发：DeepSeek 只发 thinking，DashScope 只发 enable_thinking。
+     */
+    @Test
+    fun dashScopeRouteDisablesEnableThinkingForTheTitleCall() {
+        val request = titleRequest("qwen3.8-flash", "你好", null, enableThinking = false)
+        assertEquals(false, request.enableThinking)
+        assertNull("DeepSeek 那个字段在这条路由上又慢又没用，不发", request.thinking)
+        assertEquals(TITLE_MAX_OUTPUT_TOKENS, request.maxTokens)
     }
 
     @Test

@@ -36,6 +36,12 @@ internal suspend fun generateSessionTitleIfNeeded(
      * （DeepSeek V4）默认先把预算花在推理上 → content 为空 → 标题永远出不来（用户报的 bug）。
      */
     thinking: ThinkingOption? = null,
+    /**
+     * DashScope 兼容模式（qwen 系）的 enable_thinking；null = 不发。
+     * 见 [com.adsh.app.core.agent.noThinkDashScope]：那条路由不关思考时，64 个输出 token
+     * 会被推理整段吃光，标题永远退回兜底值。
+     */
+    enableThinking: Boolean? = null,
 ): String? {
     if (!titleAttempted.add(conversationId)) return null
     val firstUser = repository.messages(conversationId)
@@ -45,7 +51,9 @@ internal suspend fun generateSessionTitleIfNeeded(
     val fallback = fallbackSessionTitle(firstUser.content)
     if (fallback.isBlank()) return null
     // 失败 / 超时 / 空标题：保留兜底（dsh 同样只在 provider 成功时才覆盖 fallback）
-    val title = runCatching { requestSessionTitle(client, model, firstUser.content, thinking) }.getOrNull()
+    val title = runCatching {
+        requestSessionTitle(client, model, firstUser.content, thinking, enableThinking)
+    }.getOrNull()
     if (title.isNullOrBlank()) {
         // 模型没给出标题：**退回兜底值**（用户口径是一轮跑完才出现标题，但也不能让这条会话永远停在
         // 「新会话」上）。兜底写在模型之后 —— 正常路径上用户看不到它，也就不会出现「先是一个、
@@ -66,15 +74,22 @@ private suspend fun requestSessionTitle(
     model: String,
     firstUserText: String,
     thinking: ThinkingOption?,
+    enableThinking: Boolean?,
 ): String =
     // 收文本的三条口径与压缩摘要共用一份实现（core/llm/LlmTextCollect.kt）
-    normalizeSessionTitle(client.collectText(titleRequest(model, firstUserText, thinking)))
+    normalizeSessionTitle(client.collectText(titleRequest(model, firstUserText, thinking, enableThinking)))
 
 /**
  * 这次小调用的请求体（单独成函数是为了能在纯 JVM 单测里钉住**发出去的那两个字段**：
  * `max_tokens = 64` 与 `thinking = disabled` —— 少了后者，DeepSeek 的推理会把 64 个 token 吃光）。
  */
-internal fun titleRequest(model: String, firstUserText: String, thinking: ThinkingOption?): ChatRequest = ChatRequest(
+internal fun titleRequest(
+    model: String,
+    firstUserText: String,
+    thinking: ThinkingOption?,
+    /** DashScope 兼容模式（qwen 系）的思考开关：false = 这次不思考；别的路由传 null */
+    enableThinking: Boolean? = null,
+): ChatRequest = ChatRequest(
     model = model,
     messages = listOf(
         ChatMessage(role = "system", content = textContent(TITLE_SYSTEM_PROMPT)),
@@ -83,4 +98,5 @@ internal fun titleRequest(model: String, firstUserText: String, thinking: Thinki
     stream = true,
     maxTokens = TITLE_MAX_OUTPUT_TOKENS,
     thinking = thinking,
+    enableThinking = enableThinking,
 )

@@ -116,10 +116,16 @@ class AgentLoopGoldenTest {
 
         // ---------------- ④ 返回的事件流（顺序 = 日志 append 顺序）----------------
 
-        assertEquals("事件数：Reasoning + 2×Delta + Usage + Appended + Stats", 6, events.size)
-        assertEquals(ChatEvent.Reasoning("先想一下。"), events[0])
-        assertEquals(ChatEvent.Delta("你好，"), events[1])
-        assertEquals(ChatEvent.Delta("我是 ADSH。"), events[2])
+        assertEquals(
+            "事件数：RequestHeader + Reasoning + 2×Delta + Usage + Appended + Stats",
+            7,
+            events.size,
+        )
+        // dsh 的 request/header：主请求已经写到连接上（标题生成订在这里，见 ChatEvent.RequestHeader）
+        assertEquals(ChatEvent.RequestHeader, events[0])
+        assertEquals(ChatEvent.Reasoning("先想一下。"), events[1])
+        assertEquals(ChatEvent.Delta("你好，"), events[2])
+        assertEquals(ChatEvent.Delta("我是 ADSH。"), events[3])
         assertEquals(
             ChatEvent.Usage(
                 promptTokens = 12,
@@ -128,16 +134,16 @@ class AgentLoopGoldenTest {
                 cacheMissTokens = 8,
                 reasoningTokens = 2,
             ),
-            events[3],
+            events[4],
         )
         // 一步定稿进日志（界面的流式尾巴在这里交班给库里那一行）
-        val appended = events[4] as ChatEvent.Appended
+        val appended = events[5] as ChatEvent.Appended
         assertEquals(0L, appended.event.seq)
         assertEquals(
             SessionBody.Step(text = "你好，我是 ADSH。", reasoning = "先想一下。", interrupted = false),
             appended.event.body,
         )
-        val stats = (events[5] as ChatEvent.Stats).stats
+        val stats = (events[6] as ChatEvent.Stats).stats
         assertEquals("轮数在写用户行之前数：这一轮还没算进去", 0, stats.turns)
         assertEquals("这一轮没有工具调用", 0, stats.steps)
         assertEquals(12L, stats.promptTokens)
@@ -218,17 +224,18 @@ class AgentLoopGoldenTest {
         assertEquals(listOf("system", "user"), llm.lastRequest.messages.map { it.role })
         assertEquals(listOf(PromptAssembler.STATIC_SYSTEM_PROMPT, "你好"), texts(llm.lastRequest))
 
-        // 事件流：Failed → 一条**空**的 Step → Stats
-        assertEquals(3, events.size)
-        assertEquals(ChatEvent.Failed("测试失败"), events[0])
-        val appended = events[1] as ChatEvent.Appended
+        // 事件流：RequestHeader → Failed → 一条**空**的 Step → Stats
+        assertEquals(4, events.size)
+        assertEquals(ChatEvent.RequestHeader, events[0])
+        assertEquals(ChatEvent.Failed("测试失败"), events[1])
+        val appended = events[2] as ChatEvent.Appended
         assertEquals(0L, appended.event.seq)
         assertEquals(
             "空回复也进日志（被挡住的只是落库）",
             SessionBody.Step(text = "", reasoning = "", interrupted = false),
             appended.event.body,
         )
-        val stats = (events[2] as ChatEvent.Stats).stats
+        val stats = (events[3] as ChatEvent.Stats).stats
         assertEquals(0, stats.turns)
         assertEquals(0, stats.steps)
         assertEquals(0L, stats.promptTokens)
@@ -308,11 +315,12 @@ class AgentLoopGoldenTest {
         assertEquals("好的", rows[8].content)
         assertNull(rows[8].reasoning)
 
-        assertEquals("Delta + 一条定稿的 Step + Stats", 3, events.size)
-        assertEquals(ChatEvent.Delta("好的"), events[0])
-        val appended = events[1] as ChatEvent.Appended
+        assertEquals("RequestHeader + Delta + 一条定稿的 Step + Stats", 4, events.size)
+        assertEquals(ChatEvent.RequestHeader, events[0])
+        assertEquals(ChatEvent.Delta("好的"), events[1])
+        val appended = events[2] as ChatEvent.Appended
         assertEquals(SessionBody.Step(text = "好的", reasoning = "", interrupted = false), appended.event.body)
-        val stats = (events[2] as ChatEvent.Stats).stats
+        val stats = (events[3] as ChatEvent.Stats).stats
         assertEquals("预置历史里没有 name = null 的 user 行，这一轮还没算进去", 0, stats.turns)
         assertEquals(emptyList<Long>(), store.missedUpdateIds)
     }

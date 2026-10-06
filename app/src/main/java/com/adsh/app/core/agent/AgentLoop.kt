@@ -440,6 +440,13 @@ class AgentLoop(
                     bus.trySend(event)
                 }
                 is ChatEvent.ToolCallDelta -> {
+                    // dsh 的 isTokenDelta：工具调用的参数分片（或带名字的那一片）**也算出字**
+                    // （dsh-llm/lib/types/assistant-stream.js:185-195）。只认正文/思考的话，
+                    // 「这一步只吐工具调用」的步在账本里没有首 token —— 首字时延显示为缺失，
+                    // 解码窗口还会把整步都算进去（TPS 偏低）。
+                    if (!event.argumentsChunk.isNullOrEmpty() || event.name != null) {
+                        meter.markFirstToken(System.currentTimeMillis())
+                    }
                     calls.getOrPut(event.index) { CallAccumulator() }.apply {
                         if (event.id != null) id = event.id
                         if (event.name != null) name = event.name

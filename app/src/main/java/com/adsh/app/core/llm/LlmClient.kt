@@ -182,6 +182,12 @@ class LlmClient(
                     " roles=" + request.messages.joinToString(",") { it.role })
             }
             OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(payload) }
+            // dsh 的会话事件 request/header 在这一刻才算成立：**请求体已经写进连接**。
+            // 标题生成订的就是它（见 ChatViewModel.collectTurn）：放在写入之后而不是装配请求时，
+            // 才能保证标题那次小调用一定排在主请求之后 —— dsh 的 README 把「自动工作永不拖慢
+            // 主回答」写成硬保证，只对齐事件位置做不到：主请求体有 30 多 KB 要编码 + 上传，
+            // 标题那 1KB 反而会先上网（真机日志实测标题早 19ms）。
+            emit(ChatEvent.RequestHeader)
 
             val code = connection.responseCode
             if (BuildConfig.DEBUG) Log.d(TAG, "HTTP " + code + " type=" + connection.contentType)

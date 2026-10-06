@@ -61,7 +61,12 @@ class FakeTurnLlm(private val script: List<List<ChatEvent>>) : TurnLlm {
             "FakeTurnLlm：脚本只有 " + script.size + " 轮，第 " + (index + 1) +
                 " 次 stream() 无事件可发（测试脚本写漏了一轮）",
         )
-        return flow { round.forEach { emit(it) } }
+        // 真 LlmClient 在**请求体写进连接之后**发这一条（dsh 的 request/header）：替身照发，
+        // 上下游看到的顺序才与生产一致（标题生成订的就是它，见 ChatViewModel.collectTurn）。
+        return flow {
+            emit(ChatEvent.RequestHeader)
+            round.forEach { emit(it) }
+        }
     }
 }
 

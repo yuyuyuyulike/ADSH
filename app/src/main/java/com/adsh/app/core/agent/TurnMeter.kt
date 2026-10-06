@@ -18,7 +18,9 @@ import kotlinx.serialization.json.Json
  * 口径（改动前先看测试，这几条都是真机踩出来的）：
  *  - 一次请求只有**一份** usage，取最后一份 —— 把多个 chunk 相加，网关重复上报时数字会翻倍；
  *  - `prompt` 是「未命中缓存」的口径（[com.adsh.app.core.llm.LlmClient] 按 dsh 的 mapUsage 扣过）；
- *  - 首字时延只认**本轮第一次**出字（思考也算），`ttftSamples` 是「有没有量到」；
+ *  - 首字时延只认**首次**出字（思考、工具调用分片也算 —— dsh 的 isTokenDelta），
+ *    ttftSamples 是「有没有量到」；
+ *  - TPS 只算**解码窗口**（dsh 的 decodeMs/decodeTokens），首 token 之前的排队与 prefill 不进分母；
  *  - `steps / llmMillis / toolMillis` 都是**这一步**的增量，`turns` 是会话轮次
  *    （在写本轮用户行**之前**统计，所以首轮是 0 —— 与 dsh 状态栏一致）。
  */
@@ -39,6 +41,10 @@ internal class TurnMeter(
     private var turnReasoning = 0L
     private var turnLlmMillis = 0L
     private var turnTtft = 0L
+    /** 本轮解码窗口之和（dsh 的 decodeMs）：每一步「首 token → 收尾」那一段，TPS 的分母 */
+    private var turnDecodeMillis = 0L
+    /** 解码窗口里产出的 token（dsh 的 decodeTokens）：每一步的 outputTokens 之和 */
+    private var turnDecodeTokens = 0L
 
     // 这一步的快照（每一步重来）
     private var roundStartedAt = 0L
@@ -51,6 +57,8 @@ internal class TurnMeter(
     private var roundCacheHit = 0L
     private var roundCacheMiss = 0L
     private var roundReasoning = 0L
+    /** 这一步有没有收到过 usage —— dsh 只在「量到首 token **且**有 outputTokens」时记一条读数 */
+    private var roundUsageSeen = false
 
     /** 这一步开始：清掉上一步的增量。 */
     fun beginRound(now: Long) {
@@ -64,6 +72,7 @@ internal class TurnMeter(
         roundCacheHit = 0L
         roundCacheMiss = 0L
         roundReasoning = 0L
+        roundUsageSeen = false
     }
 
     /** 本步第一次出字（正文或思考）；只认第一次，之后调用无副作用。 */
@@ -78,6 +87,7 @@ internal class TurnMeter(
 
     /** 一次请求的 usage：**覆盖**（取最后一份），不累加。 */
     fun onUsage(usage: ChatEvent.Usage) {
+        roundUsageSeen = true
         roundPrompt = usage.promptTokens.toLong()
         roundCompletion = usage.completionTokens.toLong()
         roundCacheHit = usage.cacheHitTokens.toLong()
@@ -98,6 +108,12 @@ internal class TurnMeter(
     /** 这一步结束：把增量并进本轮累计。 */
     fun endRound(now: Long) {
         roundLlmMillis = now - roundStartedAt
+        // dsh 的解码窗口（client.js 的 assistantStepReading）：decodeMs = completedTime − firstTokenTime，
+        // 配这一步的 outputTokens；只有量到首 token、且这次请求给了 usage 才算一条读数。
+        if (firstTokenAt > 0 && roundUsageSeen) {
+            turnDecodeMillis += (now - firstTokenAt).coerceAtLeast(0)
+            turnDecodeTokens += roundCompletion
+        }
         turnPrompt += roundPrompt
         turnCompletion += roundCompletion
         turnCacheHit += roundCacheHit
@@ -129,7 +145,7 @@ internal class TurnMeter(
      */
     suspend fun persist(workspaceRoot: String?) {
         val userId = store.lastTurnOpener(conversationId)?.id ?: return
-        val decodeSeconds = turnLlmMillis / 1000.0
+        val decodeSeconds = turnDecodeMillis / 1000.0
         val usage = TurnUsage(
             provider = settings.providerRoute,
             model = model,
@@ -141,7 +157,9 @@ internal class TurnMeter(
             reasoningTokens = turnReasoning,
             runMillis = (System.currentTimeMillis() - turnStartedAt).coerceAtLeast(0),
             ttftMillis = turnTtft,
-            tps = if (decodeSeconds > 0) turnCompletion / decodeSeconds else 0.0,
+            // dsh 的输出速度 = decodeTokens / decodeMs：首 token 之前的排队与 prefill 不算进去
+            // （以前用整段模型用时当分母，新会话首轮那 8.5K token 的冷 prefill 会把速度压掉一大截）
+            tps = if (decodeSeconds > 0) turnDecodeTokens / decodeSeconds else 0.0,
         )
         runCatching { store.setUsage(userId, json.encodeToString(TurnUsage.serializer(), usage)) }
         // 本轮的文件改动（dsh 的 workspace/changes）：与用量同一处收口 —— 轮尾的「已编辑 N 个文件」

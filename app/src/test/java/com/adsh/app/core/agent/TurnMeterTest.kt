@@ -154,6 +154,55 @@ class TurnMeterTest {
         assertEquals(200L, m.stats().llmMillis)
     }
 
+    /**
+     * TPS 的分母是**解码窗口**（dsh 的 decodeMs = completedTime − firstTokenTime），不是整步耗时。
+     *
+     * 用户报的「新会话首轮模型速度慢好多」就出在这条口径上：首轮要冷 prefill 8.5K token，
+     * 一步 2 秒里首 token 花掉 1.5 秒 —— 拿整步当分母只有 25 tok/s，按 dsh 的口径是 100 tok/s
+     * （第二轮命中前缀缓存 TTFT 短，两个口径才会接近）。
+     */
+    @Test
+    fun tpsCountsOnlyTheDecodeWindow() = runBlocking {
+        val store = FakeTurnStore()
+        store.addMessage(1L, "user", "你好")
+        val m = meter(store)
+        m.beginRound(1_000L)
+        m.markFirstToken(2_500L)
+        m.onUsage(usage(8_000, 50, 0, 8_000, 0))
+        m.endRound(3_000L)
+
+        val stats = m.stats()
+        assertEquals("整步 2 秒", 2_000L, stats.llmMillis)
+        assertEquals("首 token 花了 1.5 秒", 1_500L, stats.ttftMillis)
+        assertEquals("解码窗口只剩 0.5 秒", 500L, stats.decodeMillis)
+        assertEquals(100.0, stats.tps, 0.001)
+
+        m.persist(null)
+        val written = json.decodeFromString(TurnUsage.serializer(), store.rows(1L).single().usageJson ?: "")
+        assertEquals(100.0, written.tps, 0.001)
+        assertEquals(1_500L, written.ttftMillis)
+    }
+
+    /**
+     * 一次 usage 都没来（没量到输出 token）就不算解码读数 —— dsh 的 outputTokens === null 那一支：
+     * 那条读数既不进 decodeMs 也不进 decodeTokens，本轮的 TPS 因此是 0（不是拿整步去除 0 个 token）。
+     *
+     * 会话级那个速度是从库里两个数推的（llmMillis − ttftMillis，见 SessionStats.decodeMillis）：
+     * 这种「有首 token 但没有 usage」的步推不出来，会把那一小段算进分母 —— 网关不回 usage 才碰得到。
+     */
+    @Test
+    fun decodeWindowNeedsBothAFirstTokenAndUsage() = runBlocking {
+        val store = FakeTurnStore()
+        store.addMessage(1L, "user", "你好")
+        val m = meter(store)
+        m.beginRound(1_000L)
+        m.markFirstToken(1_200L)
+        m.endRound(2_000L)
+        m.persist(null)
+        val written = json.decodeFromString(TurnUsage.serializer(), store.rows(1L).single().usageJson ?: "")
+        assertEquals("没有 usage 就没有解码读数", 0.0, written.tps, 0.001)
+    }
+
     /** 工具耗时与步数是每一步的增量，下一步归零。 */
     @Test
     fun toolMillisAndStepsArePerStep() {

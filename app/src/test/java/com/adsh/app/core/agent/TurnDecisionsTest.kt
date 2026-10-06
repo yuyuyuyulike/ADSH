@@ -80,6 +80,27 @@ class TurnDecisionsTest {
         assertNull(noThinkFor("openai", "https://api.openai.com/v1", "gpt-4o"))
     }
 
+    /**
+     * qwen 系（DashScope 兼容模式）这条路由**认识的不是 thinking，而是 enable_thinking**。
+     *
+     * 实测（ws-*.maas.aliyuncs.com + qwen3.8-flash，同一把 key 直连复现，标题那次的提示词与 max_tokens=64）：
+     *  - 不发字段：推理 187-290 字、2.8-7.3 秒、content 为空 ⇒ 标题退回兜底值；
+     *  - enable_thinking=false：推理 0 字、1.6 秒、标题正常；
+     *  - thinking={type:disabled}（DeepSeek 那个）：0 字推理但要 4.4-9.9 秒。
+     * 别的网关（Cerebras 上的 qwen 模型、OpenAI）没这个字段，发过去只会 400 —— 所以判据按端点来。
+     */
+    @Test
+    fun smallCallDisablesThinkingOnDashScopeRoutesToo() {
+        assertEquals(
+            false,
+            noThinkDashScope("qwen", "https://ws-x.maas.aliyuncs.com/compatible-mode/v1", "qwen3.8-flash"),
+        )
+        assertEquals(false, noThinkDashScope("custom", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3-max"))
+        assertNull("别家网关上的 qwen 模型不认识这个字段", noThinkDashScope("cerebras", "https://api.cerebras.ai/v1", "qwen-3.8-27b"))
+        assertNull(noThinkDashScope("openai", "https://api.openai.com/v1", "gpt-5.6-sol"))
+        assertNull(noThinkDashScope("deepseek", "https://api.deepseek.com/v1", "deepseek-flash"))
+    }
+
     // ---------- 死循环判据 ----------
 
     @Test

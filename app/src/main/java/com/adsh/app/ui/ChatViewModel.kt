@@ -1105,17 +1105,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // **标题仍然保持「新会话」** —— 它由 generateTitle 生成，不能拿用户刚发的那句话先顶上
         // （用户第 189 轮口径）。
         refreshConversations()
-        // dsh 的 session/title 时机：**主请求一发出就并行跑**（dsh 的 onRequestHeader 里
-        // startPending 就是这一步）—— 不是等整轮跑完。标题是另一次小请求，与正文并行，
-        // 正常一两秒就回来，用户几乎在回答开始的同时就看到标题（第 190 轮口径：太慢了，学 dsh）。
-        generateTitle(conversationId)
+        // 标题**不在这里**起：dsh 的 SessionTitleService 订的是 request/header —— 主请求
+        // 真正发出的那一刻（第 194 轮口径）。这里只是把它交给 collectTurn 的
+        // ChatEvent.RequestHeader 分支，免得标题抢在主请求前面占住提供方的并发名额。
     }
 
     /**
      * 生成会话标题（时机与机制都对齐 dsh 的 session-title）：
      *
-     *  - **时机**：首条用户消息落库、主请求发出去的同一步就开始跑（dsh 的 onRequestHeader
-     *    → startPending），与正文并行 —— 不是等这一轮结束；
+     *  - **时机**：主请求**发出之后**立刻起（collectTurn 的 ChatEvent.RequestHeader 那一支，
+     *    等价于 dsh 的 SessionTitleService.onRequestHeader → defer(...)），与正文并行 ——
+     *    不是等这一轮结束，也**不是抢在主请求前面**（第 194 轮：真机日志里它原先比主请求早 8-23ms）；
      *  - **顺序是先模型、后兜底**：模型给出的标题直接落库（左上角与抽屉同时从「新会话」变成它）；
      *    只有模型失败才退回兜底值 —— 兜底写在模型之后，正常路径上用户看不到它，也就不会出现
      *    「先是用户消息、过一会儿又变」（用户第 189 轮口径）。
@@ -1129,8 +1129,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // noThinkFor 的 KDoc）。判据与别的请求同一条（不认识这个字段的路由就不发）。
             val config = settings.providerConfig()
             val noThink = com.adsh.app.core.agent.noThinkFor(config.providerId, config.baseUrl, config.model)
+            // qwen 系（DashScope 兼容模式）的思考开关是另一个字段：实测那条路由不关思考时
+            // 推理 187-290 字、2.8-7.3 秒，64 个输出 token 被推理吃光 ⇒ 标题永远退回兜底值
+            val enableThinking =
+                com.adsh.app.core.agent.noThinkDashScope(config.providerId, config.baseUrl, config.model)
             runCatching {
-                generateSessionTitleIfNeeded(compactLlm, repository, settings.model, conversationId, noThink)
+                generateSessionTitleIfNeeded(
+                    compactLlm, repository, settings.model, conversationId, noThink, enableThinking,
+                )
             }.onFailure {
                 // 这一路以前是静默的：模型只回推理 / 被截断 / 提供方报错，界面上都只是「标题没变」。
                 android.util.Log.w("ADSH", "会话标题生成失败（退回兜底标题）", it)
@@ -1192,7 +1198,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 状态乱序；而且读库必须发生在 trace 之后、与状态更新同一帧（见那一支的注释）。
      */
     private suspend fun collectTurn(conversationId: Long, events: kotlinx.coroutines.flow.Flow<ChatEvent>) {
+        // 标题这一轮起过一次就够了（AgentLoop 每一步都会发 RequestHeader，dsh 那边也是每个请求都通知，
+        // 由标题服务自己按「首条用户消息 / 已经起过」去重；这里同样的判据在 generateTitle 里，多一次
+        // 调用只是白起一个协程）
+        var titleRequested = false
         events.collect { event ->
+            // dsh 的 session/title 时机：主请求**发出之后**立刻起那次小调用（dsh 的
+            // SessionTitleService.onRequestHeader → defer(...)，不 await 主请求）。
+            if (!titleRequested && event is ChatEvent.RequestHeader) {
+                titleRequested = true
+                generateTitle(conversationId)
+            }
             when (event) {
                 // 掉线重连（dsh 的 ConnectionController + ConnectionIndicator）：状态与「最短可见 /
                 // 收尾」两个计时器都归 setConnection 管，纯投影里不碰

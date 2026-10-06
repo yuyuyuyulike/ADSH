@@ -77,6 +77,14 @@ data class ChatRequest(
     @SerialName("reasoning_effort") val reasoningEffort: String? = null,
     /** dsh 的 thinking：off → disabled，low/high/max → enabled */
     val thinking: ThinkingOption? = null,
+    /**
+     * DashScope 兼容模式（qwen 系）的思考开关：false = 这次不思考；null = 不发（别的路由没这个字段）。
+     *
+     * 为什么标题那次小调用需要它：qwen 系默认会思考，而标题只要 64 个输出 token，推理会把预算
+     * 整段吃光 —— 实测这条路由（ws-*.maas.aliyuncs.com）基线下推理 187-290 字、2.8-7.3 秒、
+     * content 为空，标题只能退回兜底值；发 enable_thinking=false 之后推理 0 字、1.6 秒、标题正常。
+     */
+    @SerialName("enable_thinking") val enableThinking: Boolean? = null,
     /** dsh 的 stream_options：让流式响应带 usage（token 统计靠它） */
     @SerialName("stream_options") val streamOptions: StreamOptions? = StreamOptions(),
     val tools: List<JsonObject>? = null,
@@ -107,7 +115,28 @@ data class SessionStats(
             return if (total <= 0) 0 else ((cacheHitTokens * 100) / total).toInt()
         }
 
-    val tps: Double get() = if (llmMillis <= 0) 0.0 else completionTokens * 1000.0 / llmMillis
+    /**
+     * 解码窗口（dsh 的 decodeMs）：模型**开始出字之后**到这一步收尾的那一段，TPS 的分母。
+     *
+     * dsh 每个 assistant 步各记一条 completedTime − firstTokenTime 再求和（dsh-client-ui-chat
+     * 的 assistantStepReading / deriveStats），而「步耗时之和」减「首 token 时延之和」正好等于它
+     * —— 同一批步、同一个起点：Sum(completed − firstToken) = Sum(completed − start) − Sum(firstToken − start)。
+     * 所以这里直接从**已经存进库的两个数**推出来，不额外加列（库表不用迁移）。
+     */
+    val decodeMillis: Long get() = (llmMillis - ttftMillis).coerceAtLeast(0)
+
+    /** 解码窗口里产出的 token（dsh 的 decodeTokens：每个 assistant 步的 outputTokens 之和） */
+    val decodeTokens: Long get() = completionTokens
+
+    /**
+     * 输出速度（dsh 的 message.tokensPerSecond / stats.dialog.speed）：**只算解码窗口**。
+     *
+     * 以前这里的分母是整段模型用时（llmMillis），于是首 token 之前的排队与 prefill 全被算进
+     * 「速度」里：新会话首轮要冷 prefill 8.5K token，同样一段回答显示 10 tok/s，第二轮命中
+     * 前缀缓存显示 11 tok/s（用户报的「首轮模型速度慢好多」）；换成 dsh 口径后两轮都在
+     * 50 tok/s 上下，差的就是那点 prefill 本身（TTFT 上照实体现）。
+     */
+    val tps: Double get() = if (decodeMillis <= 0) 0.0 else decodeTokens * 1000.0 / decodeMillis
 
     val ttftAverage: Long get() = if (ttftSamples <= 0) 0 else ttftMillis / ttftSamples
 
@@ -194,6 +223,17 @@ sealed interface ChatEvent {
      * 画出来，同时撤掉本地回显。
      */
     data object InboxClaimed : ChatEvent
+
+    /**
+     * **主请求已经写到连接上**（dsh 的会话事件 request/header；dsh 在 agent-loop 装配请求时
+     * append 它、紧接着发主流，ADSH 这条由 LlmClient 在请求体写进连接之后发 —— 见那里的注释：
+     * 只对齐 dsh 的事件位置做不到「标题一定排在主请求后面」，主请求体 30 多 KB 要编码 + 上传，
+     * 标题那 1KB 反而会先上网，真机日志实测早 19ms）。
+     *
+     * 标题生成就订在这一刻：dsh 的 SessionTitleService.onRequestHeader → defer(...) 起那次
+     * 小调用（不 await 主请求）。第 194 轮之前它在 openTurnInputs 末尾就起，比主请求还早。
+     */
+    data object RequestHeader : ChatEvent
     data class Usage(
         /**
          * 未命中缓存的输入 token（dsh 的 TokenUsage.inputTokens 口径）。
