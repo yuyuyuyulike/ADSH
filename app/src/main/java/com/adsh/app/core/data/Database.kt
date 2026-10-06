@@ -1024,24 +1024,22 @@ class ConversationRepository(private val db: AdshDatabase) : TurnStore {
                 messageCache[entity.conversationId] = cached + entity.copy(id = id)
             }
         }
+        // 追加消息**只把会话顶到列表最前**（updatedAt），**不改标题**：标题要等这一轮跑完
+        // 才由模型生成（用户第 189 轮口径 —— 不能拿用户刚发的那句话先顶上，过一会儿又变）。
         db.conversations().rename(
             entity.conversationId,
-            titleFor(entity.conversationId, entity.content, entity.role),
+            db.conversations().byId(entity.conversationId)?.title ?: NEW_SESSION_TITLE,
             System.currentTimeMillis(),
         )
         return entity.copy(id = id)
     }
 
-    /** 这一行该用什么标题：读一次库，判定在 [sessionTitleFor]（含「什么时候不覆盖」的理由） */
-    private suspend fun titleFor(conversationId: Long, content: String, role: String): String =
-        sessionTitleFor(db.conversations().byId(conversationId)?.title, content, role)
-
     /**
-     * 自动标题：**只在标题仍是我们写下的那个兜底值**时才覆盖（用户第 177 轮选定的「甲方案」）。
+     * 自动标题：**只在标题仍是「新会话」时才覆盖**（用户第 177 轮选定的「甲方案」）。
      *
      * dsh 用标题事件的 source.kind = 'user' 把用户改过的名字永久钉住；ADSH 没有这个字段，于是用
-     * 「字符串仍然等于兜底值」近似：用户在模型返回之前改了名 ⇒ 这里比对失败、不覆盖；模型已经写过
-     * 一次 ⇒ 标题不再等于兜底值，第二次也不会再写。
+     * 「字符串仍然等于占位值」近似：用户在标题生成之前改了名 ⇒ 这里比对失败、不覆盖；
+     * 模型已经写过一次 ⇒ 标题不再等于占位值，第二次也不会再写。
      *
      * @return 是否真的写进去了
      */

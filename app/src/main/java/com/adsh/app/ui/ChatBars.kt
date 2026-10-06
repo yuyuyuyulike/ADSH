@@ -1,9 +1,5 @@
 package com.adsh.app.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -424,7 +420,8 @@ internal fun ChatTopBar(
 
 /**
  * 输入框上方那一摞：错误条 / 提问卡 / 计划待审卡 / 审批卡 / 压缩条 / 排队条 / 待办 dock /
- * 轮次状态行 / 掉线重连条。R14 第三步从 ChatScreen 主函数搬出来，**原文一字未改**。
+ * 轮次状态行。R14 第三步从 ChatScreen 主函数搬出来，**原文一字未改**
+ * （掉线重连条第 190 轮挪到输入框那一行的右侧，见 DshComposer 的 connection 参数）。
  *
  * 顺序就是屏幕上的竖列顺序；整摞的测量高度由 ChatScreen 那层 `Modifier.layout` 拿去补贴底
  * （输入框自己长高时本屏不重组，只能靠那一层；见 [ChatScrollState.chromeMeasured]）。
@@ -441,7 +438,6 @@ internal fun ChatBottomBars(
     onAllowApproval: () -> Unit,
     onRejectApproval: () -> Unit,
     onClearQueued: () -> Unit,
-    onRetryConnection: () -> Unit,
 ) {
     state.error?.let { message -> ErrorBar(message = message, onDismiss = onClearError) }
 
@@ -488,20 +484,7 @@ internal fun ChatBottomBars(
             )
         }
     }
-    // 掉线重连条（dsh 的 ConnectionIndicator）：断线 / 连接中 / 已恢复三态，
-    // 钉在输入框上面那一列（与 TurnStatus 同一个位置）。它有话要说时**替换**掉
-    // TurnStatus 的那一行 —— 两行一起挂着反而看不清现在到底是「在跑」还是「断了」。
-    // 出现 / 消失都淡入淡出 150ms（dsh 的 `indicator-enter` / `.leaving` 也是 150ms）：
-    // 退场期间内容还留着（AnimatedVisibility 会保留最后一帧），所以不会「啪」地消失。
-    AnimatedVisibility(
-        visible = state.connection !is ConnectionState.Idle,
-        enter = fadeIn(tween(150)),
-        exit = fadeOut(tween(150)),
-    ) {
-        ConnectionBar(
-            state = state.connection,
-            modifier = Modifier.padding(start = DshSpacing.Section, bottom = DshSpacing.Xs),
-            onRetry = onRetryConnection,
-        )
-    }
+    // 掉线重连条**不在这里**：第 190 轮按用户口径挪到输入框那一行的右侧了
+    // （模型选择器与发送键之间，见 DshComposer 的 connection 参数与 dsh 的
+    // conversation.input.activity 槽）。
 }

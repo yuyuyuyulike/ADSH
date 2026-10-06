@@ -1,6 +1,7 @@
 package com.adsh.app.ui
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -636,6 +637,13 @@ fun DshComposer(
     menu: String?,
     onMenuChange: (String?) -> Unit,
     /**
+     * 掉线重连条的状态（dsh 的 ConnectionIndicator）。它挂在输入框那一行的**右侧**
+     * （模型选择器与发送键之间 = dsh 的 conversation.input.activity 槽）——
+     * 用户第 190 轮口径：「模型重连的 UI 在输入框右侧展示」。
+     */
+    connection: ConnectionState,
+    onRetryConnection: () -> Unit,
+    /**
      * 输入框**下方**那一排（dsh 的 InputBar dock：会话统计 / Token 用量 / 上下文占用）。
      *
      * 由调用方给内容：这一排要读会话统计与上下文占用，而它们不属于输入框的状态。
@@ -721,8 +729,7 @@ fun DshComposer(
         }
     }
 
-    // 下边距 4dp：dsh 的 .RlGAzG_root 就是 padding-bottom:4px（输入框那一摞的下沿）
-    Column(Modifier.fillMaxWidth().padding(horizontal = DshSpacing.Xxl).padding(bottom = DshSpacing.Md)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = DshSpacing.Xxl).padding(bottom = DshSpacing.Xl)) {
         // dsh 的 heroWorkspaceRow：输入框「外」左上角的工作区入口（文件夹图标 + 名称 + 倒角）
         // 只在「新对话且还没有内容」时出现（dsh 的 hero 阶段），开始对话后自动隐藏
         if (showWorkspace) WorkspaceChipRow(
@@ -839,19 +846,33 @@ fun DshComposer(
 
                     Spacer(Modifier.weight(1f))
 
+                    // 掉线重连条（dsh 的 conversation.input.activity 槽）：位置在模型选择器与
+                    // 发送键之间 = 输入框的右侧。它出现时**模型选择器让位** —— dsh 在 activity
+                    // 非空时把 standardControls（模型那一组）整个 hidden，这一行才放得下。
+                    val activityVisible = connection !is ConnectionState.Idle
+                    AnimatedVisibility(
+                        visible = activityVisible,
+                        enter = fadeIn(tween(150)),
+                        exit = fadeOut(tween(150)),
+                    ) {
+                        ConnectionBar(state = connection, onRetry = onRetryConnection)
+                    }
+
                     // 模型 / 推理等级两级菜单（弹层在 ComposerMenus.kt，R15 搬出主函数）
-                    ModelMenuTrigger(
-                        open = modelOpen,
-                        modelGroups = modelGroups,
-                        balances = balances,
-                        currentModel = currentModel,
-                        currentProviderId = currentProviderId,
-                        efforts = efforts,
-                        currentEffort = currentEffort,
-                        onOpenChange = { want -> onMenuChange(if (want) OPEN_MODEL else null) },
-                        onSelectModel = onSelectModel,
-                        onSelectEffort = onSelectEffort,
-                    )
+                    if (!activityVisible) {
+                        ModelMenuTrigger(
+                            open = modelOpen,
+                            modelGroups = modelGroups,
+                            balances = balances,
+                            currentModel = currentModel,
+                            currentProviderId = currentProviderId,
+                            efforts = efforts,
+                            currentEffort = currentEffort,
+                            onOpenChange = { want -> onMenuChange(if (want) OPEN_MODEL else null) },
+                            onSelectModel = onSelectModel,
+                            onSelectEffort = onSelectEffort,
+                        )
+                    }
 
                     // 上下文占用不在这一行里：dsh 把它放在输入卡片**下方**的 dock 里
                     // （见 dock 参数与 ChatStatsDock）。它以前在这一行的最右边，出现在会话

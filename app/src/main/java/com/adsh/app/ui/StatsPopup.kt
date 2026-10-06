@@ -208,6 +208,9 @@ internal fun SessionStatsPanel(stats: SessionStats) {
     StatPanel(
         title = "会话统计",
         icon = DshIcons.Gauge,
+        // 「N 轮 M 步」从胶囊挪到这里（用户第 189 轮口径）：胶囊只留输出速度，
+        // 轮/步与 dsh 的 stats.counts 一样放进卡片的标题行
+        titleValue = stats.turns.toString() + " 轮 " + stats.steps + " 步",
         rows = listOf(
             "模型用时" to formatCompactDuration(stats.llmMillis),
             "工具调用用时" to formatCompactDuration(stats.toolMillis),
@@ -236,15 +239,6 @@ internal fun SessionUsagePanel(stats: SessionStats) {
 }
 
 /**
- * 输入框下方那一排的**高度**：4dp 上间距 + 22dp 胶囊（12/20 字 + 上下各 1dp 内边距，
- * 即 dsh 的 .iq1doa_pill）。
- *
- * 新会话（还没开始对话）时这一排不画任何图标，但要占住同样的高度 —— 输入框在两种状态下
- * 才在同一个位置（用户口径：新会话的输入框位置与对话后一致，但下方不要有图标）。
- */
-internal val ComposerDockHeight = DshSpacing.Md + 22.dp
-
-/**
  * 输入框下方那一排（dsh 的 composer dock + ContextMeter）：
  * 「N 轮 M 步 · TPS」、「{total} tok」、「上下文圆环 + NN%」三个胶囊，居中、间距 12。
  *
@@ -260,11 +254,13 @@ internal fun ChatStatsDock(
     open: String?,
     onToggle: (String) -> Unit,
 ) {
-    // dsh 的判据是「assistant 步数为 0 且没有 token 就整条不画」；ADSH 的 steps 是**工具调用**数，
-    // 所以再加一条「模型用时」—— 一次纯聊天的回复不会让 steps 涨，但它确实有统计可看
-    val showStats = stats.steps > 0 || stats.llmMillis > 0
+    // 胶囊标签只有**输出速度**（用户第 189 轮口径：几轮几步挪进详情卡），没有速度就没得显示 ——
+    // 与 dsh 的 compact 形态同一条（TimePill 的 speed === null 就不画）。
+    val showStats = stats.tps > 0
     val showTokens = stats.billedInput > 0 || stats.completionTokens > 0
-    val showMeter = context.window > 0
+    // 上下文占用跟它们**同步出现**（用户口径：不要提前出来，一轮对话完成后再出现）：
+    // 「有 token」或「有速度」都意味着这一轮真的跑起来了
+    val showMeter = context.window > 0 && (showStats || showTokens)
     if (!showStats && !showTokens && !showMeter) return
     Row(
         Modifier.fillMaxWidth().padding(top = DshSpacing.Md),
@@ -272,11 +268,10 @@ internal fun ChatStatsDock(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (showStats) {
-            val tps = if (stats.tps > 0) formatTps(stats.tps) + " tok/s" else null
-            val label = stats.turns.toString() + " 轮 " + stats.steps + " 步" + (tps?.let { " · " + it } ?: "")
             DockPill(
                 icon = DshIcons.Gauge,
-                label = label,
+                // 只有输出速度；「N 轮 M 步」在详情卡的标题行里（见 SessionStatsPanel）
+                label = formatTps(stats.tps) + " tok/s",
                 expanded = open == OPEN_STATS,
                 description = "会话统计",
                 onClick = { onToggle(OPEN_STATS) },

@@ -86,46 +86,13 @@ class SessionTitleTest {
         assertTrue(TITLE_SYSTEM_PROMPT.contains("about 5 words in non-CJK languages or 10 CJK characters"))
     }
 
-    // ------------------------------------------------------------ 落库时的标题判定（sessionTitleFor）
-
-    @Test
-    fun `已有标题且不是兜底值就原样保留`() {
-        // 用户改过名、模型已经写过一次自动标题：两种情况在这里一样，都不该被覆盖
-        assertEquals("我自己起的名字", sessionTitleFor("我自己起的名字", "帮我看看这个 bug", "user"))
-        assertEquals("模型写的标题", sessionTitleFor("模型写的标题", "帮我看看这个 bug", "assistant"))
-    }
-
-    /** 判据是「不等于兜底值」：空串不等于兜底值 ⇒ 原样留着（现状，钉住） */
-    @Test
-    fun `空串标题也算已有标题`() {
-        assertEquals("", sessionTitleFor("", "帮我看看这个 bug", "user"))
-    }
-
-    @Test
-    fun `首条用户消息落库时用兜底标题`() {
-        assertEquals("帮我配置一下镜像", sessionTitleFor(null, "帮我配置一下镜像", "user"))
-        // 还是兜底值 ⇒ 允许重新生成（内容变了就换）
-        assertEquals("one two three four five", sessionTitleFor(NEW_SESSION_TITLE, "one two three four five six", "user"))
-    }
-
-    @Test
-    fun `内容全是空白时退回兜底值`() {
-        assertEquals(NEW_SESSION_TITLE, sessionTitleFor(null, "   \n\t ", "user"))
-    }
-
-    @Test
-    fun `非用户角色不生成标题`() {
-        assertEquals(NEW_SESSION_TITLE, sessionTitleFor(null, "工具结果", "tool"))
-        assertEquals(NEW_SESSION_TITLE, sessionTitleFor(null, "模型输出", "assistant"))
-    }
-
-    @Test
-    fun `非用户角色保留已有标题`() {
-        assertEquals(NEW_SESSION_TITLE, sessionTitleFor(NEW_SESSION_TITLE, "模型输出", "assistant"))
-        assertEquals("已有标题", sessionTitleFor("已有标题", "模型输出", "assistant"))
-    }
-
-    /** 写进去的值与判据里的值必须是同一个字符串 —— 这条断言就是那个「同一个」 */
+    /**
+     * 写进去的值与判据里的值必须是同一个字符串 —— 这条断言就是那个「同一个」。
+     *
+     * 原先这里还有 6 条钉 `sessionTitleFor`（「消息落库时给这一行取什么标题」）的用例，
+     * 第 189 轮把那个函数整个删了：标题改成**一轮跑完才生成**（见 ChatViewModel.generateTitle），
+     * 追加消息不再动标题，于是那套「兜底值 / 非兜底值 / 非用户角色」的判定没有调用点了。
+     */
     @Test
     fun `兜底值是「新会话」三个字`() {
         assertEquals("新会话", NEW_SESSION_TITLE)

@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -363,7 +362,7 @@ fun ChatScreen(
                     layout(placeable.width, placeable.height) { placeable.place(0, 0) }
                 },
         ) {
-        // 输入框上方那一摞（错误条 … 掉线条）整块在 ChatBars.kt（R14 第三步搬出主函数）
+        // 输入框上方那一摞（错误条 … 轮次状态行）整块在 ChatBars.kt（R14 第三步搬出主函数）
         ChatBottomBars(
             state = state,
             question = question,
@@ -375,7 +374,6 @@ fun ChatScreen(
             onAllowApproval = onAllowApproval,
             onRejectApproval = onRejectApproval,
             onClearQueued = onClearQueued,
-            onRetryConnection = onRetryConnection,
         )
         DshComposer(
                 draft = draft,
@@ -409,22 +407,20 @@ fun ChatScreen(
                 // 输入框只认自己那三个 id，别的 id 进来等于「三个都没开」。
                 menu = overlays.open,
                 onMenuChange = { value -> overlays = overlays.menuChanged(value, draft) },
+                // 掉线重连条：挂在输入框那一行的右侧（第 190 轮用户口径）
+                connection = state.connection,
+                onRetryConnection = onRetryConnection,
                 // 输入框下方那一排（dsh 的 composer dock）：会话统计 / Token 用量 / 上下文占用。
-                // 新会话（还没开始对话）这一排**一个图标都不画**，但要用 [ComposerDockHeight]
-                // 占住同样的高度 —— 输入框在「还没开始对话」与「对话中」才在同一个位置
-                // （用户第 188 轮两条口径：①新会话的输入框也要上移、位置与对话后一致；
-                // ②但新会话的下方不要有任何图标，对话后再显示）。
+                // **它自己决定画不画**（[ChatStatsDock] 一条都没有时整排不存在、不占高度）——
+                // 新会话、以及这一轮还没跑完时下方什么都没有，输入框就停在原位（用户第 189 轮口径：
+                // 新会话不占位、也不提前出现上下文图标）。
                 dock = {
-                    if (hasConversation) {
-                        ChatStatsDock(
-                            stats = state.stats,
-                            context = state.context,
-                            open = overlays.open,
-                            onToggle = { id -> overlays = overlays.toggled(id) },
-                        )
-                    } else {
-                        Spacer(Modifier.height(ComposerDockHeight))
-                    }
+                    ChatStatsDock(
+                        stats = state.stats,
+                        context = state.context,
+                        open = overlays.open,
+                        onToggle = { id -> overlays = overlays.toggled(id) },
+                    )
                 },
                 requestPermission = requestPermission,
                 onRequestHandled = { requestPermission = false },

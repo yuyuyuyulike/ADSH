@@ -91,37 +91,14 @@ internal fun truncateTitleUtf8(text: String, maxBytes: Int): String {
 }
 
 /**
- * 兜底标题，也是「还没有标题」时的占位：`openOrCreateBlank` 建空会话时写进去的就是它，
- * [sessionTitleFor] 与 `ConversationRepository.renameAutoTitle` 又拿它当「标题还是我们写的」的判据 ——
- * **这三处必须是同一个字符串**（写进去一个、比对另一个，自动标题就永远覆盖不上），所以只留一个常量。
+ * 「还没有标题」的占位，也是**自动标题的判据**：`openOrCreateBlank` 建空会话时写进去的是它，
+ * 生成标题时拿它当「这条会话还没被起过名」的判据（`renameAutoTitle` 的 expected）——
+ * **两处必须是同一个字符串**（写进去一个、比对另一个，自动标题就永远写不进去），所以只留一个常量。
  *
- * 注意 `com.adsh.app.ui.Drawer` 里那句「新会话」是**按钮文案**，不是这个兜底值：
- * 文案会跟着界面改，兜底值改了会让判据失效 —— 有意不耦合。
+ * 注意 `com.adsh.app.ui.Drawer` 里那句「新会话」是**按钮文案**，不是这个占位值：
+ * 文案会跟着界面改，占位值改了会让判据失效 —— 有意不耦合。
  */
 internal const val NEW_SESSION_TITLE = "新会话"
-
-/**
- * 落库时给这一行取什么标题（原先写在 `ConversationRepository.titleFor` 里，零用例）。
- *
- * 规则（dsh 的 session-title 触发面：只在首条用户消息上排一次自动标题）：
- *  - 已经有标题、且**不是** [NEW_SESSION_TITLE] → 原样返回。用户改过名、模型已经写过一次，
- *    两种情况在这里是一样的：都不该被覆盖（`renameAutoTitle` 靠同一条判据钉住用户手改的名字）；
- *  - 角色是 user → [fallbackSessionTitle]（前 5 个空格分隔 token、截到 ≤40 UTF-8 字节；
- *    ADSH 早期是「首个换行前 take(24) 个字符」，按字符切会把中文与 emoji 切出半个字）；
- *    内容全是空白时退回 [NEW_SESSION_TITLE]；
- *  - 其它角色（assistant / tool / 任务通知）→ 保持已有标题，没有就给 [NEW_SESSION_TITLE]。
- *
- * [existingTitle] 是这一行落库**之前**库里已有的标题（null = 这个会话还没有标题行）；
- * 读库留在调用点（`titleFor` 就一次 byId），所以本函数是纯的。
- */
-internal fun sessionTitleFor(existingTitle: String?, content: String, role: String): String {
-    if (existingTitle != null && existingTitle != NEW_SESSION_TITLE) return existingTitle
-    // 走到这里 existingTitle 只可能是 null 或兜底值本身（别的都被上面那行返回了），
-    // 两种情况下该写的都是兜底值 —— 所以不再写 `existingTitle ?: NEW_SESSION_TITLE`：
-    // R58 的变异测试把这个 `?:` 换成直接给常量，595 个用例仍全绿，证明它是可证冗余的。
-    return if (role == "user") fallbackSessionTitle(content).ifBlank { NEW_SESSION_TITLE }
-    else NEW_SESSION_TITLE
-}
 
 private val WHITESPACE = Regex("\\s+")
 /** ANSI/CSI 转义：ESC [ 参数 字母 */

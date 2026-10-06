@@ -255,8 +255,13 @@ fun AppRoot(viewModel: ChatViewModel) {
     // 边缘防误触的带宽（dp）：第 99 轮起固定 12dp（设置项已撤，见 SettingsStore.EDGE_GUARD_WIDTH_DP）
     val edgeGuardDp = SettingsStore.EDGE_GUARD_WIDTH_DP
 
-    // 左上角的会话标题：抽屉那份会话列表里当前这一条（重命名、标题模型写回都会刷新它）
-    val title = conversations.firstOrNull { it.id == state.conversationId }?.title.orEmpty()
+    // 左上角的会话标题：抽屉那份会话列表里当前这一条（重命名、标题模型写回都会刷新它）。
+    // 仍是「新会话」= 这一轮还没跑完、标题还没生成 —— 此时左上角**什么都不显示**
+    // （用户第 189 轮口径：标题要等一轮跑完才出现，不是拿用户消息先顶上）。
+    val title = conversations.firstOrNull { it.id == state.conversationId }
+        ?.title
+        ?.takeIf { it != com.adsh.app.core.data.NEW_SESSION_TITLE }
+        .orEmpty()
     val palette = LocalDshPalette.current
     OverlayDismissHost(overlayDismiss) {
     Box(

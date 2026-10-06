@@ -1017,11 +1017,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 按**这条会话**路由：正在跑的 A 收尾时又补一轮（continueIfDangling）而用户已经切到 B 时，
         // 旧写法会把 A 的消息换到 B 的屏幕上
         updateTurn(conversationId) { turnIdentityResolved(it, openedMessages, turnKey) }
-        // 第一条消息落库后这条会话就不再是「空白」了：顺手刷新侧栏
-        // （标题也从这条消息来，抽屉里的「新会话」当场变成真实标题）
+        // 第一条消息落库后这条会话就不再是「空白」了：顺手刷新侧栏。
+        // **标题仍然保持「新会话」** —— 它由 generateTitle 生成，不能拿用户刚发的那句话先顶上
+        // （用户第 189 轮口径）。
         refreshConversations()
-        // dsh 的 session/title：首条用户消息之后异步跑一次小模型生成标题（不阻塞回答）。
-        // 触发条件、提示词与兜底都在 core/data/SessionTitle*.kt，这里只把它发出去。
+        // dsh 的 session/title 时机：**主请求一发出就并行跑**（dsh 的 onRequestHeader 里
+        // startPending 就是这一步）—— 不是等整轮跑完。标题是另一次小请求，与正文并行，
+        // 正常一两秒就回来，用户几乎在回答开始的同时就看到标题（第 190 轮口径：太慢了，学 dsh）。
+        generateTitle(conversationId)
+    }
+
+    /**
+     * 生成会话标题（时机与机制都对齐 dsh 的 session-title）：
+     *
+     *  - **时机**：首条用户消息落库、主请求发出去的同一步就开始跑（dsh 的 onRequestHeader
+     *    → startPending），与正文并行 —— 不是等这一轮结束；
+     *  - **顺序是先模型、后兜底**：模型给出的标题直接落库（左上角与抽屉同时从「新会话」变成它）；
+     *    只有模型失败才退回兜底值 —— 兜底写在模型之后，正常路径上用户看不到它，也就不会出现
+     *    「先是用户消息、过一会儿又变」（用户第 189 轮口径）。
+     *
+     * 触发条件 / 提示词 / 清洗都在 core/data/SessionTitle*.kt。
+     */
+    private fun generateTitle(conversationId: Long) {
         viewModelScope.launch {
             // 标题这次小调用**要显式关掉思考**：只有 64 个输出 token，会推理的模型（DeepSeek V4）
             // 默认把预算全花在推理上 → content 为空 → 标题永远出不来（用户报的 bug，实测见
@@ -1030,13 +1047,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val noThink = com.adsh.app.core.agent.noThinkFor(config.providerId, config.baseUrl, config.model)
             runCatching {
                 generateSessionTitleIfNeeded(compactLlm, repository, settings.model, conversationId, noThink)
-            }.onSuccess { title ->
-                // 标题是模型写回库的：左上角与抽屉都读那份会话列表，这里不刷就一直是兜底标题
-                if (title != null) refreshConversations()
             }.onFailure {
                 // 这一路以前是静默的：模型只回推理 / 被截断 / 提供方报错，界面上都只是「标题没变」。
-                android.util.Log.w("ADSH", "会话标题生成失败（保留兜底标题）", it)
+                android.util.Log.w("ADSH", "会话标题生成失败（退回兜底标题）", it)
             }
+            // 写回库的那个标题（模型的或兜底的）要立刻可见：左上角与抽屉都读那份会话列表
+            refreshConversations()
         }
     }
 

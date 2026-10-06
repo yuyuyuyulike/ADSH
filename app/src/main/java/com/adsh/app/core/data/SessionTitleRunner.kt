@@ -15,7 +15,11 @@ private val titleAttempted: MutableSet<Long> = java.util.Collections.synchronize
  *
  * 触发条件（与 dsh 一致）：① 这个会话本进程内还没跑过；② 库里真正的用户消息（role=user 且没有
  * name，通知类的不算）**恰好一条**；③ 兜底标题非空。dsh 的第四个条件「当前无标题 / 用户没改过名」
- * 在这里由 [ConversationRepository.renameAutoTitle] 的「仍然等于这条兜底值」兜住 —— 用户改过名就写不进去。
+ * 在这里由 [ConversationRepository.renameAutoTitle] 的「标题仍然是「新会话」」兜住 —— 用户改过名就写不进去。
+ *
+ * **调用时机是「一轮跑完」**（用户第 189 轮口径）：追加消息时不再写兜底标题（见
+ * `ConversationRepository.appendMessage`），所以这条会话在标题生成之前一直显示「新会话」。
+ * 模型失败才退回兜底 —— 顺序上兜底永远在模型之后。
  *
  * @return 真正写进去的标题；没跑 / 没覆盖时返回 null（调用方不需要关心，它只是异步的一发）
  */
@@ -43,12 +47,17 @@ internal suspend fun generateSessionTitleIfNeeded(
     // 失败 / 超时 / 空标题：保留兜底（dsh 同样只在 provider 成功时才覆盖 fallback）
     val title = runCatching { requestSessionTitle(client, model, firstUser.content, thinking) }.getOrNull()
     if (title.isNullOrBlank()) {
+        // 模型没给出标题：**退回兜底值**（用户口径是一轮跑完才出现标题，但也不能让这条会话永远停在
+        // 「新会话」上）。兜底写在模型之后 —— 正常路径上用户看不到它，也就不会出现「先是一个、
+        // 过一会儿又变」。
+        repository.renameAutoTitle(conversationId, NEW_SESSION_TITLE, fallback)
         // dsh 在这里是抛错的（"title model produced no text"）：空标题说明**这次调用没按预期工作**
         // （模型只回了推理、被截断、或者提供方吞了输出）。以前这里静默 return null，
         // 于是「标题一直不生成」在日志里一点痕迹都没有 —— 用户报的那次就是这么查了半天。
         throw IllegalStateException("session title model produced no text")
     }
-    return if (repository.renameAutoTitle(conversationId, fallback, title)) title else null
+    // 只在标题**仍是「新会话」**时才写：用户手改过名，或者标题已经生成过，都不覆盖
+    return if (repository.renameAutoTitle(conversationId, NEW_SESSION_TITLE, title)) title else null
 }
 
 /** 一次小调用：system 用 [TITLE_SYSTEM_PROMPT]，user 是包成 JSON 数组的首条消息，max_tokens=64。 */
