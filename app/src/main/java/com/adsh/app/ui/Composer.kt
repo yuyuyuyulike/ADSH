@@ -2,6 +2,7 @@ package com.adsh.app.ui
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -849,9 +850,14 @@ fun DshComposer(
                     // 掉线重连条（dsh 的 conversation.input.activity 槽）：位置在模型选择器与
                     // 发送键之间 = 输入框的右侧。它出现时**模型选择器让位** —— dsh 在 activity
                     // 非空时把 standardControls（模型那一组）整个 hidden，这一行才放得下。
-                    val activityVisible = connection !is ConnectionState.Idle
+                    //
+                    // 「让位」的判据是**退场动画演完**（currentState 与 targetState 都为 false），
+                    // 不是「状态已经不是 Reconnecting」：后者会让重连条在淡出的 150ms 里和模型选择器
+                    // 同时占着这一行（两个加起来 ~340dp，比卡片还宽），发送键会被顶出卡片右边缘。
+                    val activityState = remember { MutableTransitionState(false) }
+                    activityState.targetState = connection !is ConnectionState.Idle
                     AnimatedVisibility(
-                        visible = activityVisible,
+                        visibleState = activityState,
                         enter = fadeIn(tween(150)),
                         exit = fadeOut(tween(150)),
                     ) {
@@ -859,7 +865,7 @@ fun DshComposer(
                     }
 
                     // 模型 / 推理等级两级菜单（弹层在 ComposerMenus.kt，R15 搬出主函数）
-                    if (!activityVisible) {
+                    if (!activityState.currentState && !activityState.targetState) {
                         ModelMenuTrigger(
                             open = modelOpen,
                             modelGroups = modelGroups,
