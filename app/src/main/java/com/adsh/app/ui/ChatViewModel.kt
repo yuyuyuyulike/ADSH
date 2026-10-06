@@ -295,6 +295,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 「上次在看的那条会话」实时落盘（第 191 轮）：切会话 / 首页发出第一条 / 删会话换一条，
+     * 三处都只改状态，落盘只有这一处（与 [trackLastWorkspace] 同一条规矩）。
+     * 下次启动就读它，见 [bootstrap] 里的 [resumeConversationId]。
+     */
+    private fun trackLastConversation() {
+        viewModelScope.launch {
+            _state.map { it.conversationId }.distinctUntilChanged().collect { id ->
+                if (id != null) settings.lastConversationId = id
+            }
+        }
+    }
+
     private var sendJob: Job? = null
 
     /**
@@ -336,12 +349,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         fallbackPath?.let { runCatching { repository.ensureDefaultWorkspace(it) } }
         _state.update { it.copy(workspacePath = fallbackPath) }
         refreshWorkspaceList()
-        // **重新进入应用一律开一个新的会话页**（用户第 103 轮口径）：
-        // 工作区沿用上次退出时那一个（[SettingsStore.lastWorkspaceId]，随会话切换实时落盘）；
-        // 那个工作区在这期间被删掉了就换一个（列表里还有哪个用哪个）；一个都没有就**待绑定**
-        // （workspaceId = null，输入框左上角照旧显示「选择工作区」）。
+        // **启动回到上次那条会话**（用户第 191 轮口径；第 103 轮那版是「每次进来开一条新会话」）：
+        // 上次在看的那条 → 最近一条非空会话 → 都没有就**不建**，停在首页（发第一条消息时才建，
+        // 见 [send] 里那一支）。回落规则是 [resumeConversationId] 一个纯函数，桌面上单测钉住。
+        //
+        // 工作区沿用上次退出时那一个（[SettingsStore.lastWorkspaceId]，随会话切换实时落盘）：
+        // 回到会话时由那条会话自己的工作区接管；一条会话都没有（停在首页）时才用它 ——
+        // 那正是「下一条新会话该落在哪个工作区」。
         val targetWorkspace = startupWorkspaceId()
-        val id = repository.openOrCreateBlank(targetWorkspace)
+        val resumedId = com.adsh.app.core.data.resumeConversationId(
+            conversations = repository.conversations(),
+            blankIds = repository.blankIds(),
+            lastId = settings.lastConversationId,
+        )
         refreshConversations()
         _state.update {
             it.copy(
@@ -360,7 +380,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 reasoningEffort = settings.reasoningEffort,
             )
         }
-        openConversation(id)
+        if (resumedId != null) {
+            openConversation(resumedId)
+        } else {
+            // 一条会话都没有：只把工作区挂上（首页那颗 chip 与第一条消息的 cwd 都看它），
+            // 会话本身留到用户真的发消息时再建。
+            targetWorkspace?.let { id ->
+                val path = _workspaceList.value.firstOrNull { it.id == id }?.path
+                _state.update { it.copy(workspaceId = id, workspacePath = path ?: it.workspacePath) }
+                if (path != null) bindFolder(path)
+            }
+        }
         refreshContext()
     }
 
@@ -473,12 +503,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun newConversationIn(workspaceId: Long?) {
         viewModelScope.launch {
-            val id = repository.openOrCreateBlank(workspaceId)
-            refreshConversations()
-            openConversation(id)
-            _state.update { it.copy(stats = SessionStats()) }
+            openBlankConversation(workspaceId)
             refreshContext()
         }
+    }
+
+    /**
+     * 开一条会话并把它摆上屏幕，返回它的 id。
+     *
+     * 两个调用点：「新会话」按钮（[newConversationIn]）与**首页发出的第一条消息**（[send] 里
+     * conversationId 还是 null 的那一支，第 191 轮起启动不再预先建空会话）。合成一处是因为
+     * 「建会话」这件事有四个必做步骤（落库 / 刷列表 / 摆上屏幕 / 统计清零），分开写迟早会漏一步。
+     */
+    private suspend fun openBlankConversation(workspaceId: Long?): Long {
+        val id = repository.openOrCreateBlank(workspaceId)
+        refreshConversations()
+        openConversation(id)
+        _state.update { it.copy(stats = SessionStats()) }
+        return id
     }
 
     /** dsh 的「添加工作区」/ 设置里的绑定：把手机文件夹绑定成工作区并切过去 */
@@ -847,7 +889,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val attachments = attachmentPaths ?: _state.value.pendingAttachments
         val body = text.trim()
         if (body.isEmpty() && attachments.isEmpty()) return
-        val conversationId = _state.value.conversationId ?: return
+        // 首页（还没有会话）发出的第一条：**这时才建会话** —— 启动不再预先建一条空会话
+        // （用户第 191 轮口径）。建完接着按正常路径跑这一轮；工作区用首页挂着的那一个。
+        val current = _state.value.conversationId
+        if (current == null) {
+            val workspaceId = _state.value.workspaceId
+            viewModelScope.launch {
+                val id = openBlankConversation(workspaceId)
+                startTurn(id, body, persistUser = true, attachmentPaths = attachments)
+            }
+            return
+        }
+        val conversationId = current
         val running = runningConversationId
         if (running != null) {
             if (running != conversationId) {
@@ -1843,6 +1896,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         com.adsh.app.core.tools.ToolConcurrency.configure(settings.agentMaxParallel)
         warmUpRuntime()
         trackLastWorkspace()
+        trackLastConversation()
         viewModelScope.launch { bootstrap() }
         viewModelScope.launch { refreshContext() }
     }

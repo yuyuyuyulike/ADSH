@@ -289,6 +289,17 @@ class SettingsStore(context: Context) : TurnSettings {
         get() = prefs.getLong(KEY_LAST_WORKSPACE_ID, 0L).takeIf { it > 0L }
         set(value) = prefs.edit().putLong(KEY_LAST_WORKSPACE_ID, value ?: 0L).apply()
 
+    /**
+     * 「上次在看的那条会话」（用户第 191 轮口径：**启动时回到它**，而不是每次开一条新会话）。
+     *
+     * 与 [lastWorkspaceId] 同一条规矩：会话一切换就实时落盘，不依赖 onDestroy（进程被系统直接
+     * 杀掉时根本不会回调），语义上等价于「退出时那一条」。被删掉的会话由启动那一步兜底
+     * （见 core/data/SessionResume.kt）。
+     */
+    var lastConversationId: Long?
+        get() = prefs.getLong(KEY_LAST_CONVERSATION_ID, 0L).takeIf { it > 0L }
+        set(value) = prefs.edit().putLong(KEY_LAST_CONVERSATION_ID, value ?: 0L).apply()
+
     // ---------------------------------------------------------------- 提供方（dsh 的 llm 适配器目录）
 
     /**
@@ -593,6 +604,7 @@ class SettingsStore(context: Context) : TurnSettings {
         private const val KEY_SYS_SUFFIX = "system_prompt_suffix"
         private const val KEY_LAST_WORKSPACE = "last_workspace_path"
         private const val KEY_LAST_WORKSPACE_ID = "last_workspace_id"
+        private const val KEY_LAST_CONVERSATION_ID = "last_conversation_id"
         private const val KEY_FETCHED_MODELS = "fetched_models"
         private const val KEY_PRIVACY_ACCEPTED = "privacy_accepted"
     }
