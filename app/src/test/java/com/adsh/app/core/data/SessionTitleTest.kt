@@ -72,7 +72,7 @@ class SessionTitleTest {
     }
 
     /**
-     * qwen 系走的是另一个字段：enable_thinking = false（判据见 noThinkDashScope 的 KDoc）。
+     * qwen 系走的是另一个字段：enable_thinking = false（判据见 titleNoThink 的 KDoc）。
      * 两个字段不会同时发：DeepSeek 只发 thinking，DashScope 只发 enable_thinking。
      */
     @Test

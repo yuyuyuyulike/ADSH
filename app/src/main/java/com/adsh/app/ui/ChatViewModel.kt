@@ -1124,18 +1124,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun generateTitle(conversationId: Long) {
         viewModelScope.launch {
-            // 标题这次小调用**要显式关掉思考**：只有 64 个输出 token，会推理的模型（DeepSeek V4）
-            // 默认把预算全花在推理上 → content 为空 → 标题永远出不来（用户报的 bug，实测见
-            // noThinkFor 的 KDoc）。判据与别的请求同一条（不认识这个字段的路由就不发）。
+            // 标题这次小调用**默认关思考**（dsh 的 purpose = session-title 口径）：只有 64 个输出
+            // token，会推理的模型会把预算全花在推理上 → content 为空 → 标题永远退回兜底值。
+            // 字段名逐路由不同，由 titleNoThink 按路由族给（见它的 KDoc）。
             val config = settings.providerConfig()
-            val noThink = com.adsh.app.core.agent.noThinkFor(config.providerId, config.baseUrl, config.model)
-            // qwen 系（DashScope 兼容模式）的思考开关是另一个字段：实测那条路由不关思考时
-            // 推理 187-290 字、2.8-7.3 秒，64 个输出 token 被推理吃光 ⇒ 标题永远退回兜底值
-            val enableThinking =
-                com.adsh.app.core.agent.noThinkDashScope(config.providerId, config.baseUrl, config.model)
+            val noThink = com.adsh.app.core.agent.titleNoThink(config.providerId, config.baseUrl, config.model)
             runCatching {
                 generateSessionTitleIfNeeded(
-                    compactLlm, repository, settings.model, conversationId, noThink, enableThinking,
+                    compactLlm, repository, settings.model, conversationId,
+                    noThink.thinking, noThink.enableThinking,
                 )
             }.onFailure {
                 // 这一路以前是静默的：模型只回推理 / 被截断 / 提供方报错，界面上都只是「标题没变」。

@@ -60,45 +60,55 @@ class TurnDecisionsTest {
     }
 
     /**
-     * 小调用（会话标题）的思考字段：DeepSeek 路由发 `thinking = disabled`，别的路由什么都不发。
+     * **标题那次小调用默认关思考**（dsh 的 purpose = session-title 口径），字段按路由族给。
      *
-     * 这条是用户报的「DeepSeek 的会话标题没有总结」的根因所在：标题那次调用只给 64 个输出 token，
-     * 而 DeepSeek V4 默认先推理 —— 实测不加字段时 `finish_reason = length`、`content` 为空、
-     * `reasoning_content` 175 字；加上 disabled 之后同一请求 `finish_reason = stop`、10 字、6 个 token。
+     * 实测（2026-10-06，真机 + 同一把 key 直连复现，标题那次的提示词与 max_tokens=64）：
+     *  - 不关思考：推理 187-290 字、2.8-7.3 秒、content 为空 ⇒ 标题永远退回兜底值；
+     *  - qwen 路由发 enable_thinking=false：推理 0 字、1.6 秒、标题正常；
+     *  - 同一条 qwen 路由发 thinking={type:disabled}：0 字推理但要 4.4-9.9 秒；
+     *  - DeepSeek（R79 那次）：不关是 finish=length / content 0 字 / reasoning 175 字，
+     *    关掉是 finish=stop / 10 字 / 6 个 token。
      */
     @Test
-    fun smallCallDisablesThinkingOnlyOnDeepSeekRoutes() {
+    fun titleCallTurnsThinkingOffOnEveryRouteItCan() {
+        // DeepSeek 官方与「只改地址 / 只改模型名」的自建中转：thinking = disabled
         listOf(
             Triple("deepseek", "https://api.deepseek.com/v1", "deepseek-flash"),
-            Triple("custom", "https://my-proxy.example/deepseek", "gpt-4o"),
+            Triple("custom", "https://my-proxy.example/deepseek", "glm-5.3"),
             Triple("custom", "https://proxy.example", "deepseek-v4-pro"),
         ).forEach { (provider, base, model) ->
-            // 只发 thinking（off 不是一档，不发 reasoning_effort —— 映射来自上面那条 thinkingWire("off")）
-            assertEquals("disabled", noThinkFor(provider, base, model)?.type)
+            val wire = titleNoThink(provider, base, model)
+            // off 不是一档：不发 reasoning_effort
+            assertNull(wire.reasoningEffort)
+            assertEquals("disabled", wire.thinking?.type)
+            assertNull(wire.enableThinking)
         }
-        assertNull(noThinkFor("qwen", "https://ws-x.maas.aliyuncs.com/compatible-mode/v1", "qwen3.8-flash"))
-        assertNull(noThinkFor("openai", "https://api.openai.com/v1", "gpt-4o"))
-    }
 
-    /**
-     * qwen 系（DashScope 兼容模式）这条路由**认识的不是 thinking，而是 enable_thinking**。
-     *
-     * 实测（ws-*.maas.aliyuncs.com + qwen3.8-flash，同一把 key 直连复现，标题那次的提示词与 max_tokens=64）：
-     *  - 不发字段：推理 187-290 字、2.8-7.3 秒、content 为空 ⇒ 标题退回兜底值；
-     *  - enable_thinking=false：推理 0 字、1.6 秒、标题正常；
-     *  - thinking={type:disabled}（DeepSeek 那个）：0 字推理但要 4.4-9.9 秒。
-     * 别的网关（Cerebras 上的 qwen 模型、OpenAI）没这个字段，发过去只会 400 —— 所以判据按端点来。
-     */
-    @Test
-    fun smallCallDisablesThinkingOnDashScopeRoutesToo() {
-        assertEquals(
-            false,
-            noThinkDashScope("qwen", "https://ws-x.maas.aliyuncs.com/compatible-mode/v1", "qwen3.8-flash"),
-        )
-        assertEquals(false, noThinkDashScope("custom", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3-max"))
-        assertNull("别家网关上的 qwen 模型不认识这个字段", noThinkDashScope("cerebras", "https://api.cerebras.ai/v1", "qwen-3.8-27b"))
-        assertNull(noThinkDashScope("openai", "https://api.openai.com/v1", "gpt-5.6-sol"))
-        assertNull(noThinkDashScope("deepseek", "https://api.deepseek.com/v1", "deepseek-flash"))
+        // DashScope 兼容模式（qwen 系）：只发 enable_thinking=false，**不发** thinking
+        listOf(
+            Triple("qwen", "https://ws-x.maas.aliyuncs.com/compatible-mode/v1", "qwen3.8-flash"),
+            Triple("custom", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3-max"),
+        ).forEach { (provider, base, model) ->
+            val wire = titleNoThink(provider, base, model)
+            assertEquals(false, wire.enableThinking)
+            assertNull("两个一起发实测要 4-10 秒", wire.thinking)
+        }
+
+        // 其余路由**默认也关**（智谱 GLM 这类认识 thinking 的，与主请求选 Off 同一个字段）
+        assertEquals("disabled", titleNoThink("zai", "https://api.z.ai/api/coding/paas/v4", "glm-5.3").thinking?.type)
+        assertEquals("disabled", titleNoThink("openai", "https://api.openai.com/v1", "gpt-5.6-sol").thinking?.type)
+
+        // 目录里写明「这个模型没有推理能力」的（pi-ai reasoning:false，掩码 0）一个字段都不发 ——
+        // 发了只会 400，而且它本来也不会推理（gpt-4o / Ling-2.6-flash 在目录里都是掩码 0）
+        listOf(
+            Triple("ant-ling", "https://api.example/v1", "Ling-2.6-flash"),
+            Triple("custom", "https://my-proxy.example/v1", "gpt-4o"),
+        ).forEach { (provider, base, model) ->
+            val wire = titleNoThink(provider, base, model)
+            assertNull(wire.thinking)
+            assertNull(wire.enableThinking)
+            assertNull(wire.reasoningEffort)
+        }
     }
 
     // ---------- 死循环判据 ----------

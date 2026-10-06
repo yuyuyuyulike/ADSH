@@ -29,17 +29,16 @@ internal suspend fun generateSessionTitleIfNeeded(
     model: String,
     conversationId: Long,
     /**
-     * 这次小调用要发的 thinking 字段（调用点按路由算：只有认识它的路由给 disabled，
-     * 见 [com.adsh.app.core.agent.noThinkFor]）。null = 不发，走提供方默认。
+     * 这次小调用要发的 thinking 字段（调用点按路由算：见 [com.adsh.app.core.agent.titleNoThink]，
+     * 默认就是 disabled）。null = 不发。
      *
      * 为什么必须显式关掉：这次调用只给 [TITLE_MAX_OUTPUT_TOKENS] 个输出 token，而会推理的模型
-     * （DeepSeek V4）默认先把预算花在推理上 → content 为空 → 标题永远出不来（用户报的 bug）。
+     * （DeepSeek V4 / qwen 系）默认先把预算花在推理上 → content 为空 → 标题永远出不来（用户报的 bug）。
      */
     thinking: ThinkingOption? = null,
     /**
      * DashScope 兼容模式（qwen 系）的 enable_thinking；null = 不发。
-     * 见 [com.adsh.app.core.agent.noThinkDashScope]：那条路由不关思考时，64 个输出 token
-     * 会被推理整段吃光，标题永远退回兜底值。
+     * 见 [com.adsh.app.core.agent.titleNoThink]：那条路由认识的是这个字段，发 thinking 反而要 4-10 秒。
      */
     enableThinking: Boolean? = null,
 ): String? {

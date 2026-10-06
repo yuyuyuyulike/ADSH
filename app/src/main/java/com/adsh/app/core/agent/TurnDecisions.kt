@@ -31,8 +31,17 @@ internal fun isDeepSeekRoute(providerId: String, baseUrl: String, model: String)
         baseUrl.contains("deepseek") ||
         model.startsWith("deepseek")
 
-/** 一轮请求要发的思考字段（dsh 的 resolveThinking）。两个字段都可能缺席，缺席 = 走提供方默认 */
-internal data class ThinkingWire(val reasoningEffort: String?, val thinking: ThinkingOption?)
+/**
+ * 一次请求要发的思考字段（dsh 的 resolveThinking）。三个字段都可能缺席，缺席 = 走提供方默认。
+ *
+ * enableThinking 只有**标题那次小调用**会用（DashScope 兼容模式/qwen 系的思考开关，
+ * 见 [titleNoThink]）；主请求那条路（[thinkingWire]）不碰它。
+ */
+internal data class ThinkingWire(
+    val reasoningEffort: String?,
+    val thinking: ThinkingOption?,
+    val enableThinking: Boolean? = null,
+)
 
 /**
  * [com.adsh.app.core.data.Reasoning.wireEffort] 给出的等级 → 真正发出去的字段：
@@ -46,38 +55,34 @@ internal fun thinkingWire(effort: String?): ThinkingWire = ThinkingWire(
 )
 
 /**
- * 一次**只要几十个输出 token 的小调用**（目前只有会话标题）该发的 thinking 字段。
+ * **标题那次小调用默认关思考**（用户第 194 轮口径；dsh 的做法就是它：那次调用带
+ * purpose = session-title，dsh-llm-deepseek 的 serialize 里直接按它发 off）。
  *
- * 为什么需要它（用户报的 bug，R79 实测）：DeepSeek V4 默认**先推理**，
- * `max_tokens = 64` 会被推理整段吃掉 —— 实测 `finish_reason = length`、`content` 为空、
- * `reasoning_content` 175 字，于是标题永远生成不出来（别的模型不推理，所以看着是
- * 「只有 DeepSeek 不总结」）。加上 `thinking = disabled` 之后同一次调用是
- * `finish_reason = stop`、`content` 10 字、6 个 token。
+ * 为什么要关（两轮真机实测）：
+ *  - 标题只要 64 个输出 token。会推理的模型会把预算整段花在推理上 ⇒ finish_reason = length、
+ *    content 为空 ⇒ 标题永远退回兜底值。R79 在 DeepSeek 上先踩到（reasoning_content 175 字）；
+ *    2026-10-06 在 qwen 那条路由上又量了一遍：不关思考时推理 187-290 字、2.8-7.3 秒、content 为空，
+ *    真机上那条会话的标题就是首条消息前 5 个词 —— 模型标题从没落地过。
+ *  - 关掉之后：DeepSeek finish=stop / 10 字 / 6 token；qwen 推理 0 字 / 1.6 秒 / 标题正常。
  *
- * 只对**认识这个字段的路由**发（判据与 AgentLoop 的 [isDeepSeekRoute] 同一条，理由也一样：
- * 别的提供方不认识它，就不发）；其余路由返回 null = 两个字段都不发，走提供方默认。
+ * 字段名逐路由不同，所以这里给的是**这个路由认识的那一组**：
+ *  - **DashScope 兼容模式（qwen 系）**：认识的是 enable_thinking。这条路由**不能再发** thinking ——
+ *    两个一起发实测 4.4-9.9 秒（同一把 key 直连，比只发 enable_thinking 的 1.5 秒差一个量级）。
+ *  - **其余路由**：thinking = disabled —— 与主请求选 Off 时发的是同一组字段（[thinkingWire]），
+ *    于是「标题默认关思考」与用户手动选 Off 的行为完全一致（DeepSeek 官方、智谱 GLM 等都是它）。
+ *  - **目录里写明「这个模型没有推理能力」的**（pi-ai 的 reasoning: false，掩码 0）：一个字段都不发 ——
+ *    发了只会 400，而且它本来就不会推理。
+ *
+ * 为什么不看当前选的档位：dsh 的标题调用固定按 off 走（purpose 优先于会话档位）。
  */
-internal fun noThinkFor(providerId: String, baseUrl: String, model: String): ThinkingOption? =
-    if (isDeepSeekRoute(providerId, baseUrl, model)) thinkingWire("off").thinking else null
+internal fun titleNoThink(providerId: String, baseUrl: String, model: String): ThinkingWire = when {
+    isDashScopeRoute(providerId, baseUrl, model) -> ThinkingWire(null, null, enableThinking = false)
+    com.adsh.app.core.data.Reasoning.catalogLevels(providerId, model)?.isEmpty() == true ->
+        ThinkingWire(null, null)
+    else -> thinkingWire("off")
+}
 
-/**
- * 同一次小调用在 **DashScope 兼容模式（qwen 系）** 上要发的 enable_thinking：
- * false = 这次不思考，null = 不发（别的路由没有这个字段）。
- *
- * 为什么要它（用户报的「生成标题」这条路上的实测，2026-10-06 真机 + 同一把 key 的直连复现）：
- *  - 不关思考：标题这次 64 token 的调用先推理 187-290 字、2.8-7.3 秒，content 为空 ⇒
- *    ADSH 只能写兜底标题（真机上那条会话的标题就是首条消息前 5 个词，模型标题从没落地）；
- *  - enable_thinking=false：推理 0 字、1.6 秒、标题正常返回；
- *  - thinking={type:disabled}（DeepSeek 那个字段）在这条路由上反而要 4.4-9.9 秒 ——
- *    所以两条路由各发各认识的字段，判据都写在这里。
- *
- * 判据只认 DashScope 系端点（阿里云 maas / dashscope 域名，或用户按 qwen 建的提供方）：
- * 别的网关（例如 Cerebras 上的 qwen 模型）不认识这个字段，发了只会 400。
- */
-internal fun noThinkDashScope(providerId: String, baseUrl: String, model: String): Boolean? =
-    if (isDashScopeRoute(providerId, baseUrl, model)) false else null
-
-/** DashScope 兼容模式的路由判据（[noThinkDashScope] 用；与 [isDeepSeekRoute] 同一层含义） */
+/** DashScope 兼容模式的路由判据（[titleNoThink] 用；与 [isDeepSeekRoute] 同一层含义） */
 internal fun isDashScopeRoute(providerId: String, baseUrl: String, model: String): Boolean =
     providerId == "qwen" ||
         baseUrl.contains("dashscope") ||
