@@ -191,14 +191,30 @@ internal class PtcToolRunner(
             }
         return when (result) {
             // 程序拿到的是「结构化值」（dsh 的 output.schema）；没给 value 的工具退化成 JSON 字符串
-            is ToolResult.Ok -> CallOutcome(
-                wire = result.value?.toString()
-                    ?: kotlinx.serialization.json.JsonPrimitive(result.text).toString(),
-                text = com.adsh.app.core.tools.SecretRedaction.redact(result.text),
-                ok = true,
-                images = result.images,
-                deliverables = result.deliverables,
-            )
+            is ToolResult.Ok -> {
+                val wire = result.value?.toString()
+                    ?: kotlinx.serialization.json.JsonPrimitive(result.text).toString()
+                // **设备侧上限**（有意偏离 dsh，理由写在下面）：这个值要跨进程交给 :ptc 里的程序，
+                // 而它前后会在主进程里留好几份（value 树 / toString / 帧 JSON / 帧字节）。
+                // 手机主进程的 Java 堆是 256MB —— 真机实测（第 197 轮）：一个 5MB 单行文件的 grep
+                // 值就把堆顶到 growth limit、app 闪退（同一份程序在 dsh 桌面端跑得动，V8 的堆大得多）。
+                // dsh 对等的上限是控制帧 128MiB（maxMessageBytes），这里按 read 的整文件上限取同量级。
+                if (wire.toByteArray(Charsets.UTF_8).size > PTC_MAX_VALUE_BYTES) {
+                    return failure(
+                        "tool result for " + name + " is " + wire.toByteArray(Charsets.UTF_8).size +
+                            " bytes, over the " + PTC_MAX_VALUE_BYTES +
+                            "-byte cap this device can hand to a PTC program; narrow the request " +
+                            "(read with offset/limit, or grep a smaller path) or process the file with bash",
+                    )
+                }
+                CallOutcome(
+                    wire = wire,
+                    text = com.adsh.app.core.tools.SecretRedaction.redact(result.text),
+                    ok = true,
+                    images = result.images,
+                    deliverables = result.deliverables,
+                )
+            }
             is ToolResult.Error -> failure(result.message, result.retryable, result.code)
         }
     }
@@ -206,6 +222,14 @@ internal class PtcToolRunner(
     private companion object {
         /** 中断看门狗的轮询粒度：正在跑的子调用最多迟这么久发现「用户停了」 */
         const val CANCEL_PROBE_MS = 50L
+
+        /**
+         * 一次子调用的值交给 PTC 程序的上限（4 MiB）。dsh 没有这条（它的对等物是 128MiB 的控制帧
+         * 上限，桌面 V8 扛得住）；手机主进程 256MB 的 Java 堆扛不住 —— 见调用点的实测记录。
+         * 取 4 MiB 与 read 的整文件上限同量级：正常工具结果（bash 64KB、read 50KB、grep 预览）
+         * 离它很远，只有「一条几 MB 的单行」这类病态输入会碰到。
+         */
+        private const val PTC_MAX_VALUE_BYTES = 4 * 1024 * 1024
     }
 }
 

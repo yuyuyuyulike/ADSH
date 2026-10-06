@@ -85,15 +85,29 @@ class FsSearchCapsTest {
         )
     }
 
+    /**
+     * 单行截断**值与正文一起过**（第 197 轮改的，与 dsh 有意不同）：值原来保留完整行，
+     * 但那条完整行要跨进程交给 :ptc 里的程序，手机主进程 256MB 的 Java 堆扛不住 ——
+     * 真机实测一个 5MB 单行文件的 grep 就能把 app 推到 OOM 闪退。
+     * 被截过的命中补 truncated 标记，程序据此知道「这一行没看全」。
+     */
     @Test
-    fun grepValueLineStaysCompleteWhileTheTextShowsTheTruncationMarker() {
+    fun grepValueLineIsCappedTooAndFlagged() {
         val long = "x".repeat(5_000)
         val result = grepResult(listOf(GrepMatch("a.kt", 7, long)))
 
-        val valueLine = result.value["matches"]!!.jsonArray[0].jsonObject["line"]!!.jsonPrimitive.content
-        assertEquals("单行截断只作用在正文上（值里保留完整行）", 5_000, valueLine.length)
-        assertTrue("正文里要带 (line truncated)：\n" + result.text, result.text.endsWith("(line truncated)"))
+        val match = result.value["matches"]!!.jsonArray[0].jsonObject
+        val valueLine = match["line"]!!.jsonPrimitive.content
+        assertTrue("值也截到 2000 字节 + 标注：" + valueLine.length, valueLine.length < 2_100)
+        assertTrue(valueLine.endsWith("(line truncated)"))
+        assertEquals("被截过的命中要带 truncated 标记", "true", match["truncated"]!!.jsonPrimitive.content)
+        assertTrue("正文里也要带 (line truncated)：\n" + result.text, result.text.endsWith("(line truncated)"))
         assertTrue(result.text.length < 2_100)
+
+        // 短行两边都不动、也不打标记
+        val shortMatch = grepResult(listOf(GrepMatch("a.kt", 7, "short line"))).value["matches"]!!.jsonArray[0].jsonObject
+        assertEquals("short line", shortMatch["line"]!!.jsonPrimitive.content)
+        assertTrue("不该有 truncated", shortMatch["truncated"] == null)
     }
 
     @Test

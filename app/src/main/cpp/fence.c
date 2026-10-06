@@ -470,6 +470,30 @@ static bool write_mode(const char *mode) {
     return false;
 }
 
+/**
+ * 路径**已经存在**吗？（用原始系统调用问，别惊动自己的拦截）
+ *
+ * 为什么 mkdir 家族需要它（第 197 轮真机定位，测试 agent 报告的「假拒绝」）：
+ * GNU coreutils 的 mkdir -p 会沿着路径**逐级 mkdir**（/data、/data/data、… 每个祖先都来一次，
+ * 相对路径那次走 mkdirat），已存在的祖先自然返回 EEXIST。围栏把这些探针当成越权写：不仅
+ * 打了三组「file access denied」标记（用户看到的假信号），还把 errno 从 EEXIST 改成 EACCES
+ * —— 程序据此可能走错分支。目标已存在时这次 mkdir 本来就什么都不写，直接交给内核返回 EEXIST。
+ *
+ * 与 dsh 的关系：dsh 的标记是**策略拒绝了这次操作**的结论（它的沙箱在内核层，探针不会惊动
+ * 任何人）；我们这里是 libc 拦截，探针会走到同一个入口，所以必须自己把「不写东西的探针」排掉。
+ */
+static bool exists(const char *path) {
+    if (path == NULL || *path == '\0') return false;
+    return syscall(SYS_faccessat, AT_FDCWD, path, F_OK, 0) == 0;
+}
+
+/** at 变体的存在性判断（相对路径挂 dirfd） */
+static bool exists_at(int dirfd, const char *path) {
+    if (path == NULL || *path == '\0') return false;
+    if (path[0] == '/' || dirfd == AT_FDCWD) return exists(path);
+    return syscall(SYS_faccessat, dirfd, path, F_OK, 0) == 0;
+}
+
 static void report_denial(const char *path) {
     bool print = false;
     pthread_mutex_lock(&g_lock);
@@ -821,12 +845,17 @@ FILE *freopen(const char *path, const char *mode, FILE *stream) {
 
 int mkdir(const char *path, mode_t mode) {
     REDIRECT(path)
+    // 已存在 = 这次 mkdir 只会返回 EEXIST、什么都不写（mkdir -p 的逐级探针）：放行，别报越权
+    if (exists(path)) return g_mkdir != NULL ? g_mkdir(path, mode) : (int)syscall(SYS_mkdirat, AT_FDCWD, path, mode);
     if (!allowed(path)) return -1;
     return g_mkdir != NULL ? g_mkdir(path, mode) : (int)syscall(SYS_mkdirat, AT_FDCWD, path, mode);
 }
 
 int mkdirat(int dirfd, const char *path, mode_t mode) {
     REDIRECT_AT(dirfd, path)
+    if (exists_at(dirfd, path)) {
+        return g_mkdirat != NULL ? g_mkdirat(dirfd, path, mode) : (int)syscall(SYS_mkdirat, dirfd, path, mode);
+    }
     if (!allowed_at(dirfd, path)) return -1;
     return g_mkdirat != NULL ? g_mkdirat(dirfd, path, mode) : (int)syscall(SYS_mkdirat, dirfd, path, mode);
 }

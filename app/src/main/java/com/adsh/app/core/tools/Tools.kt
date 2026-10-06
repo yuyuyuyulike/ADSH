@@ -332,6 +332,18 @@ private const val READ_MAX_LINES = 2000
 /** 整文件读入的设备侧安全上限（dsh 是流式窗口，Android 上直接读整文件，超过就拒绝） */
 private const val READ_MAX_FILE_BYTES = 4L * 1024 * 1024
 
+/** dsh 的 readMaxLineLength 默认值：单行超过这么多**字符**就截断（截完带一句标注） */
+private const val READ_MAX_LINE_CHARS = 2000
+
+/** dsh 的 readMaxBytes 默认值：一次 read 的正文预算（UTF-8 字节；行号前缀按 dsh 不计入） */
+private const val READ_MAX_BYTES = 50 * 1024
+
+/**
+ * dsh 的 search-core RAW_OUTPUT_MAX_BYTES：ripgrep 的**原始 stdout** 超过这么多字节，
+ * 整次调用失败（SEARCH_RAW_OUTPUT_OVERFLOW），而不是截断 —— 那说明 pattern/path 太宽。
+ */
+private const val GREP_RAW_MAX_BYTES = 20_000_000
+
 /** dsh-fs-local 的 BINARY_SAMPLE_BYTES：只看开头这么多字节判二进制 */
 private const val BINARY_SAMPLE_BYTES = 8192
 
@@ -789,7 +801,15 @@ object ReadTool : Tool {
         }
         notTextReason(bytes)?.let { return ToolResult.Error("cannot read \"" + display + "\": " + it) }
         val lines = String(bytes, Charsets.UTF_8).lines()
-        val slice = lines.drop(offset - 1).take(limit)
+        // dsh 的 offset 越界判据（FS_NOT_FOUND）：只有「空文件 + offset=1」是合法首页。
+        // 以前这里安静返回 0 行，调用方分不清「文件是空的」与「offset 写错了」。
+        if (offset > lines.size && !(lines.size == 0 && offset == 1)) {
+            return ToolResult.Error(
+                "offset " + offset + " is out of range for \"" + display + "\" (" + lines.size + " lines)",
+            )
+        }
+        val shaped = readSlice(lines, offset, limit)
+        val slice = shaped.lines
         val value = buildJsonObject {
             put("path", display)
             put("offset", offset)
@@ -808,17 +828,26 @@ object ReadTool : Tool {
             )
             put("totalLines", lines.size)
         }
-        return ToolResult.Ok(readEnvelope(display, offset, slice, lines.size), value)
+        return ToolResult.Ok(readEnvelope(display, offset, slice, lines.size, shaped.truncatedByBytes), value)
     }
 }
 
 /** dsh 的 formatReadOutput：编号行 + 空行 + 页脚，整段包在 <content> 里 */
-internal fun readEnvelope(display: String, offset: Int, slice: List<String>, totalLines: Int): String {
+internal fun readEnvelope(
+    display: String,
+    offset: Int,
+    slice: List<String>,
+    totalLines: Int,
+    truncatedByBytes: Boolean = false,
+): String {
     val endLine = if (slice.isEmpty()) maxOf(0, offset - 1) else offset + slice.size - 1
-    val footer = if (endLine < totalLines) {
-        "(Showing lines " + offset + "-" + endLine + " of " + totalLines + ". Use offset=" + (endLine + 1) + " to continue.)"
-    } else {
-        "(End of file - total " + totalLines + " lines)"
+    val footer = when {
+        // dsh 的三条页脚：字节预算用完 / 还有后续行 / 到底了
+        truncatedByBytes ->
+            "(Output capped. Showing lines " + offset + "-" + endLine + ". Use offset=" + (endLine + 1) + " to continue.)"
+        endLine < totalLines ->
+            "(Showing lines " + offset + "-" + endLine + " of " + totalLines + ". Use offset=" + (endLine + 1) + " to continue.)"
+        else -> "(End of file - total " + totalLines + " lines)"
     }
     val body = if (slice.isEmpty()) {
         footer
@@ -826,6 +855,48 @@ internal fun readEnvelope(display: String, offset: Int, slice: List<String>, tot
         slice.mapIndexed { i, text -> (offset + i).toString() + ": " + text }.joinToString("\n") + "\n\n" + footer
     }
     return "<path>" + display + "</path>\n<type>file</type>\n<content>\n" + body + "\n</content>"
+}
+
+/**
+ * dsh 的 truncateLine：单行超过 [READ_MAX_LINE_CHARS] 个字符就截断并标注。
+ *
+ * 为什么必须有（第 197 轮真机复现的 OOM）：ADSH 的 read 原来只限**行数**，一行可以有几 MB
+ * —— 那个字符串会一路进日志、进上下文、进 Compose 的文本排版（Android 的文本测量按字符数
+ * 分配数组），实测把 app 的 256MB Java 堆打爆。dsh 的 read 一直是 2000 字符 + 50 KiB 两条上限。
+ */
+internal fun truncateReadLine(line: String): String =
+    if (line.length > READ_MAX_LINE_CHARS) {
+        line.substring(0, READ_MAX_LINE_CHARS) + "... (line truncated to " + READ_MAX_LINE_CHARS + " chars)"
+    } else {
+        line
+    }
+
+/** 一次 read 整形后的正文行 + 有没有因为字节预算被截 */
+internal data class ReadSlice(val lines: List<String>, val truncatedByBytes: Boolean)
+
+/**
+ * dsh 的 read 输出整形：先按 [limit] 截行数，再按 [READ_MAX_BYTES] 的字节预算逐行累加
+ * （dsh 的 scan：预算用完就停，剩下的行只计数不输出），单行先过 [truncateReadLine]。
+ *
+ * 行号前缀按 dsh 不计入字节预算（它是渲染期才拼上的）。
+ */
+internal fun readSlice(lines: List<String>, offset: Int, limit: Int): ReadSlice {
+    val out = ArrayList<String>(minOf(limit, 256))
+    var used = 0L
+    var capped = false
+    var index = offset - 1
+    while (index < lines.size && out.size < limit) {
+        val text = truncateReadLine(lines[index])
+        val size = text.toByteArray(Charsets.UTF_8).size + 1L
+        if (used + size > READ_MAX_BYTES) {
+            capped = true
+            break
+        }
+        used += size
+        out += text
+        index++
+    }
+    return ReadSlice(out, capped)
 }
 
 /**
@@ -1377,9 +1448,8 @@ internal data class GrepResult(val text: String, val value: JsonObject)
 /**
  * dsh 的 grep 结果整形。**条数上限两边都生效**，单行截断只作用在正文上。
  *
- * dsh 的原始分工是：
- *  - `execute` 返回 `{ matches: all }` —— 值是全量、不截条数、也不切行；
- *  - 250 条 / 单行 2000 字节的上限只写在 `render` 里（`retainGrepMatches` / `previewLine`）。
+ * dsh 的原始分工是：execute 返回全部匹配（值是全量、不截条数、也不切行）；
+ * 250 条 / 单行 2000 字节的两条上限只写在它的 render 里（retainGrepMatches / previewLine）。
  *
  * ADSH 在**条数**上刻意与 dsh 不同：值也封顶在 250。理由有两条 ——
  *  1. dsh 的页脚是「完整结果已存到 <路径>，用 read/grep 去取」，它背后有 spill 服务；
@@ -1388,8 +1458,13 @@ internal data class GrepResult(val text: String, val value: JsonObject)
  *  2. 上一轮的实测反馈就是「250 的上限实测没生效」：在 PTC 模式下，正文根本不进模型上下文，
  *     只有程序 return 的东西进 —— 上限只写在正文上等于没有上限。
  *
- * 单行仍然是「值里完整、正文里截断」：值给程序做判断，正文给人看，
- * 这一条与 dsh 一致（dsh 的 previewLine 也只在 render / spill 里用）。
+ * **单行也一起截（第 197 轮改的，与 dsh 有意不同）**：值原来保留完整行（dsh 的口径），
+ * 但那条完整行要跨进程交给 :ptc 里的程序，而手机主进程的 Java 堆只有 256MB —— 真机实测：
+ * 一个 5MB 单行文件的 grep，值在两端各留几份，把堆顶到 256MB 的 growth limit、app 闪退
+ * （同一份程序在 dsh 桌面端跑得动：V8 的堆大得多，而且它的值只在自己进程里）。
+ * 现在值与正文用**同一个** previewLine（2000 字节 + 「 (line truncated)」），并给被截过的命中
+ * 补一个 truncated 标记 —— 程序据此知道「这一行没看全」，需要全文就自己用 bash 处理文件。
+ * 顺带的好处：值与正文不再各说各话（dsh 那边正文截、值不截，模型与程序看到的是两份东西）。
  */
 internal fun grepResult(matches: List<GrepMatch>): GrepResult = GrepResult(
     text = renderGrep(matches.map { it.copy(line = previewLine(it.line)) }),
@@ -1400,7 +1475,11 @@ internal fun grepResult(matches: List<GrepMatch>): GrepResult = GrepResult(
                     buildJsonObject {
                         put("path", match.path)
                         put("lineNumber", match.lineNumber)
-                        put("line", match.line)
+                        put("line", previewLine(match.line))
+                        // 只在这条真的被截了时才写：程序用它区分「行本来就短」与「被截过」
+                        if (match.line.toByteArray(Charsets.UTF_8).size > GREP_MAX_LINE_BYTES) {
+                            put("truncated", true)
+                        }
                     },
                 )
             }
@@ -1476,8 +1555,37 @@ internal fun runRipgrep(cmd: List<String>, workdir: File): RipgrepRun {
     } catch (e: Exception) {
         return RipgrepRun("", "ripgrep 启动失败：" + e::class.java.simpleName + "：" + (e.message ?: "unknown"))
     }
-    val stdout = process.inputStream.bufferedReader().readText()
+    // stdout 边读边记账（dsh 的 RAW_OUTPUT_MAX_BYTES = 20_000_000）：超了整次失败，不截断 ——
+    // 那说明 pattern/path 太宽。**读的时候就设卡**：先 readText() 把几十 MB 读进内存再判断，
+    // 手机主进程的 Java 堆就已经吃不消了（第 197 轮：5MB 单行的 grep 值把 app 推到 OOM）。
+    val stdout = StringBuilder()
+    val buffer = CharArray(8192)
+    var stdoutBytes = 0L
+    var overflow = false
+    runCatching {
+        process.inputStream.bufferedReader().use { reader ->
+            while (true) {
+                val n = reader.read(buffer)
+                if (n < 0) break
+                stdout.append(buffer, 0, n)
+                stdoutBytes += String(buffer, 0, n).toByteArray(Charsets.UTF_8).size
+                if (stdoutBytes > GREP_RAW_MAX_BYTES) {
+                    overflow = true
+                    break
+                }
+            }
+        }
+    }
     val stderr = process.errorStream.bufferedReader().readText()
+    if (overflow) {
+        process.destroyForcibly()
+        // dsh 的 SEARCH_RAW_OUTPUT_OVERFLOW 文案逐字
+        return RipgrepRun(
+            "",
+            "grep produced " + stdoutBytes + " bytes of raw output, over the " + GREP_RAW_MAX_BYTES +
+                "-byte cap; narrow pattern, path, or include and retry",
+        )
+    }
     val finished = process.waitFor(30, TimeUnit.SECONDS)
     if (!finished) {
         process.destroyForcibly()
@@ -1486,7 +1594,7 @@ internal fun runRipgrep(cmd: List<String>, workdir: File): RipgrepRun {
     val exit = process.exitValue()
     // rg 的退出码：0 = 有命中，1 = 没有命中，2 = 出错
     if (exit > 1) return RipgrepRun("", "ripgrep 失败：\n" + stderr.trim())
-    return RipgrepRun(stdout, null)
+    return RipgrepRun(stdout.toString(), null)
 }
 
 /** 把 rg 打印的路径换算成搜索根下的相对路径（dsh 的 toWorkdirRelative） */

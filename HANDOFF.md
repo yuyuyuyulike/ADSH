@@ -24,7 +24,7 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
   `dist/ADSH-0.2.1-debug.apk`（**可 `run-as`**：拉库 / 进沙箱 / 看文件系统现场都用它）。
   release 包不可调试（`run-as` 会被拒）—— 要深度诊断就装 debug 包，两者同包名同签名，`install -r`
   可互相覆盖且不动数据。
-- **验证基线**：单测 **854 全过**（每次提交都重跑；第二阶段起恢复为默认门禁，见上面「第二阶段」一节，逐条数字看 R 表）。第 117 轮起按用户要求**不再跑测试**，只保证编译通过、
+- **验证基线**：单测 **858 全过**（每次提交都重跑；第二阶段起恢复为默认门禁，见上面「第二阶段」一节，逐条数字看 R 表）。第 117 轮起按用户要求**不再跑测试**，只保证编译通过、
   装机启动无 FATAL；这一轮起如果删了测试侧的代码或改了断言，至少把 `:app:compileDebugUnitTestKotlin` 跑过。
 
 ## 第二阶段（代码熵减，进行中）
@@ -160,6 +160,16 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 
 | R196 | **用户第 195 轮：「那肯定向 dsh 看齐啊，标题慢一点就慢一点了」**（回应 R195 末尾我标出的那处取舍：R195 把「其余路由」也硬发了 thinking=disabled，而 dsh 的 pi-ai 适配器对 off 的处理是**省略 reasoning 字段**、走提供方默认）。改回 dsh 的**适配器口径**：titleNoThink 只认两条有明确字段的路由 —— **DeepSeek**（thinking=disabled，即 dsh-llm-deepseek 的 purpose=session-title → off）与 **DashScope 兼容模式**（enable_thinking=false，ADSH 自己的路由知识：dsh 没有这个适配器、无从对齐，而 ADSH 预设里就有阿里云 maas，实测这是那条路由上唯一有效的字段），**其余一律什么都不发**（= dsh 的 pi-ai：off 就是省略）。顺带删掉 R195 那条「目录里掩码 0 就不发」的判据 —— 它只是给「默认硬发」兜底的，现在「不发」是默认，它没有读者了。代价按用户口径接受：会思考的模型会把 64 个输出 token 花在推理上，标题可能多等几秒、甚至退回兜底值。 | 单测 **854 全绿**（用例改名 titleCallFollowsTheAdapterRuleOfEachRoute：DeepSeek / DashScope / 其余不发 三档 + 两字段互斥）；lint 0 error（66 warning / 10 hint）；死代码 0 候选；装机启动无 FATAL（qwen 那条路由的行为与 R195 逐字一致，未再单开测试会话）
 
+
+| R197 | **用户第 196 轮：测试 agent 的深度测试报告 + 一次闪退**（原话：「我刚让测试agent深度测试了一下harness，你可以看看手机日志与他写的报告，过程中adsh闪退了一次，后面就没闪退了，查查怎么回事。harness的几个问题你确定是真问题后多参照dsh来改」）。**① 闪退根因 = Java 堆 OOM**（不是 ANR、也不在业务代码里）：`logcat -b crash` 是 `Fatal signal 6 (SIGABRT)`，Abort message = `JNI DETECTED ERROR … java.lang.OutOfMemoryError: Failed to allocate a 48 byte allocation with 1944 free bytes … target footprint 268435456`；测试 agent 那条会话的最后一步正是「5MB 单行文件 + grep + 2MB write」的 run_code（它报告的第 4 条「一次调用被中断、结果全丢」就是这次死亡）。**真机复现**：同一段压力测试再跑一次，轮询 `dumpsys meminfo` 看到堆反复冲到 256MB（alloc 255.3MB / free 0.7MB），最后一轮 grep 之后 `Killing 8336:com.termux (adj 0): crash` + `OutOfMemoryError`（18:22:27），与用户那次 18:05:08 的形状逐字一致。**② 按 dsh 补齐三处输出上限**（dsh 有、ADSH 漏的，数值全部取自 dsh 源码）：read 单行 2000 字符（`... (line truncated to 2000 chars)`）+ 整次 51200 字节（`(Output capped. Showing lines X-Y. Use offset=Z to continue.)`）+ offset 越界**报错**（`offset N is out of range for "p" (M lines)`，ADSH 原来安静返回 0 行）；grep 的原始 rg stdout 20,000,000 字节上限（**边读边记账**，超了整次失败：`grep produced N bytes of raw output, over the 20000000-byte cap; …`）；run_code 的 64MiB 输出记账（logs + 返回值合并计，超了 `outer output exceeded 67108864 bytes`、kind = output-limit）。**③ 两处 ADSH 侧的手机特化（有意偏离 dsh，理由写在 KDoc 里）**：grep 的**值**也按单行 2000 字节截（值要跨进程进 :ptc，5MB 单行的值在两端各留几份 ⇒ 实测把 app 打爆；dsh 的 V8 堆大得多、值只在自己进程里），被截过的命中补 `truncated` 标记；PTC 子调用的值再加一条 4MiB 硬上限（超过 = 这次子调用失败，文案提示改窄请求或用 bash 处理文件）。**④ 报告里另外两条不是 bug**（逐字就是 dsh 的行为）：`limit > 2000` / `offset < 1` 本来就是**报错不夹取**（dsh-tool-fs 的 parsePositiveInteger 与 limit 上限检查）；`read_image` 对「有扩展名但不是图片扩展名」本来就是**直接拒绝、不嗅探内容**（只有无扩展名才按 magic 嗅探）。**⑤ 报告第 1 条（mkdir -p 打假拒绝）是真 bug，已修**：GNU coreutils 的 `mkdir -p` 会沿路径**逐级 mkdir**（已存在的祖先也各调一次），围栏把这些「只会返回 EEXIST、什么都不写」的探针也判越权 —— 既打三组 `[sandbox: file access denied …]` 假标记，又把 errno 从 EEXIST 改成 EACCES。fence.c 现在对 mkdir/mkdirat 先问一句「目标已存在吗」（原始 faccessat 系统调用，绕开自己的拦截），存在就直接交给内核返回 EEXIST；真越权照旧拒绝（实测 `/data/data/com.termux/files/home/nope` 仍被拒 + 打标记）。 | 单测 **854 → 858 全绿**（+ReadShapeTest 4 例：2000 字符截断 / 5MB 单行只回 2000 字符 / 50KiB 预算 + Output capped 页脚 / 三条页脚；FsSearchCapsTest 那条「值保留完整行」改成「值也截 + truncated 标记」）；lint 0 error（66 warning / 10 hint）；死代码 0 候选；装机复测：同一段 5MB/2MB 压力测试堆**峰值 40.8MB**（改前 256MB + 闪退）、`tools.grep` 命中 5MB 单行时按 4MiB 上限报错、read 读 4,194,304 字节的单行文件只回 2034 字符（= 2000 + 标注）、`mkdir -p` 不再打假标记；测试会话 174/175 已删，`last_conversation_id` 回到 165
+
+### 复现「工具输出把 app 打爆」的做法（R197 用过一次）
+
+1. **看现场**：`adb logcat -b crash -d -v time`（Abort message 里是 OOM 的原文与堆上限）、`adb logcat -d -v time | grep -E "OutOfMemory|Killing .*com.termux"`（AndroidRuntime 的栈 + AMS 的 Killing 行）。
+2. **盯堆**：跑测试的同时每 3 秒 `adb shell dumpsys meminfo com.termux | grep -A1 'Dalvik Heap'` —— 取最后三个数（Heap Size / Alloc / Free）。改前：size 反复 256MB、alloc 到 255MB、free 0.7MB；改后：峰值 40.8MB、平时 9-12MB。pid 变了就是又闪退了一次。
+3. **压力程序**（让 App 里的 agent 跑）：`bash` 造一个 5MB 单行文件 → `tools.read` 它 → `tools.grep` 它 → `tools.write` 一个 2MB 文件。注意模型可能改用 bash 的 grep 绕开 tools.grep —— 要验证工具侧上限得在提示词里点名「用 tools.grep 这个工具」。
+4. **围栏（fence）那几个判断可以不用模型**：`adb shell "run-as com.termux env LD_PRELOAD=<nativeLib>/libadshfence.so ADSH_FENCE_MODE=workspace-write ADSH_FENCE_ROOTS=<ws>:<prefix>/tmp:<scratch> ADSH_FENCE_ACTIVE=1 ADSH_TMP_REDIRECT=<prefix>/tmp <prefix>/bin/bash -c '…'"`。nativeLib 从 `run-as com.termux readlink -f files/usr/bin/bash` 反推（重装 APK 后目录会变，符号链接要等 App 起一次才会重指）。
+5. **临时诊断**：fence.c 的 `report_denial` 里加一行打印被拒路径（用原始 `fprintf`），组装一个 debug 包就能看到 `mkdir -p` 到底在哪些路径上被拦 —— 定位完记得删掉（那行不属于 dsh 的标记文本）。
 
 ### 量「首轮慢在哪」的做法（R194 用过一次）
 

@@ -69,6 +69,11 @@ class QuickJsRuntime {
         val started = System.currentTimeMillis()
         val logs = ArrayList<String>(16)
         val calls = java.util.concurrent.atomic.AtomicInteger(0)
+        // dsh 的 OutputLedger：logs + 返回值 + 诊断合起来 64MiB（maxOutputBytes 默认值）。
+        // 超了这一条预算，dsh 让整次运行以 kind = output-limit 失败，而不是把输出交给调用方 ——
+        // 手机主进程的 Java 堆只有 256MB，一条几百 MB 的日志/返回值会直接把它打爆（第 197 轮）。
+        val outputBytes = java.util.concurrent.atomic.AtomicLong(0)
+        val outputOverflow = java.util.concurrent.atomic.AtomicBoolean(false)
         val engine = QuickJSContext.create()
         // **这个数必须小于执行线程的真实栈**（第 120 轮真机实测：一个 f(n)=1+f(n-1) 递归 5000 层的
         // 探针把 App 整个打崩了）。QuickJS 的溢出判据是 `sp < stack_top - stack_size` —— 报的是它
@@ -78,10 +83,10 @@ class QuickJsRuntime {
         engine.setMaxStackSize(256 * 1024)
         engine.setMemoryLimit(64 * 1024 * 1024)
         engine.setConsole(object : QuickJSContext.Console {
-            override fun log(info: String?) = addLog(logs, info, maxLogLines, onLog)
-            override fun info(info: String?) = addLog(logs, info, maxLogLines, onLog)
-            override fun warn(info: String?) = addLog(logs, info, maxLogLines, onLog)
-            override fun error(info: String?) = addLog(logs, info, maxLogLines, onLog)
+            override fun log(info: String?) = addLog(logs, info, maxLogLines, onLog, outputBytes, outputOverflow)
+            override fun info(info: String?) = addLog(logs, info, maxLogLines, onLog, outputBytes, outputOverflow)
+            override fun warn(info: String?) = addLog(logs, info, maxLogLines, onLog, outputBytes, outputOverflow)
+            override fun error(info: String?) = addLog(logs, info, maxLogLines, onLog, outputBytes, outputOverflow)
         })
 
         try {
@@ -192,6 +197,21 @@ class QuickJsRuntime {
                 "JSON.stringify(globalThis.__adsh_state.value === undefined ? null : globalThis.__adsh_state.value)",
                 "value.js",
             ) as? String
+            // 返回值同样吃那条 64MiB 预算（dsh 的 ledger 把 logs + completion 一起计）
+            if (valueJson != null && outputBytes.addAndGet(valueJson.toByteArray(Charsets.UTF_8).size.toLong()) > MAX_OUTPUT_BYTES) {
+                outputOverflow.set(true)
+            }
+            if (outputOverflow.get()) {
+                return CodeRunResult(
+                    valueJson = null,
+                    logs = logs,
+                    // dsh 的失败信封逐字：kind = output-limit、message = "outer output exceeded N bytes"
+                    error = "outer output exceeded " + MAX_OUTPUT_BYTES + " bytes",
+                    durationMs = System.currentTimeMillis() - started,
+                    toolCalls = calls.get(),
+                    failureKind = "output-limit",
+                )
+            }
             return CodeRunResult(
                 valueJson = valueJson,
                 logs = logs,
@@ -227,10 +247,26 @@ class QuickJsRuntime {
             "[" + id + "," + kotlinx.serialization.json.JsonPrimitive(wire) + "]"
         }
 
-    /** 收一行控制台输出：进结果列表（有上限），同时**立刻**推给宿主（dsh 的 log 帧） */
-    private fun addLog(logs: MutableList<String>, info: String?, cap: Int, onLog: ((String) -> Unit)?) {
-        if (logs.size >= cap) return
+    /**
+     * 收一行控制台输出：进结果列表（有行数上限），同时**立刻**推给宿主（dsh 的 log 帧）。
+     *
+     * 第 197 轮补上**字节**记账（dsh 的 LogBuffer 就是按字节预算的）：只有 500 行上限的话，
+     * 一行就能是几百 MB —— 那既进结果也进宿主，手机主进程直接 OOM。
+     */
+    private fun addLog(
+        logs: MutableList<String>,
+        info: String?,
+        cap: Int,
+        onLog: ((String) -> Unit)?,
+        outputBytes: java.util.concurrent.atomic.AtomicLong,
+        overflow: java.util.concurrent.atomic.AtomicBoolean,
+    ) {
+        if (logs.size >= cap || overflow.get()) return
         val line = info ?: ""
+        if (outputBytes.addAndGet(line.toByteArray(Charsets.UTF_8).size.toLong() + 1L) > MAX_OUTPUT_BYTES) {
+            overflow.set(true)
+            return
+        }
         logs += line
         runCatching { onLog?.invoke(line) }
     }
@@ -243,6 +279,9 @@ class QuickJsRuntime {
         const val MAX_TIMEOUT_MS = 600_000L
 
         const val MAX_LOG_LINES = 500
+
+        /** dsh 的 ptc-runtime-node config：maxOutputBytes 默认 67108864（logs + 返回值 + 诊断） */
+        const val MAX_OUTPUT_BYTES = 67_108_864L
         private const val MAX_PUMPS = 200_000
 
         /**
