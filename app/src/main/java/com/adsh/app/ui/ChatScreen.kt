@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -409,7 +410,10 @@ fun ChatScreen(
                 menu = overlays.open,
                 onMenuChange = { value -> overlays = overlays.menuChanged(value, draft) },
                 // 输入框下方那一排（dsh 的 composer dock）：会话统计 / Token 用量 / 上下文占用。
-                // 只在有会话时出现 —— 新会话（hero）阶段没有任何统计可看。
+                // 新会话（还没开始对话）这一排**一个图标都不画**，但要用 [ComposerDockHeight]
+                // 占住同样的高度 —— 输入框在「还没开始对话」与「对话中」才在同一个位置
+                // （用户第 188 轮两条口径：①新会话的输入框也要上移、位置与对话后一致；
+                // ②但新会话的下方不要有任何图标，对话后再显示）。
                 dock = {
                     if (hasConversation) {
                         ChatStatsDock(
@@ -418,6 +422,8 @@ fun ChatScreen(
                             open = overlays.open,
                             onToggle = { id -> overlays = overlays.toggled(id) },
                         )
+                    } else {
+                        Spacer(Modifier.height(ComposerDockHeight))
                     }
                 },
                 requestPermission = requestPermission,

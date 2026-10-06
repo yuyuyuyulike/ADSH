@@ -40,6 +40,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -1129,9 +1130,11 @@ private fun RailUsagePill(usage: TurnUsage) {
             onClick = { open = !open },
         )
         if (open) {
-            // 气泡与触发器左对齐、上留 8dp、离屏幕边 12dp（dsh 的 useAnchoredPosition：
-            // 统计类浮层都是 side:top / gap:8 / margin:12）
-            DshPopup(onDismiss = { open = false }, alignStart = true, margin = DshSpacing.Xxxl) {
+            // 气泡上留 8dp、离屏幕边 12dp（dsh 的 useAnchoredPosition：side:top / gap:8 / margin:12）。
+            // 横向按 dsh 的 align:end 挂（气泡右边缘贴触发器右边缘）—— 面板比触发器宽得多，
+            // 整块于是往**左**铺；用户第 188 轮口径：这两张卡要偏左（按 align:start 挂会被
+            // 「夹进视口」那一步推到屏幕右边缘，实测离左 82dp、离右 12dp）。
+            DshPopup(onDismiss = { open = false }, margin = DshSpacing.Xxxl) {
                 StatPanel(
                     title = "本轮用量",
                     icon = DshIcons.Database,
@@ -1170,7 +1173,7 @@ private fun RailTimePill(runMillis: Long, usage: TurnUsage?) {
             onClick = { open = !open },
         )
         if (open) {
-            DshPopup(onDismiss = { open = false }, alignStart = true, margin = DshSpacing.Xxxl) {
+            DshPopup(onDismiss = { open = false }, margin = DshSpacing.Xxxl) {
                 StatPanel(
                     title = "本轮用时和速度",
                     icon = DshToolIcons.Clock,
@@ -1187,7 +1190,11 @@ private fun RailTimePill(runMillis: Long, usage: TurnUsage?) {
     }
 }
 
-/** dsh 的 .Q51KRG_trigger：28px 高 / 圆角 28 / 内边距 6px 8px / 图标 15px + 4px + 13px 文字 */
+/**
+ * dsh 的 .Rd79tq_trigger：28px 高 / 内边距 6px 8px / 图标 15px + 4px + 12px 文字，
+ * **展开时给自己一层 hover 底**（.Rd79tq_trigger[aria-expanded=true]）—— 少了它，点开明细后
+ * 触发器本身没有任何「我正开着」的反馈（用户第 188 轮口径：「它俩没有气泡」）。
+ */
 @Composable
 private fun RailStatPill(icon: ImageVector, label: String, open: Boolean, onClick: () -> Unit) {
     val palette = LocalDshPalette.current
@@ -1195,6 +1202,7 @@ private fun RailStatPill(icon: ImageVector, label: String, open: Boolean, onClic
         modifier = Modifier
             .height(28.dp)
             .clip(RoundedCornerShape(28.dp))
+            .background(if (open) palette.hover else Color.Transparent)
             .dshClickable(interactionSource = dshInteraction()) { onClick() }
             .padding(horizontal = DshSpacing.Xl),
         verticalAlignment = Alignment.CenterVertically,

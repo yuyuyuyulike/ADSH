@@ -650,13 +650,13 @@ fun DshComposer(
     var composerCardTop by remember { mutableFloatStateOf(0f) }
     /** 输入卡片的宽度（px）：触发菜单与卡片同宽（dsh 的 .menu 是 left:0;right:0） */
     var composerCardWidth by remember { mutableIntStateOf(0) }
-    val permissionOpen = menu == "permission"
-    val modelOpen = menu == "model"
+    val permissionOpen = menu == OPEN_PERMISSION
+    val modelOpen = menu == OPEN_MODEL
     var confirmFullAccess by remember { mutableStateOf(false) }
 
     LaunchedEffect(requestPermission) {
         if (requestPermission) {
-            onMenuChange("permission")
+            onMenuChange(OPEN_PERMISSION)
             onRequestHandled()
         }
     }
@@ -728,8 +728,8 @@ fun DshComposer(
         if (showWorkspace) WorkspaceChipRow(
             workspaces = workspaces,
             workspaceId = workspaceId,
-            open = menu == "workspace",
-            onOpenChange = { open -> onMenuChange(if (open) "workspace" else null) },
+            open = menu == OPEN_WORKSPACE,
+            onOpenChange = { open -> onMenuChange(if (open) OPEN_WORKSPACE else null) },
             onPick = { id ->
                 onMenuChange(null)
                 onPickWorkspace(id)
@@ -830,7 +830,7 @@ fun DshComposer(
                         permission = permission,
                         open = permissionOpen,
                         cardWidthPx = composerCardWidth,
-                        onOpenChange = { want -> onMenuChange(if (want) "permission" else null) },
+                        onOpenChange = { want -> onMenuChange(if (want) OPEN_PERMISSION else null) },
                         onSelect = onSelectPermission,
                         onSelectNeedsConfirm = { confirmFullAccess = true },
                     )
@@ -848,7 +848,7 @@ fun DshComposer(
                         currentProviderId = currentProviderId,
                         efforts = efforts,
                         currentEffort = currentEffort,
-                        onOpenChange = { want -> onMenuChange(if (want) "model" else null) },
+                        onOpenChange = { want -> onMenuChange(if (want) OPEN_MODEL else null) },
                         onSelectModel = onSelectModel,
                         onSelectEffort = onSelectEffort,
                     )

@@ -236,6 +236,15 @@ internal fun SessionUsagePanel(stats: SessionStats) {
 }
 
 /**
+ * 输入框下方那一排的**高度**：4dp 上间距 + 22dp 胶囊（12/20 字 + 上下各 1dp 内边距，
+ * 即 dsh 的 .iq1doa_pill）。
+ *
+ * 新会话（还没开始对话）时这一排不画任何图标，但要占住同样的高度 —— 输入框在两种状态下
+ * 才在同一个位置（用户口径：新会话的输入框位置与对话后一致，但下方不要有图标）。
+ */
+internal val ComposerDockHeight = DshSpacing.Md + 22.dp
+
+/**
  * 输入框下方那一排（dsh 的 composer dock + ContextMeter）：
  * 「N 轮 M 步 · TPS」、「{total} tok」、「上下文圆环 + NN%」三个胶囊，居中、间距 12。
  *
@@ -276,12 +285,20 @@ internal fun ChatStatsDock(
             }
         }
         if (showTokens) {
+            // 用户口径（第 188 轮）：只去掉「缓存命中」四个字，**百分数留着** —— 于是这一粒读作
+            // 「8.7K tok · 0%」（dsh 的 .iq1doa_sep 就是夹在中间那个「·」）
+            val hit = if (stats.billedInput > 0) {
+                formatCacheHitPercent(stats.cacheHitTokens, stats.billedInput) + "%"
+            } else {
+                null
+            }
             DockPill(
                 icon = DshIcons.Database,
-                label = formatTokensCompact(stats.billedTotal) + " tok",
+                label = formatTokensCompact(stats.billedTotal) + " tok" + (hit?.let { " · " + it } ?: ""),
                 expanded = open == OPEN_USAGE,
                 description = "Token 用量",
                 onClick = { onToggle(OPEN_USAGE) },
+                alignStart = false,
             ) {
                 SessionUsagePanel(stats)
             }
@@ -300,8 +317,13 @@ internal fun ChatStatsDock(
  * 一个胶囊 = 触发器 + 它自己的气泡（[panel] 只在展开时组合）。
  *
  * dsh 的 .iq1doa_pill：圆角 999、内边距 1px 8px、gap 6px、图标 14px、12/20 字、tabular-nums；
- * **触摸区就是这个胶囊本身**（dsh 没有再加一圈透明扩大区）。气泡与它左对齐、上留 8px、
- * 离屏幕边 12px（dsh 的 useAnchoredPosition margin）—— 三个参数一起决定气泡的形状与位置。
+ * **触摸区就是这个胶囊本身**（dsh 没有再加一圈透明扩大区）。气泡上留 8px、离屏幕边 12px
+ * （dsh 的 useAnchoredPosition margin），横向挂法与 dsh 的 align 参数一一对应：
+ *  - [alignStart] = true（dsh 的 align:start）＝ 气泡左边缘贴触发器左边缘；
+ *  - false（align:end）＝ 气泡右边缘贴触发器右边缘（面板比触发器宽，于是整块往**左**铺）。
+ * 用户口径（第 188 轮）：两张「用量」卡要偏左 —— 它们的触发器本来就在右边，按 start 挂会被
+ * 「夹进视口」那一步推到屏幕右边缘（实测离左 82dp / 离右 12dp），看着像被挤在右边；
+ * 统计卡按 start 挂正好落在触发器下方，保持不动。
  */
 @Composable
 private fun DockPill(
@@ -310,6 +332,7 @@ private fun DockPill(
     expanded: Boolean,
     description: String,
     onClick: () -> Unit,
+    alignStart: Boolean = true,
     panel: @Composable () -> Unit,
 ) {
     val palette = LocalDshPalette.current
@@ -329,7 +352,7 @@ private fun DockPill(
             Text(label, fontSize = 12.sp, lineHeight = 20.sp, color = ink, maxLines = 1, softWrap = false)
         }
         if (expanded) {
-            DshPopup(onDismiss = onClick, alignStart = true, margin = DshSpacing.Xxxl, content = panel)
+            DshPopup(onDismiss = onClick, alignStart = alignStart, margin = DshSpacing.Xxxl, content = panel)
         }
     }
 }
