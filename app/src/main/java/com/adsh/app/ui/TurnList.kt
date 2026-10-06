@@ -300,6 +300,14 @@ fun buildChatItems(
      */
     reasoningActive: Boolean = true,
     /**
+     * 已提交、还没被认领的插话回显（dsh 的 pendingSubmissions）。
+     *
+     * 它们画在**当前这一轮的流尾**（过程条目之后、「运行中」之上）—— dsh 就是这么放的
+     * （[...rows, ...pendingRows]），不按到达时间夹进工具行；认领落库之后由
+     * [pendingSteeringToShow] 去掉，正式那一行正好落在同一个位置，所以视觉上是「原地转正」。
+     */
+    pendingSteering: List<PendingSteer> = emptyList(),
+    /**
      * 正在生成的那一轮（= 它的用户消息 id）。
      *
      * dsh 里「哪一轮是活的」由事件流本身决定（turn/start 起、turn/end 止）。这里原来只看全局的
@@ -495,6 +503,16 @@ fun buildChatItems(
                 reasoningActive = reasoningActive,
             )
         }
+        // 还没被认领的插话回显：挂在**这一轮的流尾**（dsh 的 [...rows, ...pendingRows]）。
+        // 认领之后库里那一行会占据同一个位置（上一工具结果之后、下一步 assistant 之前），
+        // 于是气泡「原地转正」，不会先画一处、认领后再跳到另一处。
+        pendingSteeringToShow(pendingSteering, messages).forEach { echo ->
+            open.addPendingSteering(
+                text = echo.text,
+                time = echo.time,
+                attachments = com.adsh.app.core.agent.decodeAttachments(echo.attachmentsJson),
+            )
+        }
         emitTurn(open.build(closed = !live))
     }
     return out
@@ -583,6 +601,21 @@ private class TurnBuilder(
         )
         lastAt = maxOf(lastAt, message.createdAt)
         lastMessageId = maxOf(lastMessageId, message.id)
+    }
+
+    /**
+     * 一条**还没被认领**的插话回显（dsh 的 pendingSubmissions）。
+     *
+     * 与正式那一行（[addSteering]）画的是同一个气泡、同一个位置 —— 唯一的区别是它没有库里那一行
+     * 的 id，所以**不动 [lastMessageId]**（那是轮次身份用的，不能被一个还没落库的 id 污染）。
+     */
+    fun addPendingSteering(
+        text: String,
+        time: Long,
+        attachments: List<com.adsh.app.core.agent.UserAttachment>,
+    ) {
+        entries += ProcessEntry.Steering(text = text, time = time, attachments = attachments)
+        lastAt = maxOf(lastAt, time)
     }
 
     /** 一条任务完成通知：与插话同一层（属于这一轮的过程条目），但渲染成上下文注入行 */
@@ -760,6 +793,7 @@ internal fun rememberChatItems(
         state.liveTurn.calls,
         state.liveTurn.subCalls,
         state.liveTurnId,
+        state.pendingSteering,
         compact,
     ) {
         derivedStateOf {
@@ -771,6 +805,7 @@ internal fun rememberChatItems(
                 liveSubCalls = state.liveTurn.subCalls,
                 reasoningRunning = state.reasoningRunning,
                 liveTurnId = state.liveTurnId,
+                pendingSteering = state.pendingSteering,
                 compact = compact,
                 foldOpen = foldOpen,
                 streamingActive = streamingActive,

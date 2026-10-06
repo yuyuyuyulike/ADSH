@@ -189,3 +189,51 @@ internal fun lastOwnUserMessage(messages: List<MessageEntity>): MessageEntity? =
 /** 最后一条真的用户消息的 id；没有就是 0（id 由库自增、从 1 起，所以 0 就是「没有」）。 */
 internal fun lastOwnUserId(messages: List<MessageEntity>): Long =
     lastOwnUserMessage(messages)?.id ?: 0L
+/**
+ * 一条**已提交、还没被认领**的插话回显（dsh 的 `pendingSubmissions` 里 `placement = "steering"` 的那些）。
+ *
+ * 为什么要有它：dsh 在**按下发送的那一帧**就同步往客户端内存里塞一条回显
+ * （`session.beginSubmission` → `markDirty`，见 dsh-api-session-controller 的 client），
+ * 会话节点则要等下一步开头被收件箱认领才落库 —— 用户因此「点完立刻看到」。
+ * ADSH 以前只做了后半截（收件箱 + 认领落库），所以插话要等当前工具跑完才出现。
+ *
+ * 回显只在 ViewModel 内存里：刷新 / 重开 App 之后只信库里那一条（与 dsh 同一条取舍）。
+ */
+data class PendingSteer(
+    /** 一对一身份，只在本机回显列表里用（dsh 是提交时铸的 requestId） */
+    val id: Long,
+    val text: String,
+    val time: Long,
+    /** 附件描述（与落库那一行同一种 JSON）；算出来之前是 null —— 算它要读文件，见 steer() */
+    val attachmentsJson: String? = null,
+)
+
+/**
+ * 还该画哪几条回显：**认领落库之后就把对应的回显去掉**（dsh 的渲染期去重 ——
+ * 它按 `source.rpcId` 把已经出现在 durable 节点上的回显过滤掉）。
+ *
+ * ADSH 的 durable 行不带 rpcId，所以按「同内容一对一消耗」配对：库里每出现一条 steering 行，
+ * 就抵掉**最早**的一条同内容回显。重复的同一句话（连发两次同样的插话）也因此各抵各的，
+ * 不会两条一起消失。纯函数，桌面上直接测（PendingSteerTest）。
+ */
+internal fun pendingSteeringToShow(
+    pending: List<PendingSteer>,
+    messages: List<MessageEntity>,
+): List<PendingSteer> {
+    if (pending.isEmpty()) return pending
+    val durable = messages
+        .filter { it.role == "user" && it.name == com.adsh.app.core.data.ConversationRepository.STEERING }
+        .map { it.content }
+        .toMutableList()
+    if (durable.isEmpty()) return pending
+    return pending.filter { echo ->
+        val at = durable.indexOf(echo.text)
+        if (at < 0) {
+            true
+        } else {
+            durable.removeAt(at)
+            false
+        }
+    }
+}
+

@@ -113,6 +113,14 @@ data class ChatUiState(
     val busyEnter: String = SettingsStore.BUSY_QUEUE,
     /** 排队待发的消息条数（排队发送模式下，输入栏右下角显示） */
     val queuedCount: Int = 0,
+    /**
+     * 已提交、还没被认领的插话回显（dsh 的 `pendingSubmissions`）。
+     *
+     * 它是「点完立刻看到」的唯一来源：会话节点仍要等收件箱在下一步开头认领才落库
+     * （[com.adsh.app.core.data.ConversationRepository.claimInjected]），
+     * 而这一条在 [steer] 里同步写进来。认领之后由 [pendingSteeringToShow] 去掉。
+     */
+    val pendingSteering: List<PendingSteer> = emptyList(),
     /** 掉线重连的可见状态（dsh 的 ConnectionIndicator）：连接条就画在输入框上面 */
     val connection: ConnectionState = ConnectionState.Idle,
 )
@@ -935,8 +943,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      *
      * 这里**不落库**：消息先进收件箱（[ConversationRepository.enqueueInjected]），到这一步开始时
      * 才被认领 —— 位置一次定死，界面不会再看着它换地方。
+     *
+     * **但界面当帧就要看到它**（用户第 192 轮口径，对齐 dsh）：dsh 在按下发送那一帧同步往
+     * 客户端内存里塞一条回显（`session.beginSubmission`），会话节点照样等认领 —— 两件事分开，
+     * 于是「立刻可见」与「不跳位」同时成立（旧实现把两者绑在一起：到达就落库、认领后再删掉重插，
+     * 用户看到的是「先画出来、下一秒换个位置」）。
      */
     private fun steer(body: String, conversationId: Long, attachmentPaths: List<String> = emptyList()) {
+        val echo = PendingSteer(id = System.nanoTime(), text = body, time = System.currentTimeMillis())
+        updateTurn(conversationId) { it.copy(pendingSteering = it.pendingSteering + echo) }
         repository.enqueueInjected(
             conversationId = conversationId,
             role = "user",
@@ -945,6 +960,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             attachmentPaths = attachmentPaths,
         )
         _state.update { it.copy(pendingAttachments = emptyList()) }
+        if (attachmentPaths.isNotEmpty()) {
+            // 附件的描述（sha256 / 尺寸 / MIME）要读文件，只能异步补到回显上；
+            // 用的还是认领那一行用的同一个 describeAttachments，两边的展示因此一致。
+            viewModelScope.launch {
+                val json = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { encodeAttachments(describeAttachments(attachmentPaths)) }.getOrNull()
+                }
+                updateTurn(conversationId) { state ->
+                    state.copy(
+                        pendingSteering = state.pendingSteering.map {
+                            if (it.id == echo.id) it.copy(attachmentsJson = json) else it
+                        },
+                    )
+                }
+            }
+        }
     }
 
     /** 清空排队发送的消息（dsh 的 queue chip 上的清空） */
@@ -1245,6 +1276,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // dsh 的 cancel：收件箱一起清掉（`inbox.clear()`）—— 没被认领的插话 /
                 // 通知随这一轮作废，不会在下一轮冒出来补跑一段没人要的对话
                 repository.clearInjected(conversationId)
+                // 回显跟着一起作废（dsh 的 abandon → retireFailedSubmission）：
+                // 库里不会再出现那一行，回显留着就成了一条永远不落地的气泡
+                updateTurn(conversationId) { it.copy(pendingSteering = emptyList()) }
             } else {
                 // 被停掉的那一轮不接着发（队列留着，下次发送前还在）
                 val next = queueOf(conversationId).removeFirstOrNull()

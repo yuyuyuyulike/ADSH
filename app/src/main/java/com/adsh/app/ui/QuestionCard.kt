@@ -145,7 +145,26 @@ internal fun QuestionCard(questions: List<Question>, onAnswer: (List<Answer>) ->
 
     val cardShape = RoundedCornerShape(16.dp)
     val rowShape = RoundedCornerShape(12.dp)
+    /**
+     * 整卡的高度上限 = dsh 的 .card{max-height:min(60vh,520px)}。
+     *
+     * 用户第 192 轮报的那个 bug 就出在这里：以前**只有滚动体有上限**，题干那一块没有 ——
+     * 模型把一个几千字的问题塞进 question 时，题干无上限地长高，卡片底部（连着「提交」）
+     * 被顶出屏幕，用户找不到提交按钮（那一轮 ask_user_question 因此超时失败）。
+     * dsh 的口径是「整卡硬上限 + 只有中间那段滚 + 头尾不动」
+     * （.header{flex-shrink:0} / .body{flex:auto;min-height:0;overflow-y:auto} / .footer{flex-shrink:0}），
+     * 收起态解除上限（.cardMinimized{max-height:none}）。
+     */
     val maxBodyHeight = minOf(520, (configuration.screenHeightDp * 0.6f).toInt()).dp
+    /**
+     * 题干那一块的高度上限：超了自己滚。
+     *
+     * dsh 把题干当**短标题**放在固定 header 里、长正文走可滚的 body（question.detail）；我们的
+     * 工具 schema 与 dsh 逐字一样（没有 detail），模型于是把长文本塞进 question —— 那就不能让它
+     * 无上限地长高（这正是提交按钮被顶出屏幕的那条链）。给它一半卡片高再让它自己滚：
+     * 短问题看不出区别，长问题看得完，卡片底部那两个按钮永远在原位。
+     */
+    val titleMaxHeight = maxBodyHeight / 2
 
     Column(Modifier.fillMaxWidth().padding(horizontal = DshSpacing.Xxl).padding(bottom = DshSpacing.Lg)) {
         Column(
@@ -154,21 +173,26 @@ internal fun QuestionCard(questions: List<Question>, onAnswer: (List<Answer>) ->
                 .clip(cardShape)
                 .background(palette.inputMajor)
                 .border(DshSpacing.Hairline, palette.borderL1, cardShape)
+                .then(if (minimized) Modifier else Modifier.heightIn(max = maxBodyHeight))
                 .padding(bottom = DshSpacing.Xxl),
         ) {
             QuestionCardHeader(
                 header = question.header,
                 question = question.question,
+                textMaxHeight = titleMaxHeight,
                 minimized = minimized,
                 onToggleMinimized = { minimized = !minimized },
                 onSkipAll = onSkip,
             )
 
             if (!minimized) {
+                // 滚动体 = dsh 的 .body：weight(fill = false) 就是 flex:auto + min-height:0 ——
+                // 内容矮时按内容高（卡片贴着内容，与以前一样），内容高时吃掉剩下的空间并自己滚，
+                // 于是**底下的 footer 永远留在卡片里**（提交按钮不会再被顶出去）。
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .heightIn(max = maxBodyHeight)
+                        .weight(1f, fill = false)
                         // 卡片滚到头之后剩下的位移/惯性留在卡片里（第 115 轮，见 ScrollEdgeEater）
                         .nestedScroll(ScrollEdgeEater)
                         .verticalScroll(rememberScrollState()),
@@ -321,11 +345,17 @@ private fun QuestionAnswerField(
 }
 
 
-/** 卡片头：小标题（可选）+ 问题正文，右侧是收起 / 放弃整组两个图标按钮 */
+/**
+ * 卡片头：小标题（可选）+ 问题正文，右侧是收起 / 放弃整组两个图标按钮。
+ *
+ * [textMaxHeight] 是正文块的高度上限 —— 见调用处那条注释（长题干必须能滚，否则卡片底部的
+ * 提交按钮会被顶出屏幕）。
+ */
 @Composable
 private fun QuestionCardHeader(
     header: String?,
     question: String,
+    textMaxHeight: androidx.compose.ui.unit.Dp,
     minimized: Boolean,
     onToggleMinimized: () -> Unit,
     onSkipAll: () -> Unit,
@@ -345,13 +375,21 @@ private fun QuestionCardHeader(
                     color = palette.labelTertiary,
                 )
             }
-            Text(
-                text = question,
-                fontSize = 15.sp,
-                lineHeight = 21.sp,
-                fontWeight = FontWeight.Medium,
-                color = palette.labelPrimary,
-            )
+            // 正文块自己滚（超上限时）：小标题与右上角两个按钮留在原地
+            Column(
+                Modifier
+                    .heightIn(max = textMaxHeight)
+                    .nestedScroll(ScrollEdgeEater)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Text(
+                    text = question,
+                    fontSize = 15.sp,
+                    lineHeight = 21.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = palette.labelPrimary,
+                )
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(DshSpacing.Md)) {
             DshIconButton(
