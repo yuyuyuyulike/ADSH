@@ -285,6 +285,7 @@ private fun EntryRow(
             RailTool(
                 name = entry.name,
                 arguments = entry.arguments,
+                streaming = entry.streaming,
                 output = entry.output,
                 running = entry.running,
                 error = entry.isError,
@@ -310,6 +311,8 @@ internal data class RailTool(
     val running: Boolean = false,
     val error: Boolean = false,
     val children: List<SubCall> = emptyList(),
+    /** 模型还在写参数的那一行（见 [ProcessEntry.Call.streaming]）：摘要只认该取的那个键 */
+    val streaming: Boolean = false,
     /** 这次调用产出的图片（read_image）：行下面直接铺开画廊，点开是原图预览 */
     val images: List<com.adsh.app.core.agent.ToolImage> = emptyList(),
     /**
@@ -378,7 +381,12 @@ private fun pickString(args: JsonObject?, keys: List<String>): String? = ToolArg
  * 摘要字段，而不是把一坨 JSON 原文显示在行上 —— 后者正是「同一个工具执行时一个样、执行完
  * 另一个样」的根因。真的什么都取不到时，退回一个**去掉 JSON 语法噪声**的单行短文本。
  */
-private fun summaryOf(spec: ToolSpec, name: String, arguments: String): String {
+private fun summaryOf(
+    spec: ToolSpec,
+    name: String,
+    arguments: String,
+    streaming: Boolean = false,
+): String {
     val args = ToolArgs.parse(arguments)
     if (spec.variant == ToolVariant.SEARCH) {
         val queries = (args?.get("queries") as? kotlinx.serialization.json.JsonArray)
@@ -388,6 +396,9 @@ private fun summaryOf(spec: ToolSpec, name: String, arguments: String): String {
     }
     val picked = pickString(args, SUMMARY_KEYS[spec.variant].orEmpty())
     if (picked != null) return firstLine(picked)
+    // 参数还在写：只认该取的那个键（run_code 的 code 在 description 之前，退一步就会把代码
+    // 的第一行当摘要显示，等写完了再换成描述 —— 见 [ProcessEntry.Call.streaming]）
+    if (streaming) return ""
     val anyString = ToolArgs.firstString(args)
     if (anyString != null) return firstLine(anyString)
     val base = if (args != null) "" else readableFallback(arguments)
@@ -522,9 +533,13 @@ private fun RailToolRow(
     val spec = specOf(tool.name)
     // 参数 JSON 的解析结果按参数原文缓存：流式期间这一行会因为「运行中/输出」不停重组，
     // 不缓存的话每一帧都要重新解析一遍参数并重算摘要
-    val derived = remember(tool.name, tool.arguments) {
+    val derived = remember(tool.name, tool.arguments, tool.streaming) {
         val parsed = parseArgs(tool.arguments)
-        Triple(summaryOf(spec, tool.name, tool.arguments), inputBodyOf(spec, tool.arguments), parsed)
+        Triple(
+            summaryOf(spec, tool.name, tool.arguments, streaming = tool.streaming),
+            inputBodyOf(spec, tool.arguments),
+            parsed,
+        )
     }
     // ask_user_question 的问答卡（dsh 的 AskQuestionCard）：题目取参数、答案取结果正文。
     // 参数解析不出题目时是 null —— 那一行退回普通的 ioCard，而不是画一张空卡；

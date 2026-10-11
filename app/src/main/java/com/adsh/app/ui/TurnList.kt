@@ -186,6 +186,14 @@ sealed interface ProcessEntry {
          * 拿它当差异基准（dsh 的 todoHistory 投影）。TurnBuilder 一路带着它走。
          */
         val todoBefore: String? = null,
+        /**
+         * 这一行是**模型还在写参数**时的那一行（会话日志里还没有它的 tool/call）。
+         *
+         * 参数是一段段到的，所以这一行的摘要只认本变体该取的那个键（[SUMMARY_KEYS]）——
+         * 不许退到「任意第一个字符串值」：run_code 的参数顺序是 code 在前、description 在后，
+         * 退一步就会先把代码的第一行当摘要显示出来，等参数写完再换成描述（同一行换脸）。
+         */
+        val streaming: Boolean = false,
     ) : ProcessEntry
 }
 
@@ -722,6 +730,7 @@ private class TurnBuilder(
                     id = call.callId,
                     name = call.name,
                     arguments = call.arguments,
+                    streaming = true,
                     output = call.output,
                     isError = call.isError,
                     subCalls = children,
@@ -804,7 +813,9 @@ internal fun rememberChatItems(
                 reasoning = reasoning,
                 // 「正在写参数」的那几行接在**最后**（按顺序认领已落库的行，见 addLive）：
                 // 只有标题、没有摘要 —— dsh 的 streaming tool row
-                liveCalls = state.liveTurn.calls + state.pendingCalls.map { LiveCall(name = it.name, arguments = "", startedAt = 0L) },
+                liveCalls = state.liveTurn.calls + state.pendingCalls.map {
+                    LiveCall(name = it.name, arguments = it.arguments, startedAt = 0L)
+                },
                 liveSubCalls = state.liveTurn.subCalls,
                 reasoningRunning = state.reasoningRunning,
                 liveTurnId = state.liveTurnId,

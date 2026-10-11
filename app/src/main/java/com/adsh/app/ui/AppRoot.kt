@@ -266,7 +266,7 @@ fun AppRoot(viewModel: ChatViewModel) {
 
     // 左上角的会话标题：抽屉那份会话列表里当前这一条（重命名、标题模型写回都会刷新它）。
     // **没生成之前就显示「新会话」**，第一轮跑完才换成真标题（用户第 198 轮口径：先以新会话命名、
-    // 待第一轮对话结束再更新）；从「新会话」到真标题是 ChatTopBar 里那层 Crossfade 在过渡。
+    // 待第一轮对话结束再更新）；换字是**直接换**，没有任何过渡动画（用户第 204 轮口径）。
     val title = conversations.firstOrNull { it.id == state.conversationId }?.title.orEmpty()
     val palette = LocalDshPalette.current
     OverlayDismissHost(overlayDismiss) {

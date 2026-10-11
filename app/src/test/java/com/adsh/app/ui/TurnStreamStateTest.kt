@@ -261,7 +261,7 @@ class TurnStreamStateTest {
     }
 
     @Test
-    fun toolCallDeltaOnlyFlipsTheTwoFlags() {
+    fun toolCallDeltaFlipsTheTwoFlagsAndRecordsThePendingRow() {
         val before = ChatUiState(streaming = "正文", reasoning = "想", reasoningRunning = true, toolArgsFlowing = false)
         val first = turnProjected(
             before,
@@ -271,13 +271,22 @@ class TurnStreamStateTest {
         assertTrue(first.toolArgsFlowing)
         assertEquals("正文", first.streaming)
         assertEquals("想", first.reasoning)
+        assertEquals("名字与参数都还没到：不出「正在写参数」那一行", emptyList<PendingCall>(), first.pendingCalls)
 
-        // 判据不读 index / id / name / argumentsChunk：换一组值结果必须一模一样
+        // 两个标志的判据不读 index / id / name / argumentsChunk：换一组值，那四个字段一模一样
+        // （pendingCalls 例外：它记的就是这段原文，界面靠它把参数流式画出来）
         val second = turnProjected(
             before,
             ChatEvent.ToolCallDelta(index = 3, id = "call_1", name = "run_code", argumentsChunk = "{\"code\":"),
         )
-        assertEquals(first, second)
+        assertFalse(second.reasoningRunning)
+        assertTrue(second.toolArgsFlowing)
+        assertEquals("正文", second.streaming)
+        assertEquals("想", second.reasoning)
+        assertEquals(
+            listOf(PendingCall(index = 3, id = "call_1", name = "run_code", arguments = "{\"code\":")),
+            second.pendingCalls,
+        )
     }
 
     @Test

@@ -51,6 +51,9 @@ internal object PtcProcess {
     /** 绑定等待上限：绑不上就是环境问题（进程起不来），照 worker-exit 报给模型 */
     private const val BIND_TIMEOUT_MS = 5_000L
 
+    /** 杀完 worker 之后等它从 /proc 里消失的上限（见 [Session.kill]） */
+    private const val KILL_CONFIRM_MS = 2_000L
+
     /** 通道名序号：抽象命名空间是全设备共享的，名字里带上 pid 与序号避免撞车 */
     private val channelSeq = AtomicInteger(0)
 
@@ -100,10 +103,28 @@ internal object PtcProcess {
                 PtcWaitOutcome.WorkerExit -> session.exit("PTC 进程退出了（崩溃或被系统回收）")
             }
         } finally {
-            // 每次调用一个新进程（dsh 的 fresh process）：跑完就杀 + 解绑，下次 bind 会重新 fork
-            session.kill()
+            // 每次调用一个新进程（dsh 的 fresh process）：跑完就杀 + 解绑，下次 bind 会重新 fork。
+            //
+            // **顺序是「先解绑再杀」**（第 204 轮真机实测）：进程死在「还挂着自动创建的绑定」的
+            // 状态下时，AMS 会立刻把它当成「服务需要重启」再拉一次，而 MIUI 的 AutoStartManager
+            // 会拒绝紧接着的重启（logcat：Reject RestartService service :ComponentInfo{…
+            // PtcWorkerService}）—— 于是同一步里紧跟着的**第二个** run_code（两次之间只隔几毫秒）
+            // 永远等不到 worker，5 秒后报「PTC 进程没起来（绑定超时）」。
             session.close()
+            session.kill()
         }
+    }
+
+    /**
+     * 等一个已经被杀的 `:ptc` 进程从 /proc 里消失（同一个 uid，直接看得到）。
+     *
+     * 上限 [KILL_CONFIRM_MS] 封顶，而且**确认不了就当确认了**（退回原来的行为）：定制内核把
+     * /proc 藏起来、pid 恰好被复用之类的情况下，不能把一次 run 卡在这儿。
+     */
+    private fun awaitWorkerGone(pid: Int) {
+        val entry = java.io.File("/proc/" + pid)
+        val deadline = System.currentTimeMillis() + KILL_CONFIRM_MS
+        while (entry.exists() && System.currentTimeMillis() < deadline) Thread.sleep(10)
     }
 
     /** 一次执行的会话：建通道、收帧、跑工具、收结果、杀进程 */
@@ -320,13 +341,21 @@ internal object PtcProcess {
             }
         }
 
-        /** dsh 的 handle.terminate()：同一个 uid，直接杀我们自己的 `:ptc` 进程 */
+        /**
+         * dsh 的 handle.terminate()：同一个 uid，直接杀我们自己的 `:ptc` 进程。
+         *
+         * 杀完还要**等它从 /proc 里消失**再返回（[KILL_CONFIRM_MS] 封顶）：AMS 处理完「进程死了」
+         * 这件事之前，下一个 bind 会撞进「进程正在死」的窗口 —— 那个绑定会挂在一条再也不会起来的
+         * 服务记录上（死亡清理时 AMS 想重启它，MIUI 判成自启动并拒绝），表现就是第二个 run_code
+         * 绑定超时。等它消失之后，「run 返回 = worker 已经没了」也成了一条真不变量：
+         * 下一次 bind 一定是全新进程（与 dsh 每次 spawn 一个新进程同义）。
+         */
         fun kill() {
             val target = pid.get()
-            if (target > 0) {
-                alive.set(false)
-                runCatching { Process.killProcess(target) }
-            }
+            if (target <= 0) return
+            alive.set(false)
+            runCatching { Process.killProcess(target) }
+            awaitWorkerGone(target)
         }
 
         fun close() {

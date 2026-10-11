@@ -1,7 +1,5 @@
 package com.adsh.app.ui
 
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -61,9 +59,6 @@ import kotlinx.coroutines.delay
 
 private const val HERO_HEADLINE = "探索未至之境"
 private const val HERO_BADGE = "预览版"
-
-/** 「新会话」→ 生成好的标题：交叉淡入的时长（用户第 198 轮口径：出现要平稳、流畅） */
-private const val TITLE_SWAP_MS = 200
 
 /**
  * 「回到底部」上面那两个快捷导航按钮：与 dsh 的 toBottomSlot **同一个形状**
@@ -402,25 +397,18 @@ internal fun ChatTopBar(
         // 字体固定 15px —— 不跟会话内容字号走（那是「只缩放会话内容」的档，见 dsh 的
         // --dsh-content-font-size）。
         //
-        // 「新会话」换成真标题是一次**交叉淡入**（用户第 198 轮口径：出现要平稳、流畅）：
-        // Crossfade 在过渡期间按两段文本里较宽的那个占位，右边的入口由 Spacer 顶着，所以换字
-        // 不会让顶栏抖一下；宽度上限挂在外层，超长照样单行省略。
-        Crossfade(
-            targetState = title,
-            animationSpec = tween(TITLE_SWAP_MS),
+        // 「新会话」换成真标题是**直接换字**（用户第 204 轮口径：去掉淡化，不要任何特效动画）。
+        // 宽度上限挂在这一层，右边的入口由 Spacer 顶着，超长照样单行省略。
+        Text(
+            text = title,
             modifier = Modifier.widthIn(max = titleMaxWidth),
-            label = "conversationTitle",
-        ) { text ->
-            Text(
-                text = text,
-                fontSize = 15.sp,
-                lineHeight = 22.sp,
-                fontWeight = FontWeight.Medium,
-                color = palette.labelPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+            fontSize = 15.sp,
+            lineHeight = 22.sp,
+            fontWeight = FontWeight.Medium,
+            color = palette.labelPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         Spacer(Modifier.weight(1f))
         // dsh 的会话头部 actions 区：后台任务列表（第 118 轮）。**没有任务时整个控件不出现**
         // —— 与 dsh 的 JobListAction 一样，不为一个没用到的能力常驻一个入口。

@@ -25,7 +25,7 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
   用户点名「不跑测试」的轮次只保证编译通过 + 装机启动无 FATAL。
 - README 被用户在网页上改过 —— 压平 / 改写前先把工作区同步成他那一版，否则 orphan 提交会顶掉他的修改。
 
-## 阶段索引（R0–R203）
+## 阶段索引（R0–R204）
 
 原来每轮的详细段落已全部删除，这里**每轮只留结论与判据**；更早的五段历史（项目自己的轮次计数）：① 界面照进 Compose；
 ② 内嵌 Termux 与执行层（**方案 A：包名 `com.termux`、targetSdk 钉 28** ＋ LD_PRELOAD 写围栏 shim）；③ 提示词与工具逐字对 dsh
@@ -135,7 +135,7 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 
 > 原表缺 R38/39/53/80–82/97–99 的独立行；R104 与 R106–R191 也没有独立行（过程记录在更早的历史压平里被删）。
 
-### 二、之后的功能与实测修复（R100–R203）
+### 二、之后的功能与实测修复（R100–R204）
 
 | 轮次 | 结论 / 判据 |
 |---|---|
@@ -155,6 +155,7 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 | R201 | 卡片折行 + 展示细节向 dsh 看齐 |
 | R202 | 修「一轮结束后子调用只剩最后一条」= 累积 + 同步列表 |
 | R203 | 深度清理死代码 + 构建 release 装机｜44,635,730 字节 / code 14 |
+| R204 | 一步里第二个 run_code 必失败 → 真机定位到 MIUI 拒绝重启 `:ptc` 服务｜解绑先于杀 + 等进程消失；标题换字去动画 |
 
 ## 经验与坑
 
@@ -181,6 +182,7 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 - 闪退 / OOM：`adb logcat -b crash -d -v time` 看 Abort message 与堆上限，`dumpsys meminfo` 盯 Dalvik Heap。
 - 「保活没生效」「岛不显示」→ 真因是自绘悬浮窗外层崩溃，不是通知渠道；MIUI 焦点通知真机上**不画** → 留一条**已验证能显示**的媒体路线兜底。
 - 首轮比第二轮慢 → 标题那次小调用没关思考、先受理还与主请求抢带宽 → 按 dsh 口径按路由关思考；前缀缓存命中由**服务端**决定。
+- **同一个步骤里连续两次 run_code，第二个必失败**（`code run failed (worker-exit): PTC 进程没起来（绑定超时）`，正好 5 秒）：`:ptc` 进程死在「还挂着 `BIND_AUTO_CREATE` 绑定」的状态下时，AMS 把它当「服务需要重启」再拉一次，**MIUI 的 `AutoStartManager` 直接拒绝**（`logcat`：`Reject RestartService service :ComponentInfo{…PtcWorkerService}`），于是紧跟其后的那次 `bindService` 挂在一条再也不会起来的服务记录上。两次调用之间正常隔着一次模型往返（~2 秒）所以看不出来，只有同一步的背靠背才踩中。修法两条一起：**先解绑再杀** + **杀完等 `/proc/<pid>` 消失**（`PtcProcess.close()` / `kill()`）。判据是 `logcat` 里 `ActivityManager: Start proc …:ptc` 与 `Process …:ptc (pid …) has died` 的成对出现，以及 `ADSH_TRACE` 的 `tool+ / tool-` 时间戳。
 
 ### 与 dsh 对齐
 
@@ -199,6 +201,8 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 - 执行层行为靠探针量：临时测试把 `shellEnvironment` 的真实输出落盘成环境变量，再用 `sh -s` 喂进设备（探针目录用完即删）。
 - App 里删不到空会话 → 改库：`am force-stop` → `run-as` 把 `databases/adsh.db` 与 `-wal` 拷到 `files/` 再 `exec-out cat` → 本机 `sqlite3` 删行（WAL 自动重放）→ `wal_checkpoint(TRUNCATE)` → `base64 -w0` 写回 → 删设备上 `-wal` / `-shm` → 起 App 核对。
 - 「首轮慢在哪」：`adb logcat -c` → 发送 → `adb logcat -d -v time -s ADSH_LLM:V ADSH:V`（`POST … msgs=N tools=M` 与 HTTP 200）；再用本机 python 直连同一把 key 做 A/B，那一步量的是**服务端**行为。
+- 这台 MIUI 上 **`adb shell input tap` 进不了第三方 App**（合成触摸被丢，`input keyevent` 打系统窗口却有效，Home 能回桌面）→ 想驱动一次真实回合，最省事的是往 `MainActivity` 里临时加 5 行钩子（`LaunchedEffect` 读 `intent.getStringExtra("adsh_send")` 调 `viewModel.send`），`am start -n … -e adsh_send '<prompt>'` 发一条；**提示词按整串单引号传**（`adb shell "am start … -e k 'a b c'"`），否则设备侧 sh 会把空格拆开、`am` 只把第一个词当参数值（模型收到一个 "Run"）。用完把钩子删干净。
+- 同一个进程里连开两次 Activity（`am start` 不加 flag）会留下两个实例、两套 ViewModel：界面停在旧实例上、新实例在后台跑回合，截图会看错对象 → 观察 UI 用**干净的一次启动**（`force-stop` 再 `am start`）。
 
 ## 构建与发版
 
