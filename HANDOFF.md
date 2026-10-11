@@ -516,6 +516,25 @@ chmod / `[fs:]` 提示）；**后台任务（dsh 的 `ctx.jobs` 整条链）**�
 
 ## 待办
 
+- **两个 dsh 动效还没做（第 202 轮点名的下一件事）**：`dsh-turn-preview-enter` 与 `dsh-turn-mark-busy`
+  都不是「挂在现有元素上」的动效 —— 它们是 dsh **轮次条（TurnNavigator）** 的两个部件，而 ADSH
+  **没有这个组件**（右侧只有「回到底部 / 上一条」那几个快捷导航按钮）。规格已从
+  `@deepseek-ai/dsh-client-ui-chat/lib/client.js` 抄全，照抄即可：
+  - 轨道：slot 高 0 贴在会话区顶、`frame` 28px 宽 / 距右 12px / **在「视口 − 输入区」那条带里垂直居中**
+    （`top: band/2`、`max-height: min(band−64, 420px)`），上/下各有 24px 的遮罩淡出；一轮一格。
+  - 刻度（每格 10px 高、绝对定位、右对齐）：`::before` 是 **20×2px、圆角 2、右端为变换原点**
+    （`transform-origin:100%`）的横条，默认 `border-l4` + `scaleX(.6)`；hover（预览中）→
+    `label-tertiary` + `scaleX(.9)`；当前轮 → `label-primary` + `scaleX(1)`；未加载 → `opacity .6 + scaleX(.4)`；
+    过渡都是 `.14s`（transform + background-color）。
+  - **`dsh-turn-mark-busy`**：跑着的那一轮的横条 —— `1s ease-in-out infinite`，`0%,100%{opacity:1} 50%{opacity:.35}`。
+  - **预览卡**：hover 某一格时出现在轨道**左侧**（`right: calc(100% + 10px)`）、宽 `min(300px, 100cqw−120px)`、
+    最大高 100px、圆角 lg、`padding:10px 12px`；内容 = 提问（13px 强、单行 `line-clamp:1`）+
+    回答预览（12px caption、`margin-top:4px`、最多 3 行）；垂直中心跟着被 hover 的那一格，
+    `transition: top .14s cubic-bezier(.2,.8,.2,1)`；入场就是
+    **`dsh-turn-preview-enter`：`.12s ease-out`、`0%{opacity:0;transform:translate(4px)} → to{opacity:1;transform:none}`**。
+  - 交互：dsh 是 hover 出预览、点击跳转；**手机没有 hover** —— 需要用户定：点一下出预览 + 再点跳过去，
+    还是长按出预览、单击直接跳。
+
 - 终端「回车后整页变大」按用户要求**不再修**（要修的下一条路是 `adjustNothing` + 手动 insets，
   别去调字号 / padding）。
 - 第 117 轮用户点名：**其余待办一律不做**，已经全部删掉（截 ADSH 自己界面、《内嵌 Termux 环境审查
