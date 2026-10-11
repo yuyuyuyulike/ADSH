@@ -177,6 +177,8 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 
 | R202 | **用户第 201 轮：真机测出一个 bug —— 一轮结束后一堆子调用记录只剩最后一条**（原话：测了下 adsh 的 harness 工具，一轮结束后原本一堆的调用记录只剩下网页搜索了）。**根因**：`SubCallTrace`（core/tools/ToolStats.kt）的 `record` 是「**整份替换**」（`pending = calls`），而唯一生产者 `PtcToolRunner.record` 每条子调用结算时报**一条**（`record(listOf(entry))`）→ 每报一条覆盖上一条，落库只剩最后一条。真机证据：那次 tool 行（`messages.id=2899`）的 `subCallsJson` 只有 `7:ptc:9` 那条 web_search，而 id 已排到 :9（= 同一次 run_code 里至少 10 条）。实时那几行来自会话日志的 `PtcDispatch` 折叠，所以「跑的时候一堆、结束后只剩一条」 | 改成累积 + 同步列表（子调用可并行结算）；构建 debug 包装机 |
 
+| R203 | **用户第 202 轮：深度清理死代码 + 构建 release 装机**（原话：「深度清理死代码后构建 release apk 安装即可」；原定的两个 dsh 动效 `dsh-turn-preview-enter` / `dsh-turn-mark-busy` 用户看完规格后决定**不做**）。死代码四件套全跑：`deadcode.py`（--min-confidence 40 + baseline）、`find-unused-resources.py`、`find-unused-c-symbols.py`、`find-unused-catalog-entries.py` —— 只有 1 条候选（`StatsPopup.kt` 上一轮删宽度算式留下的 unused import `remember`），其余三件套 0 候选；`compileDebugKotlin --rerun-tasks` 的 `never used` 警告 **0 条**；`deadcode-selftest.py`（11 条判据）、`check-icon-structure.py`（61 个 dshIcon 调用）、`check-env-scripts.py` 全过。结论：代码库在这套工具的口径下**已经是干净的** | `:app:assembleRelease` 成功（R8 minify + shrinkResources + lintVital）；`dist/ADSH-0.2.2-release.apk` = 44,635,730 字节、sha256 `afa5c1a9…`，`install -r` 装机后 versionCode 14 / versionName 0.2.2、启动无 FATAL（crash 0 条） |
+
 ### 复现「工具输出把 app 打爆」的做法（R197 用过一次）
 
 1. **看现场**：`adb logcat -b crash -d -v time`（Abort message 里是 OOM 的原文与堆上限）、`adb logcat -d -v time | grep -E "OutOfMemory|Killing .*com.termux"`（AndroidRuntime 的栈 + AMS 的 Killing 行）。
