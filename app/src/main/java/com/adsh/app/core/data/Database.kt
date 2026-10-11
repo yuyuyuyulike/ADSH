@@ -1024,8 +1024,9 @@ class ConversationRepository(private val db: AdshDatabase) : TurnStore {
                 messageCache[entity.conversationId] = cached + entity.copy(id = id)
             }
         }
-        // 追加消息**只把会话顶到列表最前**（updatedAt），**不改标题**：标题要等这一轮跑完
-        // 才由模型生成（用户第 189 轮口径 —— 不能拿用户刚发的那句话先顶上，过一会儿又变）。
+        // 追加消息**只把会话顶到列表最前**（updatedAt），**不改标题**：兜底标题由
+        // `ChatViewModel.writeFallbackTitle` 在首条人类消息之后单独写一次（dsh 的 ensureFallback），
+        // 判据（标题是否仍是「新会话」）也只在那一条路上，不在这一层掺一脚。
         db.conversations().rename(
             entity.conversationId,
             db.conversations().byId(entity.conversationId)?.title ?: NEW_SESSION_TITLE,

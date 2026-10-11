@@ -230,9 +230,9 @@ sealed interface ChatEvent {
      * 只对齐 dsh 的事件位置做不到「标题一定排在主请求后面」，主请求体 30 多 KB 要编码 + 上传，
      * 标题那 1KB 反而会先上网，真机日志实测早 19ms）。
      *
-     * 标题生成**不再订在这一刻**：第 198 轮起它改订「第一轮跑完」（ChatViewModel.finishTurn），
-     * 免得跟主请求抢提供方的并发名额。这条事件本身仍是 dsh 的 request/header 位置锚点
-     * （主请求已经写到连接上）。
+     * **标题那次小调用订在这一刻**（dsh 的 `SessionTitleService.onRequestHeader`）：主请求已经
+     * 写到连接上之后再并发去要标题，既不挡主请求、也不抢在它前面上网（见上面那段实测）。
+     * 第 199～204 轮曾把它挪到「一轮跑完」，第 205 轮按 dsh 改回来。
      */
     data object RequestHeader : ChatEvent
     data class Usage(

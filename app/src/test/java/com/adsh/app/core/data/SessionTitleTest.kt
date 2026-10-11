@@ -19,6 +19,29 @@ class SessionTitleTest {
         assertEquals("帮我配置一下镜像", fallbackSessionTitle("帮我配置一下镜像"))
     }
 
+    /**
+     * 取哪一条：dsh 的 `titleInputOf().first`（首条真人消息）。通知 / 插话带 name，不算。
+     */
+    @Test
+    fun `兜底标题取第一条真人消息`() {
+        val messages = listOf(
+            MessageEntity(conversationId = 1, createdAt = 0L, role = "sysprompt", content = "系统提示词"),
+            MessageEntity(conversationId = 1, createdAt = 0L, role = "user", name = "tool-jobs", content = "任务跑完了"),
+            MessageEntity(conversationId = 1, createdAt = 0L, role = "user", content = "帮我配置一下镜像源"),
+            MessageEntity(conversationId = 1, createdAt = 0L, role = "assistant", content = "好的"),
+            MessageEntity(conversationId = 1, createdAt = 0L, role = "user", content = "再改一下别的"),
+        )
+        // 中文没有空格 ⇒ 整段算一个 token、27 字节没到 40 的坎，原样留下
+        assertEquals("帮我配置一下镜像源", fallbackTitleOf(messages))
+        // 没有真人消息 / 清洗后什么都不剩：不写（dsh 的 appendFallback 同样什么都不写）
+        assertNull(fallbackTitleOf(emptyList()))
+        assertNull(
+            fallbackTitleOf(
+                listOf(MessageEntity(conversationId = 1, createdAt = 0L, role = "user", content = " \u200B\u001B[31m ")),
+            ),
+        )
+    }
+
     @Test
     fun `兜底标题按 40 个 UTF-8 字节截断`() {
         // 20 个汉字 = 60 字节 ⇒ 只能留下 13 个（39 字节），第 14 个会超到 42
@@ -102,9 +125,10 @@ class SessionTitleTest {
     /**
      * 写进去的值与判据里的值必须是同一个字符串 —— 这条断言就是那个「同一个」。
      *
-     * 原先这里还有 6 条钉 `sessionTitleFor`（「消息落库时给这一行取什么标题」）的用例，
-     * 第 189 轮把那个函数整个删了：标题改成**一轮跑完才生成**（见 ChatViewModel.generateTitle），
-     * 追加消息不再动标题，于是那套「兜底值 / 非兜底值 / 非用户角色」的判定没有调用点了。
+     * 时序（第 205 轮按 dsh 核对）：首条人类消息落库时写**兜底值**（`ChatViewModel.writeFallbackTitle`
+     * = dsh 的 `ensureFallback`），主请求写到连接上时再跑标题模型覆盖它（`ChatEvent.RequestHeader`
+     * = dsh 的 `onRequestHeader`）。原先那 6 条钉 `sessionTitleFor`（repository 追加消息时算标题）
+     * 的用例随那个函数一起删了，判定现在只有上面两条纯函数 + 一次 CAS。
      */
     @Test
     fun `兜底值是「新会话」三个字`() {

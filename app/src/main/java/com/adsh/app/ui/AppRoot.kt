@@ -264,9 +264,10 @@ fun AppRoot(viewModel: ChatViewModel) {
     // 边缘防误触的带宽（dp）：第 99 轮起固定 12dp（设置项已撤，见 SettingsStore.EDGE_GUARD_WIDTH_DP）
     val edgeGuardDp = SettingsStore.EDGE_GUARD_WIDTH_DP
 
-    // 左上角的会话标题：抽屉那份会话列表里当前这一条（重命名、标题模型写回都会刷新它）。
-    // **没生成之前就显示「新会话」**，第一轮跑完才换成真标题（用户第 198 轮口径：先以新会话命名、
-    // 待第一轮对话结束再更新）；换字是**直接换**，没有任何过渡动画（用户第 204 轮口径）。
+    // 左上角的会话标题：抽屉那份会话列表里当前这一条（重命名、兜底标题、标题模型写回都会刷新它）。
+    // 换字时机照 dsh：首条人类消息落库时先顶上**兜底标题**（用户那句话的前 5 个 token），
+    // 主请求写到连接上时那次小调用回来再覆盖成模型给的标题（见 ChatViewModel.generateTitle）；
+    // 换字是**直接换**，没有任何过渡动画（用户第 204 轮口径）。
     val title = conversations.firstOrNull { it.id == state.conversationId }?.title.orEmpty()
     val palette = LocalDshPalette.current
     OverlayDismissHost(overlayDismiss) {

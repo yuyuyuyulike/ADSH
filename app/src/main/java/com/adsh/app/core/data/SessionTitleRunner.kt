@@ -14,12 +14,12 @@ private val titleAttempted: MutableSet<Long> = java.util.Collections.synchronize
  * dsh 的 SessionTitleService.onUserMessage 那一支：**首条用户消息**之后跑一次标题模型。
  *
  * 触发条件（与 dsh 一致）：① 这个会话本进程内还没跑过；② 库里真正的用户消息（role=user 且没有
- * name，通知类的不算）**恰好一条**；③ 兜底标题非空。dsh 的第四个条件「当前无标题 / 用户没改过名」
- * 在这里由 [ConversationRepository.renameAutoTitle] 的「标题仍然是「新会话」」兜住 —— 用户改过名就写不进去。
+ * name，通知类的不算）**恰好一条**；③ 兜底标题非空。
  *
- * **调用时机是「一轮跑完」**（用户第 189 轮口径）：追加消息时不再写兜底标题（见
- * `ConversationRepository.appendMessage`），所以这条会话在标题生成之前一直显示「新会话」。
- * 模型失败才退回兜底 —— 顺序上兜底永远在模型之后。
+ * **调用时机是「主请求写到连接上那一刻」**（`ChatEvent.RequestHeader`，就是 dsh 的
+ * `SessionTitleService.onRequestHeader`）：第一轮进行当中并发跑。兜底标题在此之前就已经写好了
+ * （ChatViewModel.writeFallbackTitle，dsh 的 ensureFallback），所以这里只负责**覆盖**它。
+ * 覆盖的判据是「标题仍等于那条兜底值」= 用户没手改过名（dsh 用 `source.kind === 'user'` 判定）。
  *
  * @return 真正写进去的标题；没跑 / 没覆盖时返回 null（调用方不需要关心，它只是异步的一发）
  */
@@ -54,16 +54,18 @@ internal suspend fun generateSessionTitleIfNeeded(
         requestSessionTitle(client, model, firstUser.content, thinking, enableThinking)
     }.getOrNull()
     if (title.isNullOrBlank()) {
-        // 模型没给出标题：**退回兜底值**（用户口径是一轮跑完才出现标题，但也不能让这条会话永远停在
-        // 「新会话」上）。兜底写在模型之后 —— 正常路径上用户看不到它，也就不会出现「先是一个、
-        // 过一会儿又变」。
+        // 模型没给出标题：兜底值**在首条消息落库那一刻就已经写好了**（ChatViewModel.writeFallbackTitle），
+        // 所以正常路径上这里什么都不用做；这一句只是给「兜底还没写进去」的老会话 / 早退路径兜底。
         repository.renameAutoTitle(conversationId, NEW_SESSION_TITLE, fallback)
         // dsh 在这里是抛错的（"title model produced no text"）：空标题说明**这次调用没按预期工作**
         // （模型只回了推理、被截断、或者提供方吞了输出）。以前这里静默 return null，
         // 于是「标题一直不生成」在日志里一点痕迹都没有 —— 用户报的那次就是这么查了半天。
         throw IllegalStateException("session title model produced no text")
     }
-    // 只在标题**仍是「新会话」**时才写：用户手改过名，或者标题已经生成过，都不覆盖
+    // 只在标题**仍是我们自己写的**时候才覆盖：正常路径上是那条兜底值，兜底为空（首条消息清洗后
+    // 什么都不剩）/ 老会话时是占位值。用户手改过名 → 两个都不是 → 写不进去（dsh 靠
+    // `session/title` 事件的 source.kind 判定，ADSH 用字符串比对近似）
+    if (repository.renameAutoTitle(conversationId, fallback, title)) return title
     return if (repository.renameAutoTitle(conversationId, NEW_SESSION_TITLE, title)) title else null
 }
 

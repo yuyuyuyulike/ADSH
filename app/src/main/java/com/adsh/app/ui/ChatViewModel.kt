@@ -1109,24 +1109,37 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 按**这条会话**路由：正在跑的 A 收尾时又补一轮（continueIfDangling）而用户已经切到 B 时，
         // 旧写法会把 A 的消息换到 B 的屏幕上
         updateTurn(conversationId) { turnIdentityResolved(it, openedMessages, turnKey) }
-        // 第一条消息落库后这条会话就不再是「空白」了：顺手刷新侧栏。
-        // **标题仍然保持「新会话」** —— 它由 generateTitle 在第一轮跑完时生成，不能拿用户刚发的
-        // 那句话先顶上（用户第 189 轮口径）。
+        // **兜底标题**（dsh 的 `SessionTitleService.onUserMessage` → `ensureFallback`）：首条人类
+        // 消息一落库就按它取前 5 个空格分隔 token（≤40 UTF-8 字节）当标题 —— 左上角与抽屉立刻
+        // 就有名字，不再是「新会话」；标题模型回来后覆盖它（时机见 [generateTitle]）。
+        writeFallbackTitle(conversationId, openedMessages)
+        // 第一条消息落库后这条会话就不再是「空白」了：顺手刷新侧栏（上面写下的兜底标题
+        // 也在这一次刷新里上屏）
         refreshConversations()
-        // 标题**不在这里**起：它订的是「第一轮跑完」（finishTurn 的收尾）—— 既不跟主请求抢
-        // 提供方的并发名额，也不在这一轮中途把左上角的字换掉（用户第 198 轮口径）。
+    }
+
+    /**
+     * dsh 的 `ensureFallback`：**首条人类消息之后立刻**写下确定性兜底标题。
+     *
+     * 取的是**第一条**真人消息（dsh 的 `titleInputOf().first`，不是刚发的这条：首轮失败重发时
+     * 也要跟 dsh 同一个来源），而且只在标题仍是「新会话」时写得进去（[ConversationRepository.renameAutoTitle]
+     * 是 CAS）—— 用户手改过名、或标题模型已经写过一次，这里就什么都不做。
+     */
+    private suspend fun writeFallbackTitle(conversationId: Long, messages: List<MessageEntity>) {
+        val fallback = com.adsh.app.core.data.fallbackTitleOf(messages) ?: return
+        runCatching {
+            repository.renameAutoTitle(conversationId, com.adsh.app.core.data.NEW_SESSION_TITLE, fallback)
+        }
     }
 
     /**
      * 生成会话标题（时机与机制都对齐 dsh 的 session-title）：
      *
-     *  - **时机**：**第一轮跑完**才起（[finishTurn] 的收尾里，用户第 198 轮口径）—— 这一轮里
-     *    左上角与抽屉一直显示「新会话」，跑完才换成模型给的标题。第 194 轮曾订在主请求发出那一刻
-     *    （dsh 的 SessionTitleService.onRequestHeader），但那样标题会跟主请求抢并发名额、还会在
-     *    一轮中途把左上角的字换掉；
-     *  - **顺序是先模型、后兜底**：模型给出的标题直接落库（左上角与抽屉同时从「新会话」变成它）；
-     *    只有模型失败才退回兜底值 —— 兜底写在模型之后，正常路径上用户看不到它，也就不会出现
-     *    「先是用户消息、过一会儿又变」（用户第 189 轮口径）。
+     *  - **兜底**：首条人类消息一落库就写（[writeFallbackTitle]）—— 立刻可见；
+     *  - **模型标题**：订在**主请求写到连接上那一刻**（`ChatEvent.RequestHeader`，就是 dsh 的
+     *    `SessionTitleService.onRequestHeader`）—— 第一轮进行当中并发跑，不挡主请求；回来后覆盖
+     *    兜底值（判据在 [generateSessionTitleIfNeeded]）。第 199～204 轮曾订在「一轮跑完」
+     *    （finishTurn 的收尾），那是 ADSH 自己的口径；用户第 205 轮要求照 dsh 改回来。
      *
      * 触发条件 / 提示词 / 清洗都在 core/data/SessionTitle*.kt。
      */
@@ -1203,9 +1216,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 状态乱序；而且读库必须发生在 trace 之后、与状态更新同一帧（见那一支的注释）。
      */
     private suspend fun collectTurn(conversationId: Long, events: kotlinx.coroutines.flow.Flow<ChatEvent>) {
-        // 标题那次小调用**不在这里**：它订的是「第一轮跑完」（finishTurn），见 generateTitle。
         events.collect { event ->
             when (event) {
+                // 主请求已经写到连接上（dsh 的 `request/header`）：**标题那次小调用订在这里**
+                // （dsh 的 SessionTitleService.onRequestHeader）—— 第一轮进行当中并发跑，不挡主请求。
+                // 每步都会发一次这个事件，真正会发出去的只有「首条真人消息 + 标题还是新会话」的
+                // 会话一次（判据是 SessionTitleRunner 里的进程内集合），其余是一次集合查找。
+                is ChatEvent.RequestHeader -> generateTitle(conversationId)
                 // 掉线重连（dsh 的 ConnectionController + ConnectionIndicator）：状态与「最短可见 /
                 // 收尾」两个计时器都归 setConnection 管，纯投影里不碰
                 is ChatEvent.Reconnecting -> setConnection(
@@ -1271,11 +1288,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun finishTurn(conversationId: Long, stopped: Boolean) {
         withContext(NonCancellable) {
-            // 这一轮跑完才起标题那次小调用（用户第 198 轮口径）：正常收尾、报错、被停止三条路都
-            // 会走到这里，且它排在下面「排下一轮」之前 —— 队列里那条消息还没落库，标题取的仍是
-            // 第一轮那条用户消息。真的会发出去的只有「还是新会话 + 只有一条真人消息」的会话
-            // （判据在 SessionTitleRunner），跑过的会话这里只是一次集合查找。
-            generateTitle(conversationId)
             val messages = repository.messages(conversationId)
             // 轮/步由消息推导（每轮上报的 turns 是绝对值，累加会重复计数）；其余统计随会话落库。
             // 轮数与 AgentLoop 的口径一致：带 name 的 user 行（插话 / 权限切换通知）不算一轮。

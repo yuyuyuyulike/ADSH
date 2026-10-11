@@ -43,15 +43,34 @@ internal fun titleUserPrompt(firstUserText: String): String =
     "Generate the session title from this JSON array of human messages:\n" +
         "[{\"seq\":1,\"text\":" + jsonStringLiteral(firstUserText) + "}]"
 
-/** dsh 的 `fallbackSessionTitle(text, 5, 40)`：前 N 个空格分隔 token，再按字节截断。 */
+/**
+ * dsh 的 `fallbackSessionTitle(text, 5, 40)`：**先清洗**（`cleanTitleText`）、再取前 N 个空格分隔
+ * 的 token、最后按字节截断。
+ *
+ * 清洗这一步不能省：dsh 的原实现里它就在（`cleanTitleText(input).split(" ")…`），少了它，
+ * 首条消息里的 ANSI 转义 / 零宽字符会原样进标题（模型标题那一支一直是清洗过的）。
+ */
 internal fun fallbackSessionTitle(
     text: String,
     maxWords: Int = TITLE_FALLBACK_MAX_WORDS,
     maxBytes: Int = TITLE_FALLBACK_MAX_BYTES,
 ): String {
-    val words = text.trim().split(WHITESPACE).filter { it.isNotEmpty() }.take(maxWords)
+    val words = cleanTitleText(text).split(WHITESPACE).filter { it.isNotEmpty() }.take(maxWords)
     return truncateTitleUtf8(words.joinToString(" "), maxBytes)
 }
+
+/**
+ * 兜底标题取**哪一条**消息：首条真人消息（dsh 的 `titleInputOf().first` —— 不是最后一条：
+ * 首轮失败重发、或用户后面又说了几句时，dsh 取的都是首条）。
+ *
+ * 通知 / 插话在库里也是 `role = user`，但它们带 `name`（同一个判据见 `isOwnUserMessage`），
+ * 不是人打的字，不算。清洗后什么都不剩（纯空白 / 只有控制符）时返回 null ——
+ * dsh 的 `appendFallback` 遇到空标题同样什么都不写。
+ */
+internal fun fallbackTitleOf(messages: List<MessageEntity>): String? =
+    messages.firstOrNull { it.role == "user" && it.name == null }
+        ?.let { fallbackSessionTitle(it.content) }
+        ?.takeIf { it.isNotBlank() }
 
 /**
  * dsh 的 `normalizeSessionTitle(text, 80)`（`dsh-session-title/lib/types/normalize.js:56`）：
@@ -60,14 +79,23 @@ internal fun fallbackSessionTitle(
  *
  * **不去引号、不去标点** —— dsh 只靠 system prompt 约束模型，这里保持一致。
  */
-internal fun normalizeSessionTitle(raw: String, maxBytes: Int = TITLE_MAX_BYTES): String {
+internal fun normalizeSessionTitle(raw: String, maxBytes: Int = TITLE_MAX_BYTES): String =
+    truncateTitleUtf8(cleanTitleText(raw), maxBytes).trimEnd()
+
+/**
+ * dsh 的 `cleanTitleText`：去 ANSI/OSC/CSI 转义、去 C0/C1 控制符与零宽/双向控制符、
+ * 空白折叠成一个空格，最后 trim（**不含**截断 —— 截断归两个调用方各自做）。
+ *
+ * 兜底标题与模型标题都必须先过它（dsh 就是这么分的两层）。
+ */
+internal fun cleanTitleText(raw: String): String {
     val stripped = raw.replace(ANSI_CSI, "").replace(ANSI_OSC, "").replace(ANSI_SHORT, "")
     val sb = StringBuilder(stripped.length)
     for (ch in stripped) {
         if (isControlOrZeroWidth(ch)) continue
         sb.append(ch)
     }
-    return truncateTitleUtf8(sb.toString().replace(WHITESPACE, " ").trim(), maxBytes)
+    return sb.toString().replace(WHITESPACE, " ").trim()
 }
 
 /** 按 UTF-8 字节截断，且不把一个码点切成两半（dsh 的 `truncateTitleUtf8`）。 */
