@@ -17,11 +17,10 @@ internal const val DRAWER_FLING_PX_PER_S = 250f
  *  - `|速度| > [DRAWER_FLING_PX_PER_S]` → 按速度方向（往右甩 = 开，往左甩 = 关）；
  *  - 否则按 `progress > 0.5`（正好一半算关）。
  *
- * **这里只决定方向，速度不参与动画**（第 82–84 轮试出来的）。试过两版都被用户否掉：
- * 第 82 轮把手势速度当弹簧初速度（想要「甩出去自己停下来」的物理感）→「末尾抖动、很花哨」；
- * 第 83 轮换成 `FastOutSlowInEasing` 的定长缓动 →「和一开始的怪怪感一样」。
- * 最终口径是**不要缓动**：AppRoot 的 settleDrawer 就是 `tween(SLIDE_MS, LinearEasing)` ——
- * 定长、匀速、与手势速度无关，最笨、也最不会读成「怪」的一种。
+ * **方向之外，速度还有一个去处**：开的那一下把它当弹簧初速度交给 AppRoot.settleDrawer
+ * （关的那一下不接 —— 负初速度会先冲到负进度再弹回来，见那里的注释）。归位就是 spring，
+ * 不再是定长匀速：第 82–88 轮那几版被否掉的「末尾抖动」真凶是模糊台阶（第 84 轮已修），
+ * 用户第 198 轮口径是回到 0.1.9 的弹簧手感。
  */
 internal fun drawerOpensAfterRelease(progress: Float, velocityPxPerS: Float): Boolean =
     if (abs(velocityPxPerS) > DRAWER_FLING_PX_PER_S) velocityPxPerS > 0f else progress > 0.5f

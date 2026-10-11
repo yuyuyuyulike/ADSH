@@ -730,7 +730,10 @@ fun DshComposer(
         }
     }
 
-    Column(Modifier.fillMaxWidth().padding(horizontal = DshSpacing.Xxl).padding(bottom = DshSpacing.Xl)) {
+    // 底部留 4dp（原 8dp）：整摞（输入框 + 下面那排胶囊）往下靠 4dp（用户第 198 轮口径）。
+    // 全面屏手势区由 ChatScreen 的 navigationBars 内边距让出来，这里只收掉自己这一份余量，
+    // 别再往下压 —— 手势线不能碰。
+    Column(Modifier.fillMaxWidth().padding(horizontal = DshSpacing.Xxl).padding(bottom = DshSpacing.Md)) {
         // dsh 的 heroWorkspaceRow：输入框「外」左上角的工作区入口（文件夹图标 + 名称 + 倒角）
         // 只在「新对话且还没有内容」时出现（dsh 的 hero 阶段），开始对话后自动隐藏
         if (showWorkspace) WorkspaceChipRow(

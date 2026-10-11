@@ -3,8 +3,9 @@ package com.adsh.app.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -133,15 +134,17 @@ fun AppRoot(viewModel: ChatViewModel) {
     /**
      * 松手后的归位（把进度推到 0 或 1；新的一次拖动会先把它取消）。
      *
-     * **就是一条匀速直线**（[DRAWER_SLIDE_MS] 毫秒，**`LinearEasing`，不做任何缓动**）：
-     * 用户对这块的最终口径是「不要有什么缓动，就是一个普普通通的动画」——
-     * 第 82 轮试过弹簧 + 手势初速度（末尾抖动、花哨），第 83 轮试过 `FastOutSlowInEasing`
-     * 的定长缓动（那种「先慢后快再慢」在抽屉上一样读成怪），两次都退回来了。
-     * 所以这里保持最笨的一条：定长、匀速、与手势速度无关。
+     * **弹簧接管**（用户第 198 轮口径，照 0.1.9 那个 tag `v0.1.9-20261002` 的原样）：
+     * 手指离开时的速度当弹簧初速度接上去，位移与速度都连续 —— 手感是「甩出去自己停下来」，
+     * 而不是「走完一段固定动画」。
      *
-     * 插值不会越出 `0..1`（起点与终点都在区间内，线性插值当然也在），所以这里
-     * **不需要夹取**，圆角那边也不需要「防负数」的保险 —— 那是弹簧时代才成立的兜底。
+     * 第 82–88 轮那几版被否掉的原因不是弹簧本身：当年的「末尾抖动」真凶是模糊半径按 1/8
+     * 台阶跳（第 84 轮已改成跟 progress 连续走），弹簧只是替那个台阶背了锅。
      *
+     * 弹簧会冲过目标（带初速度时尤其明显），所以进度一律夹在 `0..1` —— 负进度会让主内容
+     * 反向位移，`RoundedCornerShape(负数)` 还会直接抛异常（0.1.9 的注释就是这么写的）。
+     *
+     * @param velocity 手势初速度；点空白 / 返回键 / 选会话那几条传 0（默认）。
      * @param afterContentSwap 这一下归位是不是紧跟着**换正文**（点会话 / 新建 / 分叉）。
      *   是的话先**等两帧**再起步（不是延迟，是让最重的那两帧先过去）：新内容要在下一帧组合
      *   （可见行全部重建）、再下一帧才测量定位（首帧定位到会话底部）；动画若从同一帧起步，
@@ -150,7 +153,7 @@ fun AppRoot(viewModel: ChatViewModel) {
      *   **别的手势路径（拖动松手、点空白、返回键）没有这件事要等** —— 一律等两帧的话，
      *   动画会在手指离开的那一刻先冻住两帧再起步，那才是「怪怪的」。
      */
-    fun settleDrawer(target: Float, afterContentSwap: Boolean = false) {
+    fun settleDrawer(target: Float, velocity: Float = 0f, afterContentSwap: Boolean = false) {
         settleJob?.cancel()
         settleJob = scope.launch {
             if (afterContentSwap) {
@@ -160,9 +163,13 @@ fun AppRoot(viewModel: ChatViewModel) {
             animate(
                 initialValue = progress,
                 targetValue = target,
-                // 匀速：不做缓动（见上面的 KDoc）
-                animationSpec = tween(DRAWER_SLIDE_MS, easing = LinearEasing),
-            ) { value, _ -> progress = value }
+                // 手势初速度（progress/秒）：只有「开」的那一下传，见 drawerDrag 的注释
+                initialVelocity = velocity,
+                animationSpec = spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow),
+            ) { value, _ ->
+                // 必须夹住：弹簧带初速度时会冲过目标（关的时候冲到负数）
+                progress = value.coerceIn(0f, 1f)
+            }
         }
     }
 
@@ -235,8 +242,10 @@ fun AppRoot(viewModel: ChatViewModel) {
         },
         onDragStopped = { velocity ->
             // 方向判定在 DrawerSettle.kt（纯函数，用例盯着）：速度够就按方向、不够就按位置过半。
-            // 速度本身不进动画（见那里的注释）。
-            settleDrawer(if (drawerOpensAfterRelease(progress, velocity)) 1f else 0f)
+            val open = drawerOpensAfterRelease(progress, velocity)
+            // 开的那一下把手势速度当弹簧初速度接上去；**关的那一下不接** —— 负初速度会先冲到
+            // 负进度再弹回来（第 82 轮「末尾抖动」的一半来源），0.1.9 就是这么分的。
+            settleDrawer(if (open) 1f else 0f, if (open) velocity / drawerPx else 0f)
         },
     )
 
@@ -256,12 +265,9 @@ fun AppRoot(viewModel: ChatViewModel) {
     val edgeGuardDp = SettingsStore.EDGE_GUARD_WIDTH_DP
 
     // 左上角的会话标题：抽屉那份会话列表里当前这一条（重命名、标题模型写回都会刷新它）。
-    // 仍是「新会话」= 这一轮还没跑完、标题还没生成 —— 此时左上角**什么都不显示**
-    // （用户第 189 轮口径：标题要等一轮跑完才出现，不是拿用户消息先顶上）。
-    val title = conversations.firstOrNull { it.id == state.conversationId }
-        ?.title
-        ?.takeIf { it != com.adsh.app.core.data.NEW_SESSION_TITLE }
-        .orEmpty()
+    // **没生成之前就显示「新会话」**，第一轮跑完才换成真标题（用户第 198 轮口径：先以新会话命名、
+    // 待第一轮对话结束再更新）；从「新会话」到真标题是 ChatTopBar 里那层 Crossfade 在过渡。
+    val title = conversations.firstOrNull { it.id == state.conversationId }?.title.orEmpty()
     val palette = LocalDshPalette.current
     OverlayDismissHost(overlayDismiss) {
     Box(
@@ -333,8 +339,8 @@ fun AppRoot(viewModel: ChatViewModel) {
                     // 这一层里的读取都是延迟的：拖动时只更新图层属性，不触发重组
                     // 主内容与抽屉等速反向位移：拉开后抽屉正好占满让出来的那块（见 drawerPx 的注释）
                     translationX = progress * drawerPx
-                    // 圆角从 0 长到 20dp：progress 由 tween 在 0..1 之间插值，不会越界，
-                    // 所以这里不需要 coerceIn（那是弹簧会过冲的时代留下的）
+                    // 圆角从 0 长到 20dp：progress 由 settleDrawer 夹在 0..1（弹簧会过冲，
+                    // 见那里的注释），这里不需要再防负数
                     shape = RoundedCornerShape((20f * progress).dp)
                     clip = progress > 0f
                     shadowElevation = 12.dp.toPx() * progress
@@ -467,17 +473,6 @@ fun AppRoot(viewModel: ChatViewModel) {
 /** 覆盖页（设置 / 终端 / 文件预览）滑入滑出的时长 */
 private const val SLIDE_MS = 220
 
-/**
- * 抽屉归位的时长（ms）。**刻意比覆盖页短**：
- *
- * 覆盖页是「点一下才出现」的整页，220ms 有足够时间让人看清它从哪滑进来；抽屉是**手指直接拉**的
- * 表面 —— 手指已经把它推到某个位置了，松手后只是「补完剩下那一段」，走 220ms 会读成慢吞吞。
- * 用户实测的收敛过程：220（与覆盖页共用）→「慢了点」→ 170 →「还是慢了」→ 130 → **112**。
- *
- * 它是这套动画**唯一该调的旋钮**（第 82–85 轮把弹簧、缓动曲线、手势初速度都试过并被否掉，
- * 详见 DrawerSettle.kt 与 settleDrawer 的注释）：觉得还慢就调小这个数，别的别动。
- */
-private const val DRAWER_SLIDE_MS = 120
 /**
  * 覆盖层里的一层：进入时从右边滑进来，退场时原路滑回右边；被上面那层盖住时只保留组合、
  * 不测量也不绘制（见 `placed`）。

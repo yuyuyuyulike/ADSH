@@ -169,6 +169,8 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 
 | R198 | **用户第 197 轮：发布 0.2.2 + 整理工作区**（原话：「构建release apk安装。然后：1.git快照当前项目源码，并清理所有旧快照。2.用git push更新GitHub上的源码，用gh发新release包，更新内容一定要简短的写，参照我上一个包的。3.整理工作区，清理无用垃圾、无用的临时文件（保留构建依赖、最新的debug、release apk、dsh 的源码）」）。**① release 包**：`:app:assembleRelease` → `dist/ADSH-0.2.2-release.apk`（44,633,198 字节，sha256 `c0162667be95…`），装机后在新会话跑了一轮问答（标题、dock 的 tok/s 都正常，无 FATAL）。**② 快照**：`snapshot-r198`（旧的两个 `snapshot-r100` / `snapshot-r104` 删掉），release tag `v0.2.2-20261006`。**③ 源码上 GitHub：`git push` 走不通** —— github.com:443 在这台机器上是 `Connection reset`（api.github.com / uploads.github.com / codeload 通，raw.githubusercontent.com 也不通）。改用 **gh 的 REST git-data 接口**把 R101～R197 这 10 个提交逐个重建到远端（blobs → trees 带 base_tree → commits（作者/提交者/时间/信息照抄）→ PATCH refs/heads/main），判据是「远端 tree sha == 本地 HEAD tree sha」—— 实测两边都是 `1bfffbf0…`，内容逐字节一致；这套流程固化成了 `scripts/push-via-api.py`（README 那次提交也用它推的，远端 main 现在 85fb09b4）。**④ 发 release**：`gh release create v0.2.2-20261006 dist/ADSH-0.2.2-release.apk --target <远端 R197 提交> --title "ADSH 0.2.2" --notes-file …`，说明照上一个包的版式写（`## ADSH 0.2.2` / **新增** 4 条 / **修复** 4 条 / 结尾一句附件说明），旧的 release 一个没动；README 的下载链接改成 0.2.2。**⑤ 整理**：仓库的 `.scratch` 清掉、`dist/` 只留最新的 debug + release（0.2.1 那份删掉，GitHub 上仍在）；`D:\tmp` 从 1.1G 清到 799M —— **只删自己这几十轮留下的截图 / 探针脚本 / asar 解包产物，`Tencent Files/` 原样没动**；`D:\tmpdsh-work` 从 199M 清到 7.2M（删掉本轮子代理下载的 tarball 与解包中间产物，保留 `src/` 的 dsh 开发树、`spec-*.md`、`gh-src/`、`steering-report.md`）。 | 单测 858 全绿（发布前跑过）；`assembleRelease` 成功（R8 + lintVitalRelease 无 error）；release 包装机冒烟一轮问答无 FATAL；远端 `main` 的 tree 与本地 HEAD 一致；`dist/` 两个包都同步到 0.2.2
 
+| R199 | **用户第 198 轮：UI 三条 + 细节两条**（原话：①抽屉的拉出与隐藏动画优化，用 gh 看 GitHub 上 adsh 的 0.1.9 tag，仅优化抽屉动画；②主界面输入框与下方三个胶囊整体下移一点点，注意全面屏手势线；③会话标题：先以新会话命名、待第一轮对话结束后再更新，主界面左上角标题出现要平稳流畅；④优化代码逻辑为主、不要绕弯子；⑤构建 debug apk 安装、无需测试）。**① 抽屉归位 = 0.1.9 的 spring**（开的那一下接手势初速度、进度夹 0..1；定长匀速的 `DRAWER_SLIDE_MS` 删掉）；**② 输入框那一摞底部内边距 8dp → 4dp**（`DshComposer` 外层 Column，手势区仍由 ChatScreen 的 navigationBars 让出）；**③ 标题那次小调用从「主请求发出那一刻」挪到「第一轮跑完」**（`finishTurn` 收尾最前面，正常 / 报错 / 被停止三条路都覆盖；`collectTurn` 里的 `titleRequested` 判定与 `ChatEvent.RequestHeader` 那一支随之删掉），左上角在标题生成前显示「新会话」，换字走 ChatTopBar 的 Crossfade（200ms） | 用户口径「无需测试」：只构建 debug 包装机；`app/src/test` 没有引用被删的常量与判定 |
+
 ### 复现「工具输出把 app 打爆」的做法（R197 用过一次）
 
 1. **看现场**：`adb logcat -b crash -d -v time`（Abort message 里是 OOM 的原文与堆上限）、`adb logcat -d -v time | grep -E "OutOfMemory|Killing .*com.termux"`（AndroidRuntime 的栈 + AMS 的 Killing 行）。
@@ -306,10 +308,13 @@ App 里删不到「新会话」那种空行（抽屉只在它是当前会话时�
   release 资产用 `gh release upload --clobber` 换成新包（44,603,158 字节，sha256 `dc9d5f7c…`，
   与本地 `dist/` 那份逐字节一致），**说明与标题是用户自己在网页上写的、一字未动**（核对过 diff 为空）。
   **本地与远端已一致，没有待推提交**；`v0.1.9-20261002` 的 tag 与 release 按用户口径保留。
-- **抽屉动画别再动「手感配方」了**：弹簧、缓动曲线两版都被用户否掉过，最终口径是
-  `tween(DRAWER_SLIDE_MS, LinearEasing)`，用户实测 **130ms** 满意（220 → 170 → 130 的收敛过程
-  写在 AppRoot 那个常量的 KDoc 里）。**真要调只调 `DRAWER_SLIDE_MS` 这一个数**；
-  `SLIDE_MS`（220）是覆盖页的，两者已拆开，别再把它们合并成一个。
+- **抽屉动画的手感配方 = 0.1.9 的 spring**（用户第 198 轮点名「用 gh 看 GitHub 上 adsh 的 0.1.9
+  tag，仅优化抽屉动画」）：`AppRoot.settleDrawer` 就是
+  `spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow)`，拖动仍 1:1 跟手，
+  **开**的那一下把手势速度当弹簧初速度接上去（关的那一下不接），进度一律 `coerceIn(0f, 1f)`
+  （负进度会让主内容反向位移、`RoundedCornerShape(负数)` 直接抛异常）。第 82–88 轮那几版被否掉
+  的原因**不是弹簧本身**：当年的「末尾抖动」真凶是模糊半径按 1/8 台阶跳（第 84 轮已改成跟
+  progress 连续走）。定长常量 `DRAWER_SLIDE_MS` 因此删掉；`SLIDE_MS`（220）是覆盖页的，别合并。
 - **下次推远端 + 覆盖 release 资产时注意**：
   1. 快照按老流程压平 → **同名 tag `v0.2.0-20261003` 强制移动**到新提交（覆盖语义，不是发新版）；
   2. 推 `main` + tag 都要 `--force`；
