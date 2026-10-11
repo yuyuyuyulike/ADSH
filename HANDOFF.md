@@ -175,6 +175,8 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 
 | R201 | **用户第 200 轮：卡片折行 + 展示细节向 dsh 看齐**（原话：①「本轮用量」卡里输出那一行明明有空间却折行，照 dsh 优化 ②思考/执行过程的展示：adsh 现在是「dsh 完全展开的样子 + 一个整体折叠」，保留这个样式，但 dsh 的动效要有；run_code 在 dsh 里工具名先出现、右侧内容后出现，这些细节向 dsh 看齐 ③构建 debug apk 安装、无需测试）。**① 卡片宽度交给布局算**：`StatPanel` 删掉手写 `TextMeasurer` 的宽度算式，改成 dsh 的 `width:max-content` 夹 min 300 / max 440（`widthIn(...).width(IntrinsicSize.Max)`）—— 手写算式量得比实际渲染窄，「3,465 tok（其中推理 2,952 tok）」因此折行（真机已确认不折了）；②**正在写参数的工具调用也出行**（dsh 的 streaming tool row）：`ChatEvent.ToolCallDelta` 折成新的 `PendingCall`（名字先到、参数逐段追加），界面把它当一条 `LiveCall(arguments = "")` 接在 fold 出来的调用**后面**（保住「按顺序认领已落库行」的对齐）—— 只有标题 + 运行扫光，摘要等正式调用落日志（`SessionBody.ToolCall`）才有 | 用户口径「无需测试」：只构建 debug 包装机；dsh 侧的动效清单也一并核过（`@keyframes` 只有 turn-preview-enter / turn-mark-busy，其余是 .1s 的 color/opacity/transform 过渡 + running 行扫光）—— **没有可抄的「新行入场动画」**，等用户指名再动 |
 
+| R202 | **用户第 201 轮：真机测出一个 bug —— 一轮结束后一堆子调用记录只剩最后一条**（原话：测了下 adsh 的 harness 工具，一轮结束后原本一堆的调用记录只剩下网页搜索了）。**根因**：`SubCallTrace`（core/tools/ToolStats.kt）的 `record` 是「**整份替换**」（`pending = calls`），而唯一生产者 `PtcToolRunner.record` 每条子调用结算时报**一条**（`record(listOf(entry))`）→ 每报一条覆盖上一条，落库只剩最后一条。真机证据：那次 tool 行（`messages.id=2899`）的 `subCallsJson` 只有 `7:ptc:9` 那条 web_search，而 id 已排到 :9（= 同一次 run_code 里至少 10 条）。实时那几行来自会话日志的 `PtcDispatch` 折叠，所以「跑的时候一堆、结束后只剩一条」 | 改成累积 + 同步列表（子调用可并行结算）；构建 debug 包装机 |
+
 ### 复现「工具输出把 app 打爆」的做法（R197 用过一次）
 
 1. **看现场**：`adb logcat -b crash -d -v time`（Abort message 里是 OOM 的原文与堆上限）、`adb logcat -d -v time | grep -E "OutOfMemory|Killing .*com.termux"`（AndroidRuntime 的栈 + AMS 的 Killing 行）。
