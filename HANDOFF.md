@@ -17,10 +17,11 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
   把 `base..HEAD` 的提交用 gh 的 git-data 接口逐个重建到远端（blobs → trees → commits → PATCH ref），比对
   「远端 tree == 本地 HEAD tree」才算成功；远端那串提交 **SHA 与本地不同、内容逐字节相同**，下次 push 前先 `git fetch`（需代理）。
 - **发布物**：`dist/ADSH-0.2.3-release.apk`（**44,636,094 字节**，sha256 `b347eff56080c08b6e…`；R8 minify +
-  shrinkResources、含 baseline profile），已装机（`versionCode=15 versionName=0.2.3`）。第 207 轮**只构建 + 装机、没发版**：
-  README 的下载链接与 GitHub release 仍是 v0.2.2（要发新版就跑『构建与发版』那一节的 2~5 步）。
-  按用户口径**旧 release 不删**。release 不可调试（`run-as` 被拒），深度诊断装 debug 包；两者同包名同一把签名，
-  `install -r` 可互相覆盖且不动数据。装机冒烟口径：新会话跑一轮问答正常、`adb logcat -b crash` 无 FATAL。
+  shrinkResources、含 baseline profile）与 `dist/ADSH-0.2.3-debug.apk`（诊断用）。release 已装机
+  （`versionCode=15 versionName=0.2.3`），GitHub release 是 `v0.2.3-20261011`（源码也已推上去，见下），README 的下载链接指向它。
+  按用户口径**旧 release 不删**（0.1.9 / 0.2.0 / 0.2.1 / 0.2.2 都还在 Releases 页上）。release 不可调试（`run-as` 被拒），
+  深度诊断装 debug 包；两者同包名同一把签名，`install -r` 可互相覆盖且不动数据。装机冒烟口径：新会话跑一轮问答正常、
+  `adb logcat -b crash` 无 FATAL。
 - **门禁与测试口径**：`:app:testDebugUnitTest` 是默认门禁（**858 用例全过**）；改行为面（core/、tools/、ui 的状态接线）
   必须跑，增量单类 3~8 秒，纯搬运也建议跑；删了测试侧代码或改了断言，至少跑 `:app:compileDebugUnitTestKotlin`。
   用户点名「不跑测试」的轮次只保证编译通过 + 装机启动无 FATAL。
@@ -160,6 +161,7 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 | R205 | 展示与标题都照 dsh 回正｜撤回 run_code 行的「流式详情」；标题改回「首条消息写兜底 + 主请求之后跑小模型」 |
 | R206 | 卡片与文字照 dsh 的令牌回正｜菜单面 = `--dsw-specific-menu`（半透明 + backdrop blur）的合成色 + .5px 描边 + `--dsw-elevation-prominent`；行内代码改圆角底框、紧凑档列表标记改 inherit；`log` 别名 |
 | R207 | 「应用缓存很少」核查 = 正常（磁盘缓存只有 apt partial，热缓存全在内存）；清掉残留的 `\$TMPDIR` 目录；版本 0.2.3 / code 15，release 装机 |
+| R208 | 发版 0.2.3：本地压成单提交快照（旧 tag 全清）、API 推源码、`gh release create v0.2.3-20261011`、README 链接更新；整理工作区 |
 
 ## 经验与坑
 
