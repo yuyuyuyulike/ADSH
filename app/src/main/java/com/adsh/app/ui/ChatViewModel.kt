@@ -61,6 +61,14 @@ data class ChatUiState(
      * 新的工具调用开始（日志里的 `ToolCall`）、一步定稿（日志里的 `Step`）、轮首与轮尾。
      */
     val toolArgsFlowing: Boolean = false,
+    /**
+     * 模型**正在写参数**的那几次工具调用（dsh 的 streaming tool row）。
+     *
+     * 名字在 delta 里一到就出行 —— 只有标题（+ 运行中的扫光），右侧摘要等参数写完、正式调用
+     * 落日志（[LiveTurn.calls]）之后才有：dsh 里模型写 run_code 时「#代码」先出现、右侧内容
+     * 随后到，就是这一条（用户第 200 轮口径）。
+     */
+    val pendingCalls: List<PendingCall> = emptyList(),
     val sending: Boolean = false,
     /**
      * 正在生成的那一轮（它的用户消息 id）；null = 没有正在生成的一轮。

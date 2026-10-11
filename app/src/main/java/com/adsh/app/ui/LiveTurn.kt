@@ -14,6 +14,19 @@ import com.adsh.app.core.session.SessionEvent
  *  - 没有对应调用的结果 / 子调用一律丢弃（日志自检 [com.adsh.app.core.session.SessionLog.violations]
  *    会先把这种情形报出来，界面不必再兜）。
  */
+/**
+ * 模型**正在写参数**的一次工具调用（dsh 的 streaming tool row）。
+ *
+ * delta 里先到名字、参数一段段追加；正式调用落日志（[SessionBody.ToolCall]）之后这一行交给
+ * [LiveCall]，那时才有摘要。按 [index]（delta 的 tool_call 下标）合并。
+ */
+data class PendingCall(
+    val index: Int,
+    val id: String?,
+    val name: String,
+    val arguments: String,
+)
+
 data class LiveTurn(
     val calls: List<LiveCall> = emptyList(),
     val subCalls: List<SubCall> = emptyList(),

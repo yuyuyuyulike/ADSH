@@ -791,6 +791,7 @@ internal fun rememberChatItems(
         reasoningActive,
         state.reasoningRunning,
         state.liveTurn.calls,
+        state.pendingCalls,
         state.liveTurn.subCalls,
         state.liveTurnId,
         state.pendingSteering,
@@ -801,7 +802,9 @@ internal fun rememberChatItems(
                 messages = state.messages,
                 streaming = streaming,
                 reasoning = reasoning,
-                liveCalls = state.liveTurn.calls,
+                // 「正在写参数」的那几行接在**最后**（按顺序认领已落库的行，见 addLive）：
+                // 只有标题、没有摘要 —— dsh 的 streaming tool row
+                liveCalls = state.liveTurn.calls + state.pendingCalls.map { LiveCall(name = it.name, arguments = "", startedAt = 0L) },
                 liveSubCalls = state.liveTurn.subCalls,
                 reasoningRunning = state.reasoningRunning,
                 liveTurnId = state.liveTurnId,

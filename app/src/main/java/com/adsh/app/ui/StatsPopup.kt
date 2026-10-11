@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,13 +23,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.adsh.app.core.llm.SessionStats
@@ -103,35 +100,19 @@ internal fun StatPanel(
     rows: List<Pair<String, String>>,
 ) {
     val palette = LocalDshPalette.current
-    val density = LocalDensity.current
-    val measurer = rememberTextMeasurer()
-    /**
-     * 宽度按 dsh 的 .Xt1eiG_panel 算：width:max-content 夹在 min(300px,100vw-24px) 与
-     * min(440px,100vw-24px) 之间 —— **内容窄的时候就是 300，而不是一路顶到 440**（否则
-     * 「缓存命中 ……… 0%」中间会空出一大片）。
-     *
-     * max-content 在这个 dl 上等于：标签列（grid 的 minmax(76px,auto)）+ 16px 列距 + 数值列；
-     * 标题行同理（图标 14 + 6 + 标题 + 16 + 右上角总计）。两处取大者，再加 32px 内边距。
-     */
-    val width = remember(title, titleValue, rows, density) {
-        val body = TextStyle(fontSize = 12.sp, lineHeight = 18.sp)
-        val head = body.copy(fontWeight = FontWeight.Medium)
-        fun w(text: String, style: TextStyle): Dp = with(density) { measurer.measure(text, style).size.width.toDp() }
-        val labelCol = rows.maxOfOrNull { w(it.first, body) }?.coerceAtLeast(76.dp) ?: 76.dp
-        val valueCol = rows.maxOfOrNull { w(it.second, body) } ?: 0.dp
-        val headRow = 14.dp + DshSpacing.Lg + w(title, head) +
-            (titleValue?.let { DshSpacing.Card + w(it, head) } ?: 0.dp)
-        maxOf(labelCol + DshSpacing.Card + valueCol, headRow)
-            .plus(DshSpacing.Card * 2)
-            .coerceIn(300.dp, 440.dp)
-    }
     Surface(
         color = palette.menu,
         // dsh 的 --dsw-radius-lg 是 16px（--dsw-radius-sm/md 才是 8/12）
         shape = RoundedCornerShape(16.dp),
         // 不画阴影：dsh 的 .Xt1eiG_panel 是 0.5px 描边 + 4%/5% 光晕（第 199 轮口径：卡片不要阴影）
         border = androidx.compose.foundation.BorderStroke(1.dp, palette.borderL1),
-        modifier = Modifier.width(width),
+        // dsh 的 .Xt1eiG_panel 是 `width:max-content` 夹在 300 / 440 之间 —— 交给布局算：
+        // 卡片按内容撑开（一行 = 标签 + 16 + 数值；标题行同理），只夹上下限。
+        // **别再手写 TextMeasurer 量宽度**：那种算法量得比实际渲染窄，于是
+        // 「3,465 tok（其中推理 2,952 tok）」明明放得下也折行（用户第 200 轮的截图）。
+        modifier = Modifier
+            .widthIn(min = 300.dp, max = 440.dp)
+            .width(IntrinsicSize.Max),
     ) {
         Column(Modifier.padding(DshSpacing.Card)) {
             Row(

@@ -116,6 +116,8 @@ internal fun turnProjected(
         // 模型开始写工具调用的参数：这一步的正文已经写完（见 toolArgsFlowing 的注释）
         reasoningRunning = false,
         toolArgsFlowing = true,
+        // 名字先到就出行（只有标题），参数一段段补 —— 见 PendingCall
+        pendingCalls = pendingCallsUpdated(current.pendingCalls, event),
     )
     is ChatEvent.Appended -> turnAppended(current, event.event, messages)
     // 收件箱认领（dsh 的 preStep claim）：行已经写进库，重读一次把它们画出来。
@@ -123,7 +125,12 @@ internal fun turnProjected(
     is ChatEvent.Stats -> current.copy(stats = current.stats + event.stats)
     // 重连会重新生成这一步：把上一次尝试的流式尾巴清掉
     // （dsh 的「新的一代以完整快照开场」；这里没有宿主可补，只能丢弃）
-    is ChatEvent.StreamReset -> current.copy(streaming = "", reasoning = "", reasoningRunning = false)
+    is ChatEvent.StreamReset -> current.copy(
+        streaming = "",
+        reasoning = "",
+        reasoningRunning = false,
+        pendingCalls = emptyList(),
+    )
     is ChatEvent.Failed -> current.copy(error = event.message + imageRouteHint(current, modelLabel()))
     // Reconnecting / Reconnected 归 setConnection；Usage 归 AgentLoop 的 token 账本
     else -> current
@@ -143,6 +150,8 @@ private fun turnAppended(
         is SessionBody.ToolCall -> current.copy(
             // 参数已经流完、工具开始跑了：这条判据完成使命
             toolArgsFlowing = false,
+            // 正式行落日志：把「正在写参数」那一行交给它（摘要从这一刻起才有）
+            pendingCalls = pendingCallsSettled(current.pendingCalls, body.callId),
         )
         is SessionBody.ToolResult -> current.copy(
             // 上下文占用：这一条结果马上就会落库（AgentLoop 用的是同一个 take(MAX_TOOL_CONTENT_CHARS)），
@@ -159,6 +168,7 @@ private fun turnAppended(
             reasoningRunning = false,
             // 这一步定稿了：正文尾巴交给库里那一行，参数那条判据跟着复位
             toolArgsFlowing = false,
+            pendingCalls = emptyList(),
         )
         else -> current
     }
@@ -178,4 +188,37 @@ internal fun imageRouteHint(state: ChatUiState, modelLabel: String): String {
     val turn = lastOwnUserMessage(state.messages) ?: return ""
     if (!com.adsh.app.core.agent.hasImageAttachment(turn.attachmentsJson)) return ""
     return "\n\n" + com.adsh.app.core.agent.imageRouteHintText(modelLabel)
+}
+
+/**
+ * delta 里的一次工具调用（按 [ChatEvent.ToolCallDelta.index] 合并）：名字先到、参数一段段追加。
+ *
+ * 参数原文只做拼接、不在这里解析 —— 界面这一行只用到**名字**（摘要要等正式调用落日志之后
+ * 才算，dsh 也是这个形状：先出现工具名，右侧内容随后到）。
+ */
+internal fun pendingCallsUpdated(current: List<PendingCall>, event: ChatEvent.ToolCallDelta): List<PendingCall> {
+    if (event.name == null && event.argumentsChunk == null) return current
+    val at = current.indexOfFirst { it.index == event.index }
+    if (at < 0) {
+        return current + PendingCall(
+            index = event.index,
+            id = event.id,
+            name = event.name.orEmpty(),
+            arguments = event.argumentsChunk.orEmpty(),
+        )
+    }
+    val old = current[at]
+    val merged = old.copy(
+        id = old.id ?: event.id,
+        name = if (old.name.isEmpty()) event.name.orEmpty() else old.name,
+        arguments = old.arguments + event.argumentsChunk.orEmpty(),
+    )
+    return current.toMutableList().also { it[at] = merged }
+}
+
+/** 正式调用落日志：把它对应的「正在写参数」那一行摘掉（网关没给 id 时按最前面那一条摘）。 */
+internal fun pendingCallsSettled(current: List<PendingCall>, callId: String?): List<PendingCall> = when {
+    current.isEmpty() -> current
+    current.any { it.id != null && it.id == callId } -> current.filterNot { it.id == callId }
+    else -> current.drop(1)
 }
