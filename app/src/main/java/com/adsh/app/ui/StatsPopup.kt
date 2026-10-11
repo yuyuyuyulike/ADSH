@@ -99,19 +99,23 @@ internal fun StatPanel(
     rows: List<Pair<String, String>>,
 ) {
     val palette = LocalDshPalette.current
+    // dsh 的 --dsw-radius-lg 是 16px（--dsw-radius-sm/md 才是 8/12）
+    val shape = RoundedCornerShape(16.dp)
     Surface(
-        color = palette.menu,
-        // dsh 的 --dsw-radius-lg 是 16px（--dsw-radius-sm/md 才是 8/12）
-        shape = RoundedCornerShape(16.dp),
-        // 不画阴影：dsh 的 .Xt1eiG_panel 是 0.5px 描边 + 4%/5% 光晕（第 199 轮口径：卡片不要阴影）
-        border = androidx.compose.foundation.BorderStroke(1.dp, palette.borderL1),
+        // .Xt1eiG_panel 的底也是 --dsw-specific-menu（半透明菜单面 + backdrop blur），
+        // 安卓的弹层窗口取不到身后内容 → 用合成色（见 DshPalette.menuSurface 的说明）
+        color = palette.menuSurface,
+        shape = shape,
+        // .Xt1eiG_panel 的 box-shadow = --dsw-elevation-prominent：.5px 描边 + 两层 4%/5% 光晕
+        border = androidx.compose.foundation.BorderStroke(DshSpacing.Hairline, palette.borderL1),
         // dsh 的 .Xt1eiG_panel 是 `width:max-content` 夹在 300 / 440 之间 —— 交给布局算：
         // 卡片按内容撑开（一行 = 标签 + 16 + 数值；标题行同理），只夹上下限。
         // **别再手写 TextMeasurer 量宽度**：那种算法量得比实际渲染窄，于是
         // 「3,465 tok（其中推理 2,952 tok）」明明放得下也折行（用户第 200 轮的截图）。
         modifier = Modifier
             .widthIn(min = 300.dp, max = 440.dp)
-            .width(IntrinsicSize.Max),
+            .width(IntrinsicSize.Max)
+            .dshProminentShadow(shape),
     ) {
         Column(Modifier.padding(DshSpacing.Card)) {
             Row(

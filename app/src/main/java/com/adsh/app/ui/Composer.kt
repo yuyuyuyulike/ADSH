@@ -274,7 +274,9 @@ fun DshPopup(
     RegisterOverlayDismiss(onDismiss, anchor = { anchor.value })
     val density = LocalDensity.current
     val lift = with(density) { liftBottom.roundToPx() }
-    val provider = remember(density, alignStart, below, lift, gap, margin) {
+    val shadowPad = POPUP_SHADOW_PAD
+    val padPx = with(density) { shadowPad.roundToPx() }
+    val provider = remember(density, alignStart, below, lift, gap, margin, padPx) {
         object : PopupPositionProvider {
             override fun calculatePosition(
                 anchorBounds: IntRect,
@@ -286,8 +288,11 @@ fun DshPopup(
                 anchor.value = anchorBounds
                 val gapPx = with(density) { gap.roundToPx() }
                 val marginPx = with(density) { margin.roundToPx() }
-                val width = popupContentSize.width
-                val height = popupContentSize.height
+                // 内容外面还包了 [POPUP_SHADOW_PAD] 的一圈透明留白（给 dsh 那两层淡光晕留绘制空间，
+                // 弹窗窗口按内容尺寸裁剪）。定位算的是**卡片**那一块，所以先把留白扣掉、
+                // 最后再把整块内容平移回去 —— 卡片落点与没有留白时逐像素相同。
+                val width = (popupContentSize.width - padPx * 2).coerceAtLeast(0)
+                val height = (popupContentSize.height - padPx * 2).coerceAtLeast(0)
                 val x = if (alignStart) anchorBounds.left else anchorBounds.right - width
                 val y = if (below) {
                     anchorBounds.bottom + gapPx
@@ -297,7 +302,7 @@ fun DshPopup(
                 // 宽 / 高还没测出来（=0）时不夹 —— 与 dsh 的 if (width > 0) 同一条
                 val clampedX = if (width > 0) minOf(maxOf(x, marginPx), windowSize.width - width - marginPx) else x
                 val clampedY = if (height > 0) minOf(maxOf(y, marginPx), windowSize.height - height - marginPx) else y
-                return IntOffset(clampedX, clampedY)
+                return IntOffset(clampedX - padPx, clampedY - padPx)
             }
         }
     }
@@ -318,13 +323,26 @@ fun DshPopup(
             // 夹取才等于 dsh 里的 window.innerWidth/innerHeight。
             clippingEnabled = false,
         ),
-    ) { content() }
+    ) {
+        // 弹窗窗口正好按内容尺寸裁剪，而 dsh 的卡片带着两层淡光晕（--dsw-elevation-prominent）：
+        // 不留这一圈，光晕整条都在窗口外、等于没画。定位那边的补偿见 provider 里的注释。
+        Box(Modifier.padding(shadowPad)) { content() }
+    }
 }
 
+/** 弹层内容四周给 dsh 那两层淡光晕留的透明留白（见 [DshPopup] 与 [dshProminentShadow]） */
+private val POPUP_SHADOW_PAD = 12.dp
+
 /**
- * dsh 的菜单卡片：--dsw-specific-menu（纯白）+ 圆角 20 + 4px 内边距；**没有阴影** —— dsh 的
- * --dsw-elevation-prominent 展开是「0.5px 描边 + 4%/5% 的极淡光晕」，Compose 的 elevation 画不出
- * 那个量级（它是一条明显的暗影），所以只留 1dp 描边（第 199 轮口径：卡片不要阴影）
+ * dsh 的菜单卡片（`Menu.module.css` 的 .list/.surface/.material）：
+ *
+ *  - 底：`--dsw-menu-surface-fill` 半透明 + `backdrop-filter: blur(40px) saturate(150%)`
+ *    —— 安卓的弹层是独立窗口，取不到身后内容，所以用 [DshPalette.menuSurface] 那一份合成色；
+ *  - 形状：`.surface{border-radius: --dsw-radius-lg}` = 16，内边距 4px；
+ *  - 边与光晕：`box-shadow: var(--dsw-elevation-prominent)` = `0 0 0 .5px var(--dsw-alias-border-l1)`
+ *    + `0 3px 8px #0000000a` + `0 0 20px #0000000d` —— 描边走 [DshSpacing.Hairline]，两层极淡光晕
+ *    走 [dshProminentShadow]（第 206 轮：第 199 轮把它当成「Compose 那种明显的暗影」整个去掉了，
+ *    其实 dsh 那两层只有 4%/5%，去掉之后卡片就与周围糊成一片）。
  *
  * **要滚动就在 content 里套一层 Column**，别把 `verticalScroll` 传给 `modifier`
  * （第 99 轮真机反馈：「展开小卡片选择提供方并滑动时，小卡片上方消失了一点、圆角也没有了」）：
@@ -340,13 +358,14 @@ fun DshMenuCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val palette = LocalDshPalette.current
+    val shape = RoundedCornerShape(radius)
     Surface(
-        color = palette.menu,
-        // Surface 只在底色命中配色方案时才推导内容色；这里是 dsh 的自定义白/深灰，必须显式给
+        color = palette.menuSurface,
+        // Surface 只在底色命中配色方案时才推导内容色；这里是 dsh 的自定义合成色，必须显式给
         contentColor = palette.labelPrimary,
-        shape = RoundedCornerShape(radius),
-        border = BorderStroke(1.dp, palette.borderL1),
-        modifier = modifier,
+        shape = shape,
+        border = BorderStroke(DshSpacing.Hairline, palette.borderL1),
+        modifier = modifier.dshProminentShadow(shape),
     ) {
         Column(Modifier.padding(padding), content = content)
     }

@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toArgb
@@ -74,7 +75,7 @@ import java.io.File
  * | 列表 | margin 16px 0、padding-left 18px；li+li 6px；嵌套 4px；marker 行高 24、label-secondary | .markdown :where(ul,ol) 等 |
  * | 引用 | border-left 2px label-caption；margin 16px 0 0；padding-left 14px | .markdown blockquote |
  * | 分隔线 | 高 .5px、margin 32px 0、border-l2 | .markdown hr |
- * | 行内代码 | 底色 markdown-inline-code、.5px border-l1、圆角 6、左右 5px、字号 .875em | .markdown :not(pre)>code |
+ * | 行内代码 | 底色 markdown-inline-code、.5px border-l1、圆角 8（紧凑档 4）、左右 5px（紧凑档 3）、字号 .875em（紧凑档 1em） | .markdown :not(pre)>code 与 .compact 段 |
  * | 代码块 | 圆角 12、横幅 9px 14px 11/18、正文等宽 11/19 内边距 16px、pre-wrap + break-all | CodeBlock.module.css |
  * | 表格 | th/td padding 10px 16px；th 底 .5px border-l3、td 底 .5px border-l2；th 500 13/22、td 13/22；首列不左内边距、末列不右内边距 | .tableScroll th/td |
  * | 链接 | 颜色 --dsw-alias-link、字重 500、默认无下划线（悬停 dotted） | .markdown a |
@@ -101,6 +102,10 @@ internal data class MarkdownStyle(
     val cellPaddingH: Dp,
     /** 行内代码字号（正文是 .875em；紧凑变体是 1em） */
     val inlineCodeScale: Float,
+    /** 行内代码底框的圆角（dsh：普通档 --dsw-radius-sm = 8px、紧凑档 --dsw-radius-xs = 4px） */
+    val inlineCodeRadius: Dp,
+    /** 行内代码底框的左右内边距（dsh：普通档 5px、紧凑档 3px） */
+    val inlineCodePadH: Dp,
 )
 
 private fun markdownStyle(palette: DshPalette, compact: Boolean): MarkdownStyle = if (compact) {
@@ -116,6 +121,8 @@ private fun markdownStyle(palette: DshPalette, compact: Boolean): MarkdownStyle 
         cellPaddingV = 4.dp,
         cellPaddingH = 8.dp,
         inlineCodeScale = 1f,
+        inlineCodeRadius = 4.dp,
+        inlineCodePadH = 3.dp,
     )
 } else {
     MarkdownStyle(
@@ -130,6 +137,8 @@ private fun markdownStyle(palette: DshPalette, compact: Boolean): MarkdownStyle 
         cellPaddingV = 10.dp,
         cellPaddingH = 16.dp,
         inlineCodeScale = 0.875f,
+        inlineCodeRadius = 8.dp,
+        inlineCodePadH = 5.dp,
     )
 }
 
@@ -138,6 +147,19 @@ private fun markdownStyle(palette: DshPalette, compact: Boolean): MarkdownStyle 
  * 没有它就只认绝对路径 —— Markdown 里的图片 / 文件链接大多写成相对工作区的路径。
  */
 val LocalMarkdownRoot = compositionLocalOf<String?> { null }
+
+/**
+ * 一行 Markdown 的行内解析结果。
+ *
+ * [text] 是最终要画的 AnnotatedString（公式位置是 1 个字符的占位符）；[latex] 是公式原文，
+ * [codeRanges] 是行内代码在 [text] 里的区间（含占位符坐标），交给 [MdText] 画圆角底框。
+ */
+@Immutable
+internal data class InlineParts(
+    val text: AnnotatedString,
+    val latex: List<String>,
+    val codeRanges: List<IntRange>,
+)
 
 /** Markdown 块。@Immutable 是流式渲染的关键：内容没变的块会被 Compose 跳过（见 MdText 的注释）。 */
 @Immutable
@@ -228,11 +250,13 @@ private fun MdBlockView(block: MdBlock, style: MarkdownStyle, compact: Boolean) 
                             if (item.checked != null) {
                                 TaskCheckbox(item.checked)
                             } else {
+                                // 标记色照 dsh：普通档 `.markdown li::marker{color:label-secondary}`，
+                                // 紧凑档 `.compact li::marker{color:inherit}`（跟正文一个色，第 206 轮）
                                 Text(
                                     text = if (block.ordered) (block.start + index).toString() + "." else "•",
                                     fontSize = style.fontSize,
                                     lineHeight = style.lineHeight,
-                                    color = palette.labelSecondary,
+                                    color = if (compact) style.color else palette.labelSecondary,
                                 )
                             }
                         }
@@ -344,16 +368,18 @@ private fun TaskCheckbox(checked: Boolean) {
 /**
  * 行内样式：**粗体**、*斜体*、~~删除线~~、`代码`、[文字](链接)、行内公式（$…$ / \(…\)）。
  *
- * 返回值第二项是公式原文的列表（按出现顺序）：调用方（[MdText]）用它建
- * AnnotatedString 的行内占位（id 由 [latexInlineId] 生成，两边必须一致）。
+ * 公式那一段的原文按出现顺序收在 [InlineParts.latex] 里：调用方（[MdText]）用它建 AnnotatedString
+ * 的行内占位（id 由 [latexInlineId] 生成，两边必须一致）。行内代码的**区间**收在
+ * [InlineParts.codeRanges] 里，由 [MdText] 在文字背后补画圆角底框（见那里的注释）。
  */
 internal fun inlineMarkdown(
     text: String,
     palette: DshPalette,
     style: MarkdownStyle,
     codeFontSize: TextUnit,
-): Pair<AnnotatedString, List<String>> {
+): InlineParts {
     val maths = ArrayList<String>()
+    val codes = ArrayList<IntRange>()
     val builder = buildAnnotatedString {
         var index = 0
         while (index < text.length) {
@@ -385,18 +411,20 @@ internal fun inlineMarkdown(
                 rest.startsWith("`") -> {
                     val end = rest.indexOf('`', 1)
                     if (end > 0) {
-                        // dsh 的 .markdown :not(pre)>code：底色 + 圆角 + 左右 5px 内边距 + .875em。
-                        // Compose 的 SpanStyle 画不了圆角与内边距，这里取「底色 + 等宽 + .875em」，
-                        // 观感与 dsh 一致（见报告的已知差异清单）。
+                        // dsh 的 .markdown :not(pre)>code：等宽 + .875em（紧凑档 1em）+ 底色
+                        // markdown-inline-code + **圆角**（普通档 --dsw-radius-sm = 8、紧凑档 xs = 4）
+                        // + 左右内边距（5 / 3）。Compose 的 SpanStyle 只有底色与字号，圆角与内边距
+                        // 由 MdText 按这段区间在文字背后补画（第 206 轮：以前是纯底色方块）。
+                        val start = length
                         withStyle(
                             SpanStyle(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = codeFontSize * style.inlineCodeScale,
-                                background = palette.inlineCode,
                             ),
                         ) {
-                            append(" " + rest.substring(1, end) + " ")
+                            append(rest.substring(1, end))
                         }
+                        codes += start until length
                         index += end + 1
                     } else {
                         append(rest.first()); index++
@@ -457,7 +485,7 @@ internal fun inlineMarkdown(
             }
         }
     }
-    return builder to maths
+    return InlineParts(builder, maths, codes)
 }
 
 /**
@@ -503,7 +531,15 @@ internal fun MdText(
     val parsed = remember(markdown, palette, style, codeFontSize) {
         inlineMarkdown(markdown, palette, style, codeFontSize)
     }
-    val maths = parsed.second
+    val maths = parsed.latex
+    // 行内代码底框的像素尺寸（drawBehind 里用）
+    val codeRadiusPx = with(density) { style.inlineCodeRadius.toPx() }
+    val codePadPx = with(density) { style.inlineCodePadH.toPx() }
+    val codePadV = with(density) { 1.dp.toPx() }
+    val hairlinePx = with(density) { DshSpacing.Hairline.toPx() }
+    // 布局结果的中转：布局阶段写、绘制阶段读。故意**不是** State —— 在布局里写 State 会多触发
+    // 一次重组，而这里只要「这次布局的结果」在 drawBehind 时是新的就够了。
+    val layoutHolder = remember { TextLayoutHolder() }
     val inlineContent: Map<String, InlineTextContent> = if (maths.isEmpty()) {
         emptyMap()
     } else {
@@ -531,14 +567,87 @@ internal fun MdText(
         }
     }
     Text(
-        text = parsed.first,
+        text = parsed.text,
         inlineContent = inlineContent,
         fontSize = fontSize,
         lineHeight = lineHeight,
         color = color,
         fontWeight = fontWeight,
-        modifier = modifier,
+        onTextLayout = { layoutHolder.value = it },
+        modifier = modifier.drawBehind {
+            val layout = layoutHolder.value ?: return@drawBehind
+            if (parsed.codeRanges.isEmpty()) return@drawBehind
+            drawInlineCodeChips(
+                layout = layout,
+                ranges = parsed.codeRanges,
+                fill = palette.inlineCode,
+                stroke = palette.borderL1,
+                radius = codeRadiusPx,
+                padH = codePadPx,
+                padV = codePadV,
+                strokeWidth = hairlinePx,
+            )
+        },
     )
+}
+
+/** 布局结果的中转（布局阶段写、绘制阶段读；故意不是 State —— 见 [MdText] 的注释） */
+private class TextLayoutHolder {
+    var value: androidx.compose.ui.text.TextLayoutResult? = null
+}
+
+/**
+ * 行内代码的圆角底框（dsh 的 `.markdown :not(pre)>code`：底色 + .5px 描边 + 圆角 + 左右内边距）。
+ *
+ * Compose 的 [SpanStyle] 只能给一段文字铺纯色底（直角、无内边距），所以这里按
+ * [TextLayoutResult] 在文字**背后**补画：[ranges] 里每一段逐行取包络，一行画一个圆角矩形 ——
+ * 跨行的代码在换行处各画一个，与 dsh 紧凑档的 `box-decoration-break: clone` 同形。
+ * 文字本身仍是普通文字（可以选中、可以复制），底框只是画上去的。
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawInlineCodeChips(
+    layout: androidx.compose.ui.text.TextLayoutResult,
+    ranges: List<IntRange>,
+    fill: Color,
+    stroke: Color,
+    radius: Float,
+    padH: Float,
+    padV: Float,
+    strokeWidth: Float,
+) {
+    for (range in ranges) {
+        var offset = range.first
+        while (offset <= range.last) {
+            val line = layout.getLineForOffset(offset)
+            val lineEnd = layout.getLineEnd(line, visibleEnd = true)
+            val last = minOf(range.last, lineEnd - 1)
+            if (last < offset) break
+            var left = Float.MAX_VALUE
+            var right = -Float.MAX_VALUE
+            var top = Float.MAX_VALUE
+            var bottom = -Float.MAX_VALUE
+            for (i in offset..last) {
+                val box = layout.getBoundingBox(i)
+                left = minOf(left, box.left)
+                right = maxOf(right, box.right)
+                top = minOf(top, box.top)
+                bottom = maxOf(bottom, box.bottom)
+            }
+            if (right > left) {
+                val topLeft = androidx.compose.ui.geometry.Offset(left - padH, top - padV)
+                val size = androidx.compose.ui.geometry.Size(right - left + padH * 2f, bottom - top + padV * 2f)
+                val corner = androidx.compose.ui.geometry.CornerRadius(radius, radius)
+                drawRoundRect(color = fill, topLeft = topLeft, size = size, cornerRadius = corner)
+                drawRoundRect(
+                    color = stroke,
+                    topLeft = topLeft,
+                    size = size,
+                    cornerRadius = corner,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokeWidth),
+                )
+            }
+            offset = last + 1
+        }
+    }
 }
 
 // ------------------------------------------------------------------ 表格
@@ -571,7 +680,7 @@ private fun MdTableView(block: MdBlock.Table, style: MarkdownStyle) {
                         maxCellPx
                     } else {
                         measurer.measure(
-                            text = inlineMarkdown(cell, palette, style, style.fontSize).first,
+                            text = inlineMarkdown(cell, palette, style, style.fontSize).text,
                             style = cellStyle,
                             maxLines = 1,
                         ).size.width

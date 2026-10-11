@@ -329,6 +329,13 @@ class QuickJsRuntime {
                 })(names[i]);
               }
             })();
+            /* log(...) = console.log(...) 的别名（第 206 轮，ADSH 独有）：dsh 的 Node 运行时
+               里没有这个全局（模型写 log() 会吃一个 ReferenceError，整个程序停在那儿）。
+               自测 agent 实测踩过；SDK 段那句「只有 console.log」保留不变 —— 这里只是多给一个
+               入口，不改变「程序输出 = console.log + return」的口径。 */
+            if (typeof globalThis.log !== 'function' && typeof console !== 'undefined') {
+              globalThis.log = function () { return console.log.apply(console, arguments); };
+            }
             globalThis.__adsh_state = { settled: false, value: undefined, error: null };
             /* dsh 的 binding errorClass（dsh-code-runtime-worker-thread 的 makeBindingErrorClass）：
                程序里能 `e instanceof ToolCallError`，且 e.name 恒为字面量 "ToolCallError"、

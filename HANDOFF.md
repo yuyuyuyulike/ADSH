@@ -157,6 +157,7 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 | R203 | 深度清理死代码 + 构建 release 装机｜44,635,730 字节 / code 14 |
 | R204 | 一步里第二个 run_code 必失败 → 真机定位到 MIUI 拒绝重启 `:ptc` 服务｜解绑先于杀 + 等进程消失；标题换字去动画 |
 | R205 | 展示与标题都照 dsh 回正｜撤回 run_code 行的「流式详情」；标题改回「首条消息写兜底 + 主请求之后跑小模型」 |
+| R206 | 卡片与文字照 dsh 的令牌回正｜菜单面 = `--dsw-specific-menu`（半透明 + backdrop blur）的合成色 + .5px 描边 + `--dsw-elevation-prominent`；行内代码改圆角底框、紧凑档列表标记改 inherit；`log` 别名 |
 
 ## 经验与坑
 
@@ -191,6 +192,17 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 - 展示细节不确定时照抄 dsh 客户端的常量 / 规格（100ms 花名册窗口、25dp 迟滞、`letter-spacing: normal`）；`scripts/dsh-extract.py` 从 `app.asar` 取原实现。
 - 在 dsh 里搜不到某个常量名 → 那是 ADSH 自己的（如 `JOB_NOTICE`）→ 按 KDoc 语义钉行为，并在提交信息里说明没有原实现可对。
 - **`run_code` 那一行在「模型还在写参数」阶段什么都没有**：dsh 的 `rootCall()` 只存了工具名（`argsRaw` 根本没进节点），`toolRowModel` 里 `phase === "preparing"` 时 `argsRaw = null` → 摘要空、`expandable = false`；描述与代码块要到 `tool/call`（**派发那一刻**）才出现，子调用再晚 ~0.5s（实测）。第 204 轮给它加过「参数流式」（pending 行接上参数原文），第 205 轮按用户口径撤回 —— 别再往这条路上加东西。
+- **UI 令牌的取法**（第 206 轮）：`scripts/dsh-extract.py --list ".module.css"` 能列出 ui-primitives 里**原样的 CSS 模块**
+  （`Menu.module.css` / `MenuSurface.module.css` / `markdown/MarkdownText.module.css` / `CodeBlock.module.css` …），
+  而 `@deepseek-ai/dsh-client-ui-theme/lib/client.js` 里是**令牌表**（浅/深两套）—— 想核「dsh 这个面到底是什么色 / 什么圆角」，
+  直接在这两个地方查，别猜。几个关键值：菜单面 `--dsw-menu-surface-fill` 浅 `#f8f9fa94` / 深 `#43454a73`
+  ＋`backdrop-filter: blur(40px) saturate(150%)`；浮层阴影 `--dsw-elevation-prominent` = `0 0 0 .5px <stroke>` +
+  `0 3px 8px #0000000a` + `0 0 20px #0000000d`；`--dsw-radius-xs/sm/md/lg` = 4/8/12/16；行内代码 = 等宽 + `.875em`（紧凑档 `1em`）
+  + `--dsw-alias-markdown-inline-code`（浅 `#fafafa` / 深 `#292929`）+ `.5px border-l1` + 圆角 8（紧凑档 4）+ 左右 5（紧凑档 3）。
+- **弹层做不了背景模糊**：dsh 的菜单卡片是「半透明面 + backdrop blur」，而 ADSH 的弹层是 `Popup`（**独立窗口**）——
+  取不到身后的内容，`Modifier.blur` 也只会模糊自己的内容。所以发的是「把半透明面合成到应用底色上」的实色
+  （`DshPalette.menuSurface`），描边与光晕照画；光晕要**在弹窗内容四周留 12dp 透明留白**才画得出来
+  （弹窗窗口按内容尺寸裁剪，定位那边相应做了补偿 —— 见 `DshPopup` 的 provider 注释）。
 - **会话标题的时机**（`@deepseek-ai/dsh-session-title`，从 `app.asar` 取原实现看）：① 首条**人类**消息一落库就写**兜底标题**（`ensureFallback` = 前 5 个空格分隔 token、UTF-8 ≤40 字节，**先过 `cleanTitleText`**）；② 标题小模型订在**主请求写到连接上之后**（`ChatEvent.RequestHeader` = dsh 的 `onRequestHeader`），**不是**一轮跑完 —— 第 199～204 轮订在 `finishTurn`，第 205 轮改回 dsh 口径。覆盖判据「标题仍等于兜底值」（用户手改过名就写不进去；dsh 用 `session/title` 的 `source.kind`）。真机时间线实测：`新会话` → ~1s 后兜底 → 2s 后模型标题。
 
 ### 扫描器与门禁
@@ -204,6 +216,13 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 - 执行层行为靠探针量：临时测试把 `shellEnvironment` 的真实输出落盘成环境变量，再用 `sh -s` 喂进设备（探针目录用完即删）。
 - App 里删不到空会话 → 改库：`am force-stop` → `run-as` 把 `databases/adsh.db` 与 `-wal` 拷到 `files/` 再 `exec-out cat` → 本机 `sqlite3` 删行（WAL 自动重放）→ `wal_checkpoint(TRUNCATE)` → `base64 -w0` 写回 → 删设备上 `-wal` / `-shm` → 起 App 核对。
 - 「首轮慢在哪」：`adb logcat -c` → 发送 → `adb logcat -d -v time -s ADSH_LLM:V ADSH:V`（`POST … msgs=N tools=M` 与 HTTP 200）；再用本机 python 直连同一把 key 做 A/B，那一步量的是**服务端**行为。
+- **测试 agent 报的两个「坑」的结论（第 206 轮核过）**：①「退出码会骗人」—— 属实，但**是设计**：工作规则里逐字写着
+  「Failures are told apart by **what the tool returned**, not by the exit code」＋ `[sandbox: …]` / `[fs: …]` 两种标记的判读
+  （已核对真机那一刻发给模型的 sysprompt 里确实有这几句），dsh 也同样靠标记而不是退出码，所以不动；
+  ②「没有 `log`、`write`/`edit` 返回 before/after」—— `write` 的形状与 dsh 逐字一致（`{path, operation, before, after}`，
+  `dsh-tool-fs` 的 presentationMeta 就是这么写的），SDK 段也声明了；`log` 则是 dsh 里也不存在的全局
+  （Node 只有 `console`），属于模型自己记错 —— ADSH 这边**顺手给了 `log` 别名**（QuickJS PREAMBLE 一行 + SDK 段一句话），
+  代价为零、少一类程序跑挂。
 - **读「正在跑」的库必须连 `adsh.db-wal` 一起拉**（`run-as` cat 两个文件到同一个目录再交给 sqlite）：只拉 `adsh.db` 看到的是**上一个检查点**的状态 —— 新会话、刚落的用户消息、刚换的标题全都不在，第 205 轮据此差点误判成「兜底标题没写进去」。App 停下来时（force-stop / 干净退出）WAL 会被合并，那时才只剩一个 `.db`。
 - 想看清「标题是什么时候变的」这类时间线：**连续拉 16 份库快照**（每份 ~0.8s）再逐份查同一张表 —— 比截图（每张 1.5~2.4s、还会被别的 Activity 挡住）可靠得多。
 - 这台 MIUI 上 **`adb shell input tap` 进不了第三方 App**（合成触摸被丢，`input keyevent` 打系统窗口却有效，Home 能回桌面）→ 想驱动一次真实回合，最省事的是往 `MainActivity` 里临时加 5 行钩子（`LaunchedEffect` 读 `intent.getStringExtra("adsh_send")` 调 `viewModel.send`），`am start -n … -e adsh_send '<prompt>'` 发一条；**提示词按整串单引号传**（`adb shell "am start … -e k 'a b c'"`），否则设备侧 sh 会把空格拆开、`am` 只把第一个词当参数值（模型收到一个 "Run"）。用完把钩子删干净。

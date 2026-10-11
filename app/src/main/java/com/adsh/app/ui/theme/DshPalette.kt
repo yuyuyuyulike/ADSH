@@ -7,13 +7,23 @@ import androidx.compose.ui.graphics.Color
 /**
  * dsh 的设计令牌，逐项取自 dsh-client-ui-theme（浅色 / 深色两套）。
  *
- * 关键一条：弹层底色是 --dsw-specific-menu = --dsw-alias-bg-layer-3 = 纯白，
+ * 关键一条：菜单卡片的底色是 --dsw-specific-menu = --dsw-menu-surface-fill（**半透明**），
  * 不是 Material 的 surfaceContainerHigh（#EFF0F6，会发灰）。
  */
 @Immutable
 data class DshPalette(
-    /** --dsw-specific-menu */
+    /** --dsw-specific-menu（胶囊 / 按钮那类实色面用的取值，见 [menuSurface] 的说明） */
     val menu: Color,
+    /**
+     * **菜单卡片的底**：dsh 是 `--dsw-specific-menu` = `--dsw-menu-surface-fill` —— 浅色
+     * `#f8f9fa94` / 深色 `#43454a73`（半透明）**再加** `backdrop-filter: blur(40px) saturate(150%)`，
+     * 于是卡片带着身后内容的磨砂质感，和周围明显不是一层。
+     *
+     * 安卓的弹层是**独立窗口**（Popup）：既取不到身后的内容，也没有 backdrop blur，所以这里发的是
+     * 「把那个半透明色合成到应用底色上」之后的实色 —— 平底色上肉眼等价，而且 dsh 自己也有这种退化
+     * （macOS 上它把这一档写成 `#f8f9faf0`，近不透明）。描边与两层光晕由 [DshMenuCard] 补上。
+     */
+    val menuSurface: Color,
     /** --dsw-specific-selector（＋ / 📎 的圆形底） */
     val selector: Color,
     /** --dsw-specific-input-major（输入框卡片底） */
@@ -98,6 +108,8 @@ data class DshPalette(
 val LightDshPalette = DshPalette(
     dark = false,
     menu = Color(0xFFFFFFFF),
+    // #f8f9fa94 合成到 #ffffff 上
+    menuSurface = Color(0xFFFBFCFC),
     selector = Color(0xFFF5F6F7),
     inputMajor = Color(0xFFFFFFFF),
     // --dsw-specific-tip = --dsw-static-neutral-bluish-60
@@ -153,6 +165,8 @@ val LightDshPalette = DshPalette(
 val DarkDshPalette = DshPalette(
     dark = true,
     menu = Color(0xFF232324),
+    // #43454a73 合成到应用底色 #101116 上
+    menuSurface = Color(0xFF27282D),
     selector = Color(0xFF2C2C2E),
     inputMajor = Color(0xFF1B1B1C),
     // --dsw-specific-tip = --dsw-static-neutral-bluish-800

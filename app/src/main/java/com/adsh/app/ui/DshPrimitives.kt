@@ -32,7 +32,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
@@ -53,7 +55,30 @@ import com.adsh.app.ui.theme.LocalDshPalette
  * Modal / Button / RiskConfirmation 原样复刻，聊天侧与设置侧共用。
  */
 
-/** dsh 的 Button 变体（.primary / .outline / .ghost） */
+/**
+ * dsh 的 `--dsw-elevation-prominent`（菜单卡片 / 浮层那一层）：
+ * `0 0 0 .5px <stroke>, 0 3px 8px #0000000a, 0 0 20px #0000000d`。
+ *
+ * 描边那一条由调用点用 [androidx.compose.foundation.BorderStroke] + [DshSpacing.Hairline] 画
+ * （Compose 的 shadow 画不出那个 .5px 环），这里只负责两层**极淡**的光晕：`Modifier.shadow` 的
+ * ambient / spot 颜色是可以指定的，把 dsh 那两个 4% / 5% 的黑填进去就是同一量级
+ * （elevation 决定模糊半径：dsh 是 8 / 20，取中间的 10dp）。
+ *
+ * 第 199 轮曾以「Compose 的阴影是一条明显的暗影」为由把阴影整条去掉 —— 那条结论只在用**默认**
+ * 阴影色（主题的 20%~30% 黑）时成立；给成 4%~5% 之后与 dsh 一致，卡片因此重新与周围拉开一层。
+ */
+fun Modifier.dshProminentShadow(shape: Shape): Modifier =
+    shadow(
+        elevation = 10.dp,
+        shape = shape,
+        clip = false,
+        ambientColor = Color(0x0D000000),
+        spotColor = Color(0x0A000000),
+    )
+
+/**
+ * dsh 的 Button 变体（.primary / .outline / .ghost）
+ */
 enum class DshButtonKind { Primary, Outline, Ghost }
 
 /**
