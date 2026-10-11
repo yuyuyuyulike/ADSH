@@ -129,8 +129,8 @@ internal fun StatPanel(
         color = palette.menu,
         // dsh 的 --dsw-radius-lg 是 16px（--dsw-radius-sm/md 才是 8/12）
         shape = RoundedCornerShape(16.dp),
+        // 不画阴影：dsh 的 .Xt1eiG_panel 是 0.5px 描边 + 4%/5% 光晕（第 199 轮口径：卡片不要阴影）
         border = androidx.compose.foundation.BorderStroke(1.dp, palette.borderL1),
-        shadowElevation = 12.dp,
         modifier = Modifier.width(width),
     ) {
         Column(Modifier.padding(DshSpacing.Card)) {

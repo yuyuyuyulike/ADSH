@@ -268,7 +268,10 @@ fun DshPopup(
     margin: androidx.compose.ui.unit.Dp = gap,
     content: @Composable () -> Unit,
 ) {
-    RegisterOverlayDismiss(onDismiss)
+    // 这个弹层锚在哪个**触发按钮**上（定位时写进来）：手指按在它里面时那一下不关弹层 ——
+    // 「再点一次同一个按钮 = 收起」归按钮自己的 onClick（口径见 OverlayDismiss.kt）
+    val anchor = remember { AnchorRect() }
+    RegisterOverlayDismiss(onDismiss, anchor = { anchor.value })
     val density = LocalDensity.current
     val lift = with(density) { liftBottom.roundToPx() }
     val provider = remember(density, alignStart, below, lift, gap, margin) {
@@ -279,6 +282,8 @@ fun DshPopup(
                 layoutDirection: LayoutDirection,
                 popupContentSize: IntSize,
             ): IntOffset {
+                // 触发按钮的矩形（窗口坐标）——「点另一个胶囊直接切过去」要用它
+                anchor.value = anchorBounds
                 val gapPx = with(density) { gap.roundToPx() }
                 val marginPx = with(density) { margin.roundToPx() }
                 val width = popupContentSize.width
@@ -317,7 +322,9 @@ fun DshPopup(
 }
 
 /**
- * dsh 的菜单卡片：--dsw-specific-menu（纯白）+ 圆角 20 + 4px 内边距 + elevation-prominent
+ * dsh 的菜单卡片：--dsw-specific-menu（纯白）+ 圆角 20 + 4px 内边距；**没有阴影** —— dsh 的
+ * --dsw-elevation-prominent 展开是「0.5px 描边 + 4%/5% 的极淡光晕」，Compose 的 elevation 画不出
+ * 那个量级（它是一条明显的暗影），所以只留 1dp 描边（第 199 轮口径：卡片不要阴影）
  *
  * **要滚动就在 content 里套一层 Column**，别把 `verticalScroll` 传给 `modifier`
  * （第 99 轮真机反馈：「展开小卡片选择提供方并滑动时，小卡片上方消失了一点、圆角也没有了」）：
@@ -339,7 +346,6 @@ fun DshMenuCard(
         contentColor = palette.labelPrimary,
         shape = RoundedCornerShape(radius),
         border = BorderStroke(1.dp, palette.borderL1),
-        shadowElevation = 12.dp,
         modifier = modifier,
     ) {
         Column(Modifier.padding(padding), content = content)
@@ -764,8 +770,9 @@ fun DshComposer(
             shape = RoundedCornerShape(22.dp),
             color = palette.inputMajor,
             contentColor = palette.labelPrimary,
+            // 只留描边：dsh 的 .RlGAzG_card 挂的是 --dsw-elevation-soft（0.5px 描边 + 3% 光晕），
+            // Compose 的 elevation 画出来是一条明显的暗影，不是那个量级（第 199 轮）
             border = BorderStroke(1.dp, palette.borderL2),
-            shadowElevation = 3.dp,
         ) {
             Column(Modifier.padding(start = DshSpacing.Xl, end = DshSpacing.Xl, top = DshSpacing.Xxl, bottom = DshSpacing.Lg)) {
                 // 附件在输入框内部：卡片自动变高，文字输入区留在下方
