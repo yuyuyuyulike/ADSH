@@ -10,16 +10,17 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
   解包产物与 `asar-tool.js` 在 `D:\tmp`。第二阶段的方案、审计与踩坑已合并成
   [docs/LESSONS.md](docs/LESSONS.md)（《经验与坑》：坑清单 + 不做清单 + 验证手段 + 方法论）。
 
-## 当前状态（0.2.2 / versionCode 14）
+## 当前状态（0.2.3 / versionCode 15）
 
 - **仓库**：远端 `main` 始终最新；本地快照 tag 只留最新一个。**github.com:443 在这台机器上连不通**（api.github.com /
   uploads / codeload 通，raw 不通）—— `git push` 会 `Connection reset`，推送改用 `scripts/push-via-api.py <远端当前提交>`：
   把 `base..HEAD` 的提交用 gh 的 git-data 接口逐个重建到远端（blobs → trees → commits → PATCH ref），比对
   「远端 tree == 本地 HEAD tree」才算成功；远端那串提交 **SHA 与本地不同、内容逐字节相同**，下次 push 前先 `git fetch`（需代理）。
-- **发布物**：`dist/ADSH-0.2.2-release.apk`（**44,635,730 字节**，sha256 `afa5c1a9…`；R8 minify + shrinkResources、含
-  baseline profile）+ `dist/ADSH-0.2.2-debug.apk`。README 下载链接指向 release；按用户口径**旧 release 不删**。release 不可
-  调试（`run-as` 被拒），深度诊断装 debug 包；两者同包名同一把签名，`install -r` 可互相覆盖且不动数据。装机冒烟口径：
-  新会话跑一轮问答正常、`adb logcat -b crash` 无 FATAL。
+- **发布物**：`dist/ADSH-0.2.3-release.apk`（**44,636,094 字节**，sha256 `b347eff56080c08b6e…`；R8 minify +
+  shrinkResources、含 baseline profile），已装机（`versionCode=15 versionName=0.2.3`）。第 207 轮**只构建 + 装机、没发版**：
+  README 的下载链接与 GitHub release 仍是 v0.2.2（要发新版就跑『构建与发版』那一节的 2~5 步）。
+  按用户口径**旧 release 不删**。release 不可调试（`run-as` 被拒），深度诊断装 debug 包；两者同包名同一把签名，
+  `install -r` 可互相覆盖且不动数据。装机冒烟口径：新会话跑一轮问答正常、`adb logcat -b crash` 无 FATAL。
 - **门禁与测试口径**：`:app:testDebugUnitTest` 是默认门禁（**858 用例全过**）；改行为面（core/、tools/、ui 的状态接线）
   必须跑，增量单类 3~8 秒，纯搬运也建议跑；删了测试侧代码或改了断言，至少跑 `:app:compileDebugUnitTestKotlin`。
   用户点名「不跑测试」的轮次只保证编译通过 + 装机启动无 FATAL。
@@ -158,6 +159,7 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 | R204 | 一步里第二个 run_code 必失败 → 真机定位到 MIUI 拒绝重启 `:ptc` 服务｜解绑先于杀 + 等进程消失；标题换字去动画 |
 | R205 | 展示与标题都照 dsh 回正｜撤回 run_code 行的「流式详情」；标题改回「首条消息写兜底 + 主请求之后跑小模型」 |
 | R206 | 卡片与文字照 dsh 的令牌回正｜菜单面 = `--dsw-specific-menu`（半透明 + backdrop blur）的合成色 + .5px 描边 + `--dsw-elevation-prominent`；行内代码改圆角底框、紧凑档列表标记改 inherit；`log` 别名 |
+| R207 | 「应用缓存很少」核查 = 正常（磁盘缓存只有 apt partial，热缓存全在内存）；清掉残留的 `\$TMPDIR` 目录；版本 0.2.3 / code 15，release 装机 |
 
 ## 经验与坑
 
@@ -184,6 +186,12 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 - 闪退 / OOM：`adb logcat -b crash -d -v time` 看 Abort message 与堆上限，`dumpsys meminfo` 盯 Dalvik Heap。
 - 「保活没生效」「岛不显示」→ 真因是自绘悬浮窗外层崩溃，不是通知渠道；MIUI 焦点通知真机上**不画** → 留一条**已验证能显示**的媒体路线兜底。
 - 首轮比第二轮慢 → 标题那次小调用没关思考、先受理还与主请求抢带宽 → 按 dsh 口径按路由关思考；前缀缓存命中由**服务端**决定。
+- **「应用缓存很少」是正常的**（第 207 轮用户点名核过）：Android 设置里那一项只算 `cache/` 与 `code_cache/`，
+  而 ADSH 的磁盘缓存只有 bootstrap/apt 的 partial（`cacheDir/apt/archives/partial`，装完就是空的，系统还会定期清）；
+  **热缓存全在内存**里 —— 图片位图 32 MB、公式位图 6 MB + 尺寸表、代码高亮 64 条、消息 JSON 解码 512 条的 LRU
+  （`ui/ImageDecode.kt` / `ui/Latex.kt` / `ui/DshCodeBlock.kt` / `ui/TurnList.kt`）；数据本身在 `files/`（Termux 前缀 + home，
+  实测 1.9 GB）。所以「缓存几百 KB」既不说明退化，也和滑动 / 切会话的流畅度没有关系 ——
+  历史上只有 0.2.0 那次熵减动过 `cacheDir`（把 apt 缓存的意图写实，不是删缓存）。
 - **同一个步骤里连续两次 run_code，第二个必失败**（`code run failed (worker-exit): PTC 进程没起来（绑定超时）`，正好 5 秒）：`:ptc` 进程死在「还挂着 `BIND_AUTO_CREATE` 绑定」的状态下时，AMS 把它当「服务需要重启」再拉一次，**MIUI 的 `AutoStartManager` 直接拒绝**（`logcat`：`Reject RestartService service :ComponentInfo{…PtcWorkerService}`），于是紧跟其后的那次 `bindService` 挂在一条再也不会起来的服务记录上。两次调用之间正常隔着一次模型往返（~2 秒）所以看不出来，只有同一步的背靠背才踩中。修法两条一起：**先解绑再杀** + **杀完等 `/proc/<pid>` 消失**（`PtcProcess.close()` / `kill()`）。判据是 `logcat` 里 `ActivityManager: Start proc …:ptc` 与 `Process …:ptc (pid …) has died` 的成对出现，以及 `ADSH_TRACE` 的 `tool+ / tool-` 时间戳。
 
 ### 与 dsh 对齐
