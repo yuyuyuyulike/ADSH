@@ -11,7 +11,9 @@
 - 文件：`bootstrap-aarch64.zip`，SHA-256 `dbf2805613ff2ace0b233c3b349e080bb0ff358f4ad64f4cca5966b27b93e7ee`
 - 上游：https://github.com/termux/termux-packages/releases
 - 说明：`app/src/main/assets/bootstrap/usr.zip` 即该文件（构建期由 `scripts/fetch-bootstrap.sh` 拉取并校验）；
-  `app/src/main/execLibs/` 下的 186 个 ELF 全部从该 zip 的 `bin/` 复制而来，仅重命名以便随 APK 打包。
+  `app/src/main/execLibs/arm64-v8a/` 下的 **287 个 ELF** 全部从该 zip 复制而来、仅重命名以便随 APK 打包
+  （其中 265 个是 `bin/` 下的可执行文件与脚本，逐一对应 `app/src/main/assets/execlibs.map` 里那条
+  「恢复成 `$PREFIX` 下哪个路径」的映射；其余是 `libbash.so`、`librg.so` 这类）。
 
 ## 二、GPL 组件（需提供源码获取途径）
 
