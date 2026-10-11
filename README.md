@@ -1,4 +1,5 @@
 # ADSH
+目前移动端deepseek Harness 有三种路径，其一是轻量的远程连接app，仅操控，无法脱离电脑；其二是强行把dsh在手机上本地运行，启动麻烦且慢，同时由于dsh没有做移动端适配，导致UI体验非常差；其三就是本项目，说是dsh mobile但实际上已经脱离了dsh，且算是一款新应用，舍弃了在手机上无用的工具、dsh的核心—插件化等功能与特性，换来了秒启动与舒适的UI体验，算是性价比dsh—mobile。
 
 DeepSeek Harness（dsh）的安卓原生客户端：**dsh 的 PTC 工具语义 + DeepSeek App 的界面风格**，
 没有 Node 运行时、没有插件加载、没有运行期下载。
