@@ -6,8 +6,9 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 成安卓 App —— 无 Node 运行时、无插件、无运行期下载。仓库 <https://github.com/yuyuyuyulike/ADSH>（public / MIT）。
 
 - 功能说明看 [README.md](README.md)；**改代码前先看『不要破的硬规矩』**；历史看『阶段索引』与『经验与坑』。
-- 工作区 `D:\WSN2005\Android1\App\ADSH`；dsh 参考源码在 `D:\tmpdsh-work`（**不要删**：`spec-ui.md` / `spec-log.md` 是展示层规格），
-  解包产物与 `asar-tool.js` 在 `D:\tmp`。第二阶段的方案、审计与踩坑已合并成
+- 工作区 `D:\WSN2005\Android1\App\ADSH`；dsh 参考源码在 `D:\tmpdsh-work`（**不要删**：`spec-ui.md` / `spec-log.md` 是展示层规格）；
+  解包工具 `asar-tool.js` 在 `D:\tmp`（**解包产物用完即删** —— 第 208 轮整理时清掉了那 1.1 GB 的截图 / 日志 / 库副本，
+  要用再解包）。第二阶段的方案、审计与踩坑已合并成
   [docs/LESSONS.md](docs/LESSONS.md)（《经验与坑》：坑清单 + 不做清单 + 验证手段 + 方法论）。
 
 ## 当前状态（0.2.3 / versionCode 15）
