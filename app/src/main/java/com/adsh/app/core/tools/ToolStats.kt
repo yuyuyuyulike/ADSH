@@ -24,15 +24,27 @@ object ToolStepCounter {
  * 交给 AgentLoop 落库（供「轨迹」视图还原）。
  */
 object SubCallTrace {
-    @Volatile private var pending: List<com.adsh.app.core.ptc.SubCall> = emptyList()
+    /**
+     * **累积**到 [drain] 取走为止（一次 run_code 里的每条 `await tools.x()` 结算时各报一条）。
+     *
+     * 第 200 轮修的 bug：这里原来是「整份替换」（`pending = calls`），而唯一的生产者
+     * （PtcToolRunner.record）每次只报**一条** —— 于是一次 run_code 里调了十个工具，
+     * 落库只剩最后一条（真机证据：tool 行的 subCallsJson 只有 `7:ptc:9` 那条 web_search，
+     * 用户报的「一轮结束后一堆调用记录只剩网页搜索」）。
+     *
+     * 并发：子调用可以并行结算（读类调用各自在自己的 IO 线程上跑），所以用同步列表，
+     * 不能再用 @Volatile 的单引用替换。
+     */
+    private val pending = java.util.Collections.synchronizedList(ArrayList<com.adsh.app.core.ptc.SubCall>())
 
     fun record(calls: List<com.adsh.app.core.ptc.SubCall>) {
-        if (calls.isNotEmpty()) pending = calls
+        if (calls.isEmpty()) return
+        synchronized(pending) { pending.addAll(calls) }
     }
 
-    fun drain(): List<com.adsh.app.core.ptc.SubCall> {
-        val current = pending
-        pending = emptyList()
-        return current
+    fun drain(): List<com.adsh.app.core.ptc.SubCall> = synchronized(pending) {
+        val current = pending.toList()
+        pending.clear()
+        current
     }
 }
