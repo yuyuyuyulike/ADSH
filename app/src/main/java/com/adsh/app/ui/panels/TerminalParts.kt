@@ -39,13 +39,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.adsh.app.ui.DshSpacing
-import com.adsh.app.ui.DshSettingIcons
-import com.adsh.app.ui.dshClickable
-import com.adsh.app.ui.dshInteraction
+import com.adsh.app.ui.kit.DshSpacing
+import com.adsh.app.ui.kit.DshSettingIcons
+import com.adsh.app.ui.kit.dshClickable
+import com.adsh.app.ui.kit.dshInteraction
 
 /**
- * 终端页的三块布局（R10 从 538 行的 TerminalPanel 里按「渲染」切出来的）：顶栏、转录区、附加键行。
+ * 终端页的三块布局：顶栏、转录区、附加键行。
  *
  * 这一层只画东西：会话状态机与输入行的文本 / 光标都留在 TerminalPanel 那一层。
  * 转录区顺带负责「视口 → PTY 网格」的测量（[terminalGrid] 是纯函数，有单测），
@@ -71,16 +71,9 @@ private val TERMINAL_FONT_SP = 12.sp
 private val TERMINAL_LINE_HEIGHT_SP = 17.sp
 
 /**
- * 终端正文与输入行的排版：**一份显式样式，两个渲染路径共用**（第 123 轮）。
- *
- * 为什么必须显式、而且必须两边共用：转录区是 `Text`（把 `LocalTextStyle` 合进来）、
- * 输入行是 `BasicTextField`（传进去的 `textStyle` **整份替换**，不吃 `LocalTextStyle`）——
- * 只要有一项没写明，两条路径就各按各的默认值渲染：同一行 `~ $ echo MMMMMMMMMM`，打字时在输入行、
- * 回车后进转录区，基线差了 5px（真机实测：行顶下方 34px vs 39px，字距与行距都一样，差的是「首行怎么摆」），
- * 用户看到的就是「命令一执行，字往下跳一点点」。
- *
- * 字距 0 是 dsh 的口径（CSS 默认 `letter-spacing: normal`）；`lineHeightStyle` 与 `includeFontPadding`
- * 一起写明，是为了不再依赖两边的默认值 —— 终端是硬网格，行高怎么分配必须由这一份样式说了算。
+ * 终端正文与输入行的排版：**一份显式样式，两个渲染路径共用**。转录区是 `Text`（合 `LocalTextStyle`）、
+ * 输入行是 `BasicTextField`（传进去的 `textStyle` **整份替换**）—— 有一项没写明就各按各的默认值渲染：
+ * 同一行打字时在输入行、回车后进转录区，基线差 5px（「命令一执行，字往下跳一点」）。字距 0 是 dsh 口径。
  */
 internal val TERMINAL_TEXT_STYLE = TextStyle(
     fontFamily = FontFamily.Monospace,
@@ -152,19 +145,9 @@ internal fun TerminalTopBar(
 }
 
 /**
- * 转录区：整篇正文（按行分块渲染）+ 尾行插槽 [content]（输入行、提示与报错都在里面）。
- *
- * 正文与输入行在**同一个滚动列**里：输入行紧接在 bash 打出来的提示符后面，
- * 所以光标就在引导符（~ $）后面，而不是飘在屏幕最底下。
- * 点这一片任意位置都聚焦输入行（Termux 就是「点终端就出键盘」）。
- *
- * **用 LazyColumn 而不是 Column + verticalScroll**（第 123 轮）：整篇转录是**一个 item**
- * （结构、分块、选中都与原来一模一样），要的只是 LazyColumn 的 `requestScrollToItem` ——
- * 那是 Compose 里唯一「本帧测量之前就能指定滚动位置」的入口，贴底那一帧才不会先画错、
- * 下一帧再补（见 TerminalPanel 的 pinToBottom）。
- *
- * 视口 → PTY 网格的测量也在这里：尺寸变了才回调 [onGridChange]，
- * 与当前行列比对去重由调用方做（[PtySession.resize] 自己也会去重）。
+ * 转录区：整篇正文（按行分块渲染）+ 尾行插槽 [content]（输入行、提示与报错都在里面）。正文与输入行
+ * 在**同一个滚动列**里，点这一片任意位置都聚焦输入行。**用 LazyColumn 而不是 Column + verticalScroll**：
+ * 转录仍是一个 item，要的只是 `requestScrollToItem`（Compose 里唯一「本帧测量前就能指定滚动位置」的入口）。
  */
 @Composable
 internal fun ColumnScope.TerminalTranscript(
@@ -261,14 +244,9 @@ internal fun ColumnScope.TerminalTranscript(
 }
 
 /**
- * 底部附加键行（Termux 的 extra keys，用户第 117 轮点名）：终端页是**转录式**的行输入，
- * Ctrl-C / Tab 补全 / 上下键翻历史原先一个都按不出来。这里把按键的字节直接写进 master fd
- * —— 行规程会把 \x03 变成 SIGINT。放在最底部、跟着 imePadding 走：键盘一出来它就被顶上
- * 去贴在键盘上沿（终端正文照旧自己贴底滚动）。
- * 常用的键比一屏能放下的多，所以这一行**横向可滚**（Termux 的 extra keys 也是滚的）：
- * 每个键按自己的标签定宽，一屏放不下就右滑看剩下的。
- *
- * [onKey] 收的是标签（见 EXTRA_KEYS），怎么按由 TerminalPanel 的 onExtraKey 分派。
+ * 底部附加键行（Termux 的 extra keys）：终端页是**转录式**的行输入，Ctrl-C / Tab 补全 / 上下键翻历史
+ * 原本一个都按不出来。这里把按键的字节直接写进 master fd —— 行规程会把 \x03 变成 SIGINT。它放在最底部、
+ * 跟着 imePadding 走，键比一屏多所以**横向可滚**；[onKey] 收的是标签，分派在 TerminalPanel 的 onExtraKey。
  */
 @Composable
 internal fun TerminalExtraKeys(

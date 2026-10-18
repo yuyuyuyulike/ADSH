@@ -58,14 +58,24 @@ import androidx.compose.ui.unit.sp
 import com.adsh.app.R
 import com.adsh.app.core.data.ConversationEntity
 import com.adsh.app.core.data.WorkspaceEntity
+import com.adsh.app.ui.blocks.DshIcons
+import com.adsh.app.ui.blocks.DshSidebarIcons
+import com.adsh.app.ui.chat.ChatViewModel
+import com.adsh.app.ui.chat.DshMenuCard
+import com.adsh.app.ui.chat.DshMenuRow
+import com.adsh.app.ui.chat.DshPopup
+import com.adsh.app.ui.chat.DshWhale
 import com.adsh.app.ui.theme.LocalDshPalette
+import com.adsh.app.ui.kit.DshSpacing
+import com.adsh.app.ui.kit.DshSettingIcons
+import com.adsh.app.ui.kit.dshClickable
+import com.adsh.app.ui.kit.dshInteraction
 
 /**
  * 会话抽屉（`AppRoot` 的左侧栏）：工作区分组、会话行、搜索、重命名 / 删除、面板入口。
  *
- * R16 从 `AppRoot.kt`（1310 行）整块搬出来 —— 抽屉有自己的 20 多个参数、自己的展开态 /
- * 搜索态 / 菜单态，与 AppRoot 的其它部分（画布、浮层栈、返回处理、引导）没有任何共享状态。
- * 这一块**原文逐行搬运**，只把入口 `Drawer` 的可见性从 private 改成 internal（AppRoot 要调它）。
+ * 抽屉有自己的 20 多个参数、自己的展开态 / 搜索态 / 菜单态，与 AppRoot 的其它部分（画布、
+ * 浮层栈、返回处理、引导）没有任何共享状态。入口 `Drawer` 是 internal（AppRoot 要调它）。
  * 尺寸与视觉口径见下面 [Drawer] 自己的注释（取自 dsh 的 SidebarRoot / WorkspaceBrowser / Rows）。
  */
 
@@ -176,11 +186,8 @@ internal fun Drawer(
         // 「新会话」按钮
         NewConversationButton(onClick = onNewConversation)
 
-        // dsh 的 panelList：**新会话那一行下面、工作区那一块上面**的面板入口
-        // （dsh 的 SidebarRoot 里 panelList 正好夹在 newSession 与 sidebar.workspaces 之间）。
-        // ADSH 里只有「终端会话」一个面板，样式按 .panelRow。
-        // 装不上 bootstrap 时这一行**就是报错**（用户第 117 轮点名：报错从设置页搬到这里，
-        // 装好了照旧显示「终端会话」）—— 装坏的人一定看得见，不用去翻设置页或 logcat。
+        // dsh 的 panelList：**新会话那一行下面、工作区那一块上面**的面板入口，样式按 .panelRow。
+        // ADSH 里只有「终端会话」一个面板：装不上 bootstrap 时这一行**就是报错**，装好了显示「终端会话」。
         DrawerPanelRow(
             icon = DshIcons.Terminal,
             label = bootstrapError ?: "终端会话",

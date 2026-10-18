@@ -1,0 +1,18 @@
+# 换行一律 LF。理由：Spotless 的 lineEndings(LineEnding.UNIX) 与它配套 ——
+# 没有这一行，core.autocrlf 或平台默认会让 checkout 出来的是 CRLF，门禁在别的机器上直接变红。
+* text=auto eol=lf
+
+# 二进制不做文本转换（screenshots 是仓库里唯一入库的二进制大件）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.apk binary
+*.aab binary
+*.jar binary
+*.so binary
+*.zip binary
+*.jks binary
+*.keystore binary
+*.ttf binary
+*.otf binary

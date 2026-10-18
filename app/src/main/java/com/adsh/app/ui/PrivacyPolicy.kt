@@ -20,12 +20,9 @@ import androidx.compose.ui.window.DialogProperties
 import com.adsh.app.ui.theme.LocalDshPalette
 
 /**
- * 用户隐私说明（ADSH 自研；第 177 轮用户要求「首次启动强制同意一次，不必整其他的」）。
- *
- * dsh 里**没有**隐私政策 / 用户协议（子代理对整包 12234 个文件做过双向检索，只有一条「在使用官方
- * 模型 API 时上传 Session Log」的开关和 onboarding 里一句「你的项目和文件保存在本地」）。
- * 所以这份正文按 ADSH 自己的事实来写，口径参考 dsh 那两句：本地优先、只有对话内容按需发给
- * **你自己配置的**模型服务、没有遥测。
+ * 用户隐私说明（ADSH 自研）。dsh 里**没有**隐私政策 / 用户协议（整包检索只有一条「使用官方模型 API 时
+ * 上传 Session Log」的开关与 onboarding 一句「你的项目和文件保存在本地」），所以正文按 ADSH 自己的
+ * 事实写：本地优先、只有对话内容按需发给**你自己配置的**模型服务、没有遥测。
  */
 internal const val PRIVACY_POLICY_VERSION = "2026-10-03"
 
@@ -49,11 +46,9 @@ internal val PRIVACY_POLICY_TEXT = listOf(
 )
 
 /**
- * 首次启动的隐私说明门（强制同意一次）。
- *
- * 用户第 177 轮的口径：**首次启动强制同意一次**即可，所以这里：不进设置页、不做更多确认、
- * 也不给「跳过」；只有点过「同意并继续」才写入本地标记（[com.adsh.app.core.data.SettingsStore.privacyAccepted]）。
- * 返回键与点外部都不关闭（[DialogProperties]），因为这是使用前提。
+ * 首次启动的隐私说明门（**强制同意一次**）：不进设置页、不做更多确认、也不给「跳过」；只有点过
+ * 「同意并继续」才写入本地标记（[com.adsh.app.core.data.SettingsStore.privacyAccepted]）。
+ * 返回键与点外部都不关闭（[DialogProperties]）—— 这是使用前提。
  */
 @Composable
 internal fun PrivacyConsentGate(onAccept: () -> Unit) {

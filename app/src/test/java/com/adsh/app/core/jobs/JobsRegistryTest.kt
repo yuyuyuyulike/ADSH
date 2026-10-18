@@ -12,12 +12,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 注册表本体的行为（[Jobs]）—— 这一刀**没有改生产代码**，只把 [Jobs] 开头那段「硬语义」清单
- * 从注释变成用例（R23 织网那一套手法：先有网，再谈拆）。
+ * 注册表本体的行为（[Jobs]）：把 [Jobs] 开头那段「硬语义」清单落成用例。
  *
  * 为什么值得：`Jobs` 是纯 Kotlin（整个文件没有一处 `android.` 引用），却一条用例都没有 ——
  * 而它管着**后台命令的身份、状态机、输出账本与完成通知**。这几条错了都只在真机上表现为
- * 「模型收到一条指向不存在的任务的通知」这类怪事（第 118 轮真机实测过）。
+ * 「模型收到一条指向不存在的任务的通知」这类怪事（真机实测过）。
  *
  * 注册表是**进程内单例**（跨用例共享），所以每个用例都用**自己的 kind 与 owner**
  * （[nextKind] / [nextOwner]）：id 只跟 kind 有关、可见性只跟 owner 有关，这样断言才与执行顺序无关。
@@ -168,7 +167,7 @@ class JobsRegistryTest {
             val p = Producer(nextKind())
             // hold = true 就是前台调用的形态：在 start 那一刻先记上「马上会有人 wait 我」，
             // 盖住「start 与 wait 之间」那个窗口 —— 否则极短命令会在 wait 之前结算，
-            // 既发一条通知、又让随后的 wait 拿到一个立刻被 remove 的 id（第 118 轮真机实测）
+            // 既发一条通知、又让随后的 wait 拿到一个立刻被 remove 的 id（真机实测过）
             val id = p.start(owner, hold = true)
             p.append("hello")
             p.finish()

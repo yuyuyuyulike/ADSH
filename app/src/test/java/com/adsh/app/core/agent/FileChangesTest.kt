@@ -5,9 +5,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.adsh.app.seam.model.FileChange
+import com.adsh.app.seam.model.TurnChangeTracker
+import com.adsh.app.seam.model.decodeFileChanges
+import com.adsh.app.seam.model.encodeFileChanges
 
 /**
- * 一轮的文件改动（dsh 的 `workspace-changes`，第八十四轮）。
+ * 一轮的文件改动（dsh 的 `workspace-changes`，）。
  *
  * 判据全在 [TurnChangeTracker]：`write` / `edit` 落盘**之前**留一份底，轮尾再比一遍。
  * 卡片上的 `+A -B` 就是从这两个快照算出来的 —— 数错了用户一眼就能看出来，所以这里逐种情形钉住。

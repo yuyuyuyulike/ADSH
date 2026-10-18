@@ -1,0 +1,58 @@
+package com.adsh.app.core.tools
+
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+/**
+ * 工具入参读取必须 total：模型把参数写成对象/数组时返回 null，不许把 kotlinx 的异常与
+ * 实现类名泄漏进程序可见的错误（dsh 的 schema 层在 execute 之前整条拒绝）。
+ */
+class ArgsTest {
+
+    private fun args(block: JsonObjectBuilder.() -> Unit) = buildJsonObject(block)
+
+    @Test
+    fun strReadsOnlyPrimitiveValues() {
+        assertEquals("v", Args.str(args { put("k", "v") }, "k"))
+        assertEquals("7", Args.str(args { put("k", 7) }, "k"))
+        assertEquals("true", Args.str(args { put("k", true) }, "k"))
+        assertNull(Args.str(args { put("k", JsonNull) }, "k"))
+        assertNull(Args.str(args { put("k", buildJsonObject { put("x", 1) }) }, "k"))
+        assertNull(Args.str(args { put("k", buildJsonArray { add(1) }) }, "k"))
+        assertNull(Args.str(args {}, "k"))
+    }
+
+    @Test
+    fun intReadsOnlyPrimitiveNumbers() {
+        assertEquals(7, Args.int(args { put("k", 7) }, "k"))
+        assertEquals(7, Args.int(args { put("k", "7") }, "k"))
+        assertNull(Args.int(args { put("k", "x") }, "k"))
+        assertNull(Args.int(args { put("k", JsonNull) }, "k"))
+        assertNull(Args.int(args { put("k", buildJsonObject { put("x", 1) }) }, "k"))
+        assertNull(Args.int(args { put("k", buildJsonArray { add(1) }) }, "k"))
+    }
+
+    @Test
+    fun boolReadsOnlyBooleanStrings() {
+        assertEquals(true, Args.bool(args { put("k", "true") }, "k"))
+        assertEquals(false, Args.bool(args { put("k", "false") }, "k"))
+        assertNull(Args.bool(args { put("k", "yes") }, "k"))
+        assertNull(Args.bool(args { put("k", buildJsonObject { put("x", 1) }) }, "k"))
+        assertNull(Args.bool(args { put("k", buildJsonArray { add(true) }) }, "k"))
+    }
+
+    /** file_path 的旧名 path 也走同一套 total 读取（历史会话的调用不能因为参数写成对象就泄漏实现） */
+    @Test
+    fun legacyPathFallbackIsAlsoTotal() {
+        assertEquals("a.txt", Args.filePath(args { put("path", "a.txt") }))
+        assertNull(Args.filePath(args { put("path", buildJsonObject { put("x", 1) }) }))
+        assertEquals("b.txt", Args.filePath(args { put("file_path", "b.txt") }))
+    }
+}

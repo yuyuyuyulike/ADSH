@@ -11,15 +11,12 @@ import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import com.adsh.app.ui.blocks.openAllFilesAccessSettings
 
 /**
- * 设置页「权限」卡里的三项（第 181 轮现状：通知 / 电池优化 / 所有文件访问）。
- *
- * 这三项凑在一起不是随手挑的：它们是「前台服务 + 灵动岛」这条保活链路在国产 ROM（HyperOS /
- * MIUI / EMUI / ColorOS）上能否活下来的一组开关 —— 缺一个，agent 那一轮就可能在后台被清掉。
- *
- * 撤掉的两项：**悬浮窗**（岛现在由系统自己画，不再需要 SYSTEM_ALERT_WINDOW）、
- * **自启动**（用户第 180 轮口径「去掉吧，不需要」；顺带 MIUI 也不给读取口，行里只能写「去设置」）。
+ * 设置页「权限」卡里的三项（通知 / 电池优化 / 所有文件访问）。这三项凑在一起是一组开关：
+ * 「前台服务 + 灵动岛」这条保活链路在国产 ROM（HyperOS / MIUI / EMUI / ColorOS）上缺一个就可能在
+ * 后台被清掉。已撤掉**悬浮窗**（岛由系统自己画）与**自启动**（MIUI 也不给读取口）。
  */
 internal enum class AppPermission(val label: String) {
 
@@ -48,8 +45,7 @@ internal fun permissionStatus(context: Context, permission: AppPermission): Bool
  * 卡片上那一格状态文字：**三态一一对应**（null = 系统没给读取口 → 「去设置」）。
  *
  * 与 [permissionStatus] 放在同一个文件里，是因为它们是一条规矩的两半：**界面不许撒谎** ——
- * 读不到就写「去设置」，读到 false 就写「未授权」。以前这段 when 写在卡片那边，
- * 于是「哪三种状态」这件事被拆在两个文件里。
+ * 读不到就写「去设置」，读到 false 就写「未授权」。「哪三种状态」只在这里定义，卡片只消费。
  */
 internal fun permissionStatusLabel(granted: Boolean?): String = when (granted) {
     true -> "已授权"

@@ -45,7 +45,7 @@ class ChatMessageContentTest {
 
     /**
      * 只有 tool_calls 的助手消息 content 为 null：Json 配了 encodeDefaults，
-     * 所以它会显式写成 "content":null（换字段以前也是这样，服务端一直收得下）。
+     * 所以它会显式写成 "content":null；服务端接受这个形状。
      */
     @Test
     fun nullContentStillCarriesToolCalls() {

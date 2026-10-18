@@ -41,18 +41,18 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.delay
 import com.adsh.app.runtime.termux.PtySession
-import com.adsh.app.ui.BOTTOM_REQUEST_OFFSET
-import com.adsh.app.ui.DshSpacing
+import com.adsh.app.ui.kit.BOTTOM_REQUEST_OFFSET
+import com.adsh.app.ui.kit.DshSpacing
 
 /**
  * 终端页：Termux 那种「一整块终端 + 一条引导符」的样子。
  *
- * 与旧实现的区别（用户点名的两处）：
- *  - 进来就自动起 bash（旧版要先点「启动」）；
+ * 两处界面契约：
+ * - 进来就自动起 bash（不需要用户点「启动」）；
  *  - 没有输入框、没有发送按钮：正文直接接一行同款等宽字体的输入行，
  *    bash 自己打出来的提示符就是那一串引导符，回车即送进 PTY。
  *
- * R10 之后这个函数只管**本页的状态机**（PTY 会话 + 输入行）：三块布局在 TerminalParts.kt，
+ * 本函数只管**本页的状态机**（PTY 会话 + 输入行）：三块布局在 TerminalParts.kt，
  * 会话与 I/O 在 TerminalSession.kt，输入行的纯逻辑在 TerminalInput.kt。
  */
 @Composable
@@ -69,9 +69,8 @@ fun TerminalPanel(
 
     var buffer by remember { mutableStateOf("") }
     /**
-     * 输入行。**带光标**（TextFieldValue）：方向键、Home / End、历史召回全在这一行上做 ——
-     * 以前这些键是把字节直接写进 PTY 交给远端的 readline，翻出来的那一行只活在远端，
-     * 本地输入行还是空的，所以退格删不掉（用户第 117 轮第二轮反馈）。
+     * 输入行。**带光标**（TextFieldValue）：方向键、Home / End、历史召回全在这一行上做 —— 把字节
+     * 直接写进 PTY 交给远端 readline 时，翻出来的那一行只活在远端、本地输入行还是空的，退格删不掉。
      */
     var draft by remember { mutableStateOf(TextFieldValue("")) }
     /** 提交过的命令（↑ / ↓ 翻，最近的在最后）与当前翻到第几条（-1 = 不在历史里） */
@@ -86,8 +85,8 @@ fun TerminalPanel(
     /** Ctrl 粘滞键（底部附加键行）：按下之后落进输入行的下一个字符按控制字符送 */
     var ctrl by remember { mutableStateOf(false) }
     /**
-     * 转录区的滚动状态。**必须是 LazyListState**（第 123 轮）：只有它能在**本帧测量之前**接受
-     * 一个「滚到哪儿」的请求（`requestScrollToItem`），见下面贴底那一段。
+     * 转录区的滚动状态。**必须是 LazyListState**：只有它能在**本帧测量之前**接受一个「滚到哪儿」的
+     * 请求（`requestScrollToItem`），见下面贴底那一段。
      */
     val listState = rememberLazyListState()
     /** 上一次贴底时的「buffer 长度 + IME 下边距」（非 State：写它不该触发重组） */
@@ -99,16 +98,9 @@ fun TerminalPanel(
     var ptyRows by remember { mutableIntStateOf(DEFAULT_PTY_ROWS) }
     var ptyCols by remember { mutableIntStateOf(DEFAULT_PTY_COLS) }
     /**
-     * 「把键盘要回来」的计数：每执行一行命令 +1。
-     *
-     * 真机 logcat 证据：豆包输入法在**回车**上会自己收起键盘
-     * （`ImeTracker(7308): onRequestHide at ORIGIN_IME reason HIDE_SOFT_INPUT_FROM_IME`，
-     * 就在回车键抬起后 ~11ms），紧接着系统放 ~430ms 的收键盘动画。终端里回车之后还要接着
-     * 打字，键盘本来也不该收，所以这里等收起请求先发出来（~11ms），再把它顶回去一次。
-     *
-     * **只在回车这一刻要一次键盘**（计数变了才动手）：第 70 轮曾经改成「盯着 IME inset，
-     * 只要键盘不在就 show()」—— 那样用户自己收起键盘也会立刻被拉回来（用户实测反馈），
-     * 所以这里回到「只有提交命令才要键盘」的旧写法，字体大小那条不再处理。
+     * 「把键盘要回来」的计数：每执行一行命令 +1。豆包输入法在**回车**上会自己收起键盘（回车抬起后
+     * ~11ms，随后系统放 ~430ms 收键盘动画），而终端回车后还要接着打字 —— 这里等收起请求先发出再顶回去
+     * 一次。**只在回车这一刻要一次键盘**：盯着 IME inset「不在就 show()」会把用户自己收起键盘也拉回来。
      */
     var wantKeyboard by remember { mutableStateOf(0) }
     LaunchedEffect(wantKeyboard) {
@@ -170,21 +162,15 @@ fun TerminalPanel(
     }
 
     /**
-     * 贴底：把视口钉到转录区末端（新输出、聚焦都要）。
-     *
-     * **用 `requestScrollToItem` 而不是 `scrollTo(maxValue)`**（第 123 轮，从 60fps 连拍里挖出来的）：
-     * 前者是「**下一次测量用的位置**」—— LazyColumn 在本帧测量时读到它，于是新行第一次被画出来
-     * 位置就是对的。旧写法是 `LaunchedEffect(buffer.length) { withFrameNanos { }; scrollTo(maxValue) }`：
-     * 它要等一帧、而且是在**测量之后**才滚，那一帧会先按旧滚动位置把新行画出来（真机连拍证据：
-     * Enter 那一帧可见行数 22 → **23**，下一帧又回到 22）—— 用户看到的就是「残影在正确行的下一行
-     * 闪一下再消失」。这不是加一层补偿能盖住的：偏差就发生在那一次绘制里。
+     * 贴底：把视口钉到转录区末端（新输出、聚焦都要）。**用 `requestScrollToItem` 而不是 `scrollTo(maxValue)`**：
+     * 前者是「**下一次测量用的位置**」，LazyColumn 本帧测量时读到它，新行第一次画出来位置就是对的；后者要等
+     * 一帧、且在测量**之后**才滚，那一帧会先按旧位置画新行（真机连拍：Enter 那帧可见行数 22 → 23 → 22）。
      */
     fun pinToBottom() {
         listState.requestScrollToItem(0, BOTTOM_REQUEST_OFFSET)
     }
     // 键盘弹出 / 收起时贴底也要跟着做一次：**矮下去的是视口、buffer 一个字都没动** ——
-    // 少了这一条，原来停在底部的提示符会留在键盘下面，直到下一次有输出才滚回来
-    // （用户报的「自动翻滚不够，还在键盘下面；一敲新命令又滚到位了」）。
+    // 少了这一条，停在底部的提示符会留在键盘下面，直到下一次有输出才滚回来。
     // 在组合里读一次 IME 下边距：键盘动画的每一帧都在改它 ⇒ 键盘动一帧、本屏重组一帧、
     // 贴底请求跟着发一帧 —— 与 ChatScreen 的消息区同一套做法（那边也叫 imeBottom）。
     val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)

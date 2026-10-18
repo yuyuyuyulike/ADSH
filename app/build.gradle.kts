@@ -1,10 +1,10 @@
 import java.util.Properties
 
 plugins {
-    alias(libs.plugins.android.application)
+    // 约定插件自带 AGP、compileSdk/minSdk、JVM 目标、Compose、lint 门禁与 JVM 测试资源开关
+    id("adsh.android.application")
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.ksp)
 }
 
 /**
@@ -19,43 +19,23 @@ val hasSideSigning = sideProps.getProperty("sideStoreFile") != null
 
 android {
     namespace = "com.adsh.app"
-    compileSdk = 37
-    ndkVersion = "28.2.13676358"
 
     defaultConfig {
-        // 方案 A：applicationId 直接就是 com.termux，于是官方前缀 /data/data/com.termux/files/usr
-        // 真实存在，官方 .deb 的 shebang 与硬编码路径全部天然可用（详见 HANDOFF.md）。
+        // 包名就是 com.termux：官方前缀 /data/data/com.termux/files/usr 真实存在，
+        // 官方 .deb 的 shebang 与硬编码路径天然可用（见 docs/ARCHITECTURE.md 硬约束第 1 条）。
         applicationId = "com.termux"
-        minSdk = 26
         /**
-         * targetSdk **故意钉在 28**（与官方 Termux 一样），这是内嵌 Termux 能做「直接 exec」的唯一前提。
-         *
-         * 安卓 10 起，`targetSdk >= 29` 的应用不能执行自己数据目录里的文件（AOSP sepolicy
-         * "Enforce execve() restrictions for API > 28"）。官方 Termux 的绕法是 termux-exec 的
-         * `system_linker_exec`：改成 exec 系统 linker，由它加载目标。这条路的**官方文档化副作用**是
-         * `/proc/<pid>/exe` 指向 linker64 而不是真实程序 —— 于是所有「靠自身路径定位资源」的程序
-         * （Chromium/Electron 的 ICU、任何 `uv_exepath` 的用法）启动即崩，静态链接的二进制也跑不了，
-         * 直接调 `execve()` 的程序同样要打补丁（第 72 轮实测：headless_shell 报
-         * `Invalid file descriptor to ICU data received`，strace 显示它去找
-         * `/apex/com.android.runtime/bin/icudtl.dat`）。
-         *
-         * 设备的 seapp_contexts 把 targetSdk 映射成 SELinux 域（`minTargetSdkVersion=28 →
-         * untrusted_app_27`），而 termux-exec 的 `is-enabled` 正是按域判断的（它豁免
-         * `untrusted_app_25` / `untrusted_app_27`）：钉在 28 就自动什么改写都不做 = stock Termux
-         * 的行为，`/proc/self/exe`、静态 PIE、裸 `execve`、脚本 shebang 全部恢复正常。
-         *
-         * 代价（都是可接受/可验证的）：Google Play 要求 targetSdk 34+，本项目只走 GitHub Release
-         * 侧载；Android 15/16 的安装下限是 24，28 仍然装得上；旧 targetSdk 会拿回一批「旧版行为」
-         * （legacy 外部存储、后台启动放宽等），对自用侧载应用没有坏处。
+         * targetSdk **必须钉在 28**：内嵌 Termux 直接 exec 自己数据目录里文件的唯一前提。
+         * 29 起 AOSP sepolicy 禁止这种 exec；官方 `system_linker_exec` 绕法会让 `/proc/<pid>/exe` 指向
+         * linker64，靠自身路径定位资源的程序（ICU / `uv_exepath` / 静态链接 / 裸 `execve`）启动即崩。
+         * 代价（上不了 Play、旧版行为回归）可接受 —— 本项目只走 Release 侧载。
+         * 完整约束见 `docs/ARCHITECTURE.md` 的硬约束清单第 1 条。
          */
         targetSdk = 28
         // versionCode 只往前加：手机上的 0.1.3（code 5）不能降级安装
         // （release 不可 debuggable，-d 也不放行），退回就是「卸载重装 = 丢数据」。
-        versionCode = 15
-        versionName = "0.2.3"
-        ndk {
-            abiFilters += listOf("arm64-v8a")
-        }
+        versionCode = 16
+        versionName = "0.2.4"
     }
 
     signingConfigs {
@@ -88,12 +68,9 @@ android {
         }
 
         /**
-         * 并存版：独立签名 + 与 debug 相同的包名（com.termux）。
-         *
-         * 注意：这里没有 applicationIdSuffix，所以它**不是**另一个应用 —— 与 debug 版互斥
-         * （同包名、不同签名，装不进同一台设备）。方案 A 之前它靠独立包名 + 等长别名与
-         * debug 共存，那套机制已经删除（见 HANDOFF.md 的『不要破的硬规矩』一节）；现在它的用途
-         * 只剩「用另一把密钥出一个与 debug 等价的包」。
+         * 并存版：独立签名、**与 debug 同包名**（没有 applicationIdSuffix），所以它不是另一个应用 ——
+         * 与 debug 版互斥（同包名不同签名，装不进同一台设备）。用途只有「用另一把密钥出一个
+         * 与 debug 等价的包」。
          */
         if (hasSideSigning) {
             create("side") {
@@ -105,25 +82,12 @@ android {
                 isDebuggable = true
                 isMinifyEnabled = false
                 isShrinkResources = false
+                // 依赖的库模块（:seam / :ui:blocks / :feature:chat …）只有 debug / release 两个变体。
+                // 少了这一行，AGP 会给 side 变体报「No matching variant」，**打 APK 直接失败**；
+                // 而单测 / lint 只碰 debug 变体，看不见它 —— 所以门禁必须包含一次 APK 组装。
+                matchingFallbacks += listOf("debug")
             }
         }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    buildFeatures {
-        compose = true
-        buildConfig = true
     }
 
     packaging {
@@ -134,43 +98,20 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
-        // 这里以前有一条 pickFirsts "lib/*/libtermux.so"：它是为 terminal-view 那个 AAR
-        // 带的 JNI 去重的。那个依赖已经删掉（见第五十四轮），规则随之变成空转，一并去掉。
-    }
-
-    lint {
-        // targetSdk 钉在 28 是**有意的**（内嵌 Termux 直接 exec 的唯一前提，见 defaultConfig 里
-        // 那段注释）。lint 的 ExpiredTargetSdkVersion 默认是 error，会让 lintVitalRelease 直接
-        // 失败；这里显式关掉它，其余检查照旧。
-        disable += "ExpiredTargetSdkVersion"
     }
 
     // execLibs 直接进各变体的 jniLibs（src/main/execLibs/arm64-v8a/lib*.so）。
+    // 包名就是 com.termux，官方前缀即真前缀 —— **不要**在构建期改这些 ELF 与脚本里的任何字节
+    // （它们从 nativeLibraryDir 执行，改文本会把前缀改成不存在的路径）。
     //
-    // 历史上这里有个 patchExecLibs* 任务：包名还不是 com.termux 时，要把 ELF 与脚本里的官方
-    // 前缀就地换成同长度的别名（那些文件运行期从 nativeLibraryDir 执行，而 APK 的 lib 目录只读，
-    // 只能在构建期改）。方案 A（包名 = com.termux）之后官方前缀**就是**真前缀，一个字节都
-    // 不用改，任务与别名算法一起删除（见 HANDOFF.md 的『不要破的硬规矩』一节）。
-    //
-    // 路径只能在这里静态给出：AGP 9 的 SourceSet API 不收 Provider，Variant API 的
-    // addStaticSourceDirectory 又不生效（实测产物没进 APK），所以按变体名写死 ——
-    // 变体集合在 buildTypes 里就固定了（debug / release / side）。
+    // 路径只能静态给出：AGP 9 的 SourceSet API 不收 Provider，Variant API 的 addStaticSourceDirectory
+    // 又不生效（实测产物没进 APK），所以按变体名写死 —— 变体集合在 buildTypes 里就固定了。
     sourceSets {
         getByName("debug").jniLibs.srcDir(layout.projectDirectory.dir("src/main/execLibs"))
         getByName("release").jniLibs.srcDir(layout.projectDirectory.dir("src/main/execLibs"))
         if (hasSideSigning) {
             getByName("side").jniLibs.srcDir(layout.projectDirectory.dir("src/main/execLibs"))
         }
-    }
-}
-
-ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
-}
-
-kotlin {
-    compilerOptions {
-        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
@@ -186,17 +127,41 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
 
-    implementation(libs.androidx.room.runtime)
-    ksp(libs.androidx.room.compiler)
-
     implementation(libs.quickjs.android)
 
-    implementation(libs.haze)
-    implementation(libs.haze.blur)
-    implementation(libs.haze.blur.material3)
+    // 抽屉拉开时主内容逐渐变糊（同窗口内 Haze 背景模糊）
 
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
 
+    // 能力缝（seam）：定义与实现分属不同模块，边界由编译器守。
+    implementation(project(":seam"))
+
+    // 平台层：Termux 进程 / PTY / 原生 shim，实现 :seam 的 Shell 端口。
+    implementation(project(":platform:termux"))
+
+    // 界面渲染基础（原 :ui:kit 并入）：Markdown / LaTeX / 块渲染 / 调色板。
+    implementation(project(":ui:blocks"))
+
+    // 对话 feature：会话宿主 / 会话屏 / 输入区 / 轮次渲染。
+    implementation(project(":feature:chat"))
+
+    // 核心层：agent 循环、工具、LLM、持久化、后台任务。
+    implementation(project(":core:tools"))
+    implementation(project(":core:data"))
+    implementation(project(":core:agent"))
+
+    // JVM 测试底座：JUnit4 跑，Robolectric 提供安卓运行时，Compose ui-test 断言语义树，
+    // Turbine 断言 Flow。全部在 JVM 上跑，不需要模拟器。
+    testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.turbine)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.test.ext.junit)
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    // 不挂 androidx.compose.ui:ui-test-manifest：它声明的 androidx.activity.ComponentActivity 带
+    // MAIN/LAUNCHER，debug 包会多出第二个桌面图标（实测）。:app 自己没有 Compose 规则单测；
+    // :feature:chat 用自己的 debug 清单，它的同名节点由 app/src/debug/AndroidManifest.xml 删掉。
 }

@@ -54,8 +54,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.adsh.app.BuildConfig
 import com.adsh.app.core.data.SettingsStore
+import com.adsh.app.ui.blocks.RiskConfirmationDialog
+import com.adsh.app.ui.chat.DshMenuCard
+import com.adsh.app.ui.chat.DshMenuRow
+import com.adsh.app.ui.chat.DshPopup
+import com.adsh.app.ui.chat.PERMISSION_PRESETS
+import com.adsh.app.ui.chat.permissionPreset
 import com.adsh.app.ui.theme.LocalDshPalette
+import com.adsh.app.ui.kit.DshSpacing
+import com.adsh.app.ui.kit.DshSettingIcons
+import com.adsh.app.ui.kit.dshClickable
+import com.adsh.app.ui.kit.dshInteraction
 import kotlinx.coroutines.launch
+import com.adsh.app.seam.exec.Permissions
+import com.adsh.app.seam.model.ThemeMode
 
 
 // ------------------------------------------------------------------ 设置外壳
@@ -96,7 +108,7 @@ data class SettingsBindings(
  *  - 内容 .options padding 0 24 24，各分节自己滚动。
  *
  * 手机只有 ~394dp 宽，188 的左栏放不下：把同一批 navCell 横过来放在标题下面（同样的尺寸与配色），
- * 内容仍是原来的分节，左右内边距从 24 收到 16。
+ * 内容仍按分节排列，左右内边距从 24 收到 16。
  */
 @Composable
 fun SettingsScreen(
@@ -121,10 +133,8 @@ fun SettingsScreen(
             .fillMaxSize()
             .background(palette.bgLayer2)
             .statusBarsPadding()
-            // 键盘与导航栏：**必须显式让出**（MainActivity 调了 enableEdgeToEdge()，
-            // 窗口不再随输入法 resize）。少了这一层，设置页的下半部分（系统提示词附录、
-            // 展开卡片里的输入框）会被键盘盖住 —— 用户第 99 轮报的就是这个。
-            // 与 ChatScreen 同一套（ime ∪ navigationBars，只取底边）。
+            // 键盘与导航栏：**必须显式让出**（MainActivity 调了 enableEdgeToEdge()，窗口不再随输入法
+            // resize）。少了这一层，设置页下半部分会被键盘盖住。与 ChatScreen 同一套（ime ∪ navigationBars）。
             .windowInsetsPadding(
                 WindowInsets.ime.union(WindowInsets.navigationBars).only(WindowInsetsSides.Bottom)
             ),
@@ -305,11 +315,8 @@ private fun GeneralSection(
             onSelect = bindings.onBusyEnter,
         )
 
-        // 以下是这个客户端自己的项（dsh 没有对应插件）：系统提示词附录 / 关于。
-        // 「工作区」原来也在这里，但它跟着当前会话走（会话自带工作区），列出来只会误导；
-        // 绑定入口留在抽屉的「工作区 +」里。
-        // 「边缘防误触」第 99 轮按用户要求撤掉选项：宽度固定 12dp（见 AppRoot）——
-        // 它本来也只有「关闭 / 窄 / 中 / 宽」四档，用户口径是「别让我配，直接默认」。
+        // 以下是这个客户端自己的项（dsh 没有对应插件）：系统提示词附录 / 关于。「工作区」跟着当前会话走，
+        // 列在这里只会误导；绑定入口留在抽屉的「工作区 +」里。「边缘防误触」的选项已撤：宽度固定 12dp（见 AppRoot）。
         SystemPromptSetting(settings)
         AboutSetting()
     }
@@ -319,7 +326,7 @@ private fun GeneralSection(
             onDismiss = { confirmFullAccess = false },
             onConfirm = {
                 confirmFullAccess = false
-                bindings.onPermission(SettingsStore.PERMISSION_FULL_ACCESS)
+                bindings.onPermission(Permissions.FULL_ACCESS)
             },
         )
     }
@@ -347,7 +354,7 @@ private fun PermissionSetting(bindings: SettingsBindings, onRequestFullAccess: (
                                 selected = item.id == bindings.permission,
                                 onClick = {
                                     open = false
-                                    if (item.id == SettingsStore.PERMISSION_FULL_ACCESS &&
+                                    if (item.id == Permissions.FULL_ACCESS &&
                                         item.id != bindings.permission
                                     ) {
                                         onRequestFullAccess()
@@ -385,9 +392,9 @@ private data class ThemeCube(val id: String, val label: String, val icon: ImageV
 
 /** dsh 的 CUBES：浅色 / 深色 / 跟随系统（顺序与图标逐字取自 ui-theme） */
 private val THEME_CUBES = listOf(
-    ThemeCube(SettingsStore.THEME_LIGHT, "浅色", DshSettingIcons.Light),
-    ThemeCube(SettingsStore.THEME_DARK, "深色", DshSettingIcons.Dark),
-    ThemeCube(SettingsStore.THEME_SYSTEM, "跟随系统", DshSettingIcons.FollowSystem),
+    ThemeCube(ThemeMode.LIGHT, "浅色", DshSettingIcons.Light),
+    ThemeCube(ThemeMode.DARK, "深色", DshSettingIcons.Dark),
+    ThemeCube(ThemeMode.SYSTEM, "跟随系统", DshSettingIcons.FollowSystem),
 )
 
 /**

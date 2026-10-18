@@ -239,17 +239,37 @@ def parse_file(path, rel, collect_decls):
 MANIFEST_RE = re.compile(r'android:name="([^"]+)"')
 
 
+def walk_dirs(dirs):
+    """os.walk 里要下探的目录：排除构建/缓存目录与点目录（.tmp*、.git 等）。"""
+    return [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+
+
+def source_dirs(root):
+    """仓库里所有 <模块>/src/<变体> 目录：(相对目录, 变体名, 绝对目录)。
+
+    判据是目录结构（src/<变体>），不要求 build.gradle.kts —— 夹具合成树与真实多模块仓库
+    因此走同一条路；切了模块之后 :core:* / :seam:* / :ui:kit 的源码照样进扫描。
+    """
+    for base_dir, dirs, _files in os.walk(root):
+        dirs[:] = walk_dirs(dirs)
+        rel = os.path.relpath(base_dir, root).replace("\\", "/")
+        parts = rel.split("/")
+        if len(parts) >= 2 and parts[-2] == "src":
+            yield rel, parts[-1], base_dir
+
+
 def manifest_references(root):
     """AndroidManifest 里 android:name 点到的类：系统按名字实例化，源码里当然搜不到引用。
 
     这正是 Android Lint 的 MissingClass 检查的反方向（那边查「清单点了但类不存在」，
-    这边要保证「清单点到的类不许被当成死代码」）。
+    这边要保证「清单点到的类不许被当成死代码」）。清单现在分散在各模块的 src/<变体> 下。
     """
     names = {}
-    for rel in ("app/src/main/AndroidManifest.xml", "app/src/debug/AndroidManifest.xml"):
-        path = os.path.join(root, rel)
+    for rel_dir, _variant, base in source_dirs(root):
+        path = os.path.join(base, "AndroidManifest.xml")
         if not os.path.exists(path):
             continue
+        rel = rel_dir + "/AndroidManifest.xml"
         text = open(path, encoding="utf-8", errors="replace").read()
         for fq in MANIFEST_RE.findall(text):
             simple = fq.rsplit(".", 1)[-1]
@@ -260,13 +280,14 @@ def manifest_references(root):
 
 def load_sources(root):
     sources = {}
-    for bucket, subdir in (("main", "main"), ("test", "test")):
-        base = os.path.join(root, "app", "src", subdir)
+    for _rel, variant, base in source_dirs(root):
+        if variant not in ("main", "test"):
+            continue
         for base_dir, dirs, files in os.walk(base):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            dirs[:] = walk_dirs(dirs)
             for name in files:
                 if name.endswith(".kt"):
-                    sources[os.path.join(base_dir, name)] = bucket
+                    sources[os.path.join(base_dir, name)] = variant
     return sources
 
 

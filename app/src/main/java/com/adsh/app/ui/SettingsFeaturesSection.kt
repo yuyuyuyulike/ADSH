@@ -31,16 +31,23 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.adsh.app.R
 import com.adsh.app.core.data.SettingsStore
+import com.adsh.app.ui.blocks.DeepseekBlue500
+import com.adsh.app.ui.blocks.DshButton
+import com.adsh.app.ui.blocks.DshModal
+import com.adsh.app.ui.blocks.DshSidebarIcons
 import com.adsh.app.ui.theme.LocalDshPalette
+import com.adsh.app.ui.kit.DshSpacing
+import com.adsh.app.ui.kit.DshSettingIcons
+import com.adsh.app.ui.kit.dshClickable
 
 /**
- * 设置页「功能」区（dsh 的 settings.plugins；从 [SettingsScreen] 切出来的一簇，R54）。
+ * 设置页「功能」区（dsh 的 settings.plugins）。
  *
  * 三张插件卡（终端 / 智能体循环 / 网页搜索）+ 换搜索引擎的子窗口 + 两个品牌色常量。
  * 这里的东西只被这一簇自己用；小件（SettingsCard / PluginCard / ValueField / SecretField…）
  * 来自 [SettingsParts.kt]，外壳的 [SectionColumn] 来自 [SettingsScreen]。
  *
- * 切缝口径见 [SettingsModelsSection] 的说明（整簇搬走、正文一字不改、private → internal）。
+ * 分节边界见 [SettingsModelsSection]：每个分节整簇一个文件，顶层声明用 internal 跨文件可见。
  */
 
 // ------------------------------------------------------------------ 功能（dsh 的 settings.plugins）
@@ -152,9 +159,9 @@ internal fun TerminalPlugin(settings: SettingsStore) {
             numeric = true,
             invalid = !outputValid,
         )
-    // 终端会话那一块第 117 轮整个搬到了抽屉（dsh 那里它就是侧栏的一个面板）：
-    // 入口、「Termux 前缀位于 …」以及**安装失败的报错**都在那边 —— 报错直接顶替抽屉里
-    // 那一行的「终端会话」几个字（见 AppRoot 的 DrawerPanelRow），设置页不再留终端的信息。
+    // 终端会话那一块整个搬到了抽屉（dsh 那里它就是侧栏的一个面板）：入口、「Termux 前缀位于 …」
+    // 以及**安装失败的报错**都在那边 —— 报错直接顶替抽屉里那一行的「终端会话」几个字
+    // （见 AppRoot 的 DrawerPanelRow），设置页不再留终端的信息。
     }
 }
 
@@ -181,8 +188,7 @@ internal fun AgentLoopPlugin(settings: SettingsStore) {
             } else {
                 loopSaving = true
                 settings.agentMaxParallel = maxParallel.trim().toInt()
-                // 立刻生效：闸门不用等到下一轮才换上限
-                com.adsh.app.core.tools.ToolConcurrency.configure(settings.agentMaxParallel)
+                // 闸门是每轮一份的（见 ToolConcurrency），下一次 run_code 装配 ToolContext 时读到新值
                 maxParallel = settings.agentMaxParallel.toString()
                 loopFailed = null
                 loopSaving = false
@@ -194,8 +200,7 @@ internal fun AgentLoopPlugin(settings: SettingsStore) {
         },
     ) {
         // dsh 的 agent-loop 设置里只有这一项（AGENT_LOOP_SETTINGS_SCHEMA）。
-        // ADSH 以前多一个「单条消息往返轮数上限」，已按 dsh 去掉：
-        // 长任务不该被次数截断，真正要防的是「模型调用失误」——
+        // 不要恢复「单条消息往返轮数上限」：长任务不该被次数截断，真正要防的是「模型调用失误」——
         // 那由同一组参数重复 3 次 / 单条消息工具调用超过 300 次这两条死循环判据兜住。
         ValueField(
             label = "并行工具调用数",
@@ -277,7 +282,7 @@ internal fun WebSearchPlugin(settings: SettingsStore) {
             label = "API Key",
             stateLabel = when {
                 webKey.isNotBlank() -> "已配置密钥。"
-                // 第 103 轮：DeepSeek 后端的密钥跟提供方走（dsh 的搜索提供方复用会话凭据）
+                // DeepSeek 后端的密钥跟提供方走（dsh 的搜索提供方复用会话凭据）
                 settings.webSearchKeyFollowsProvider(backendId) -> "已跟随 DeepSeek 提供方的密钥。"
                 webConfigured -> "已配置密钥。"
                 else -> "未配置密钥；配置之前搜索不可用。"
@@ -329,12 +334,9 @@ internal fun WebSearchPlugin(settings: SettingsStore) {
 
 
 /**
- * 「更换搜索引擎」子窗口（dsh 里没有这一层 UI：dsh 的搜索提供方由配置文件的 provider id
- * 决定，这里把它做成设置页里的选择器）。列出的就是 ctx.web 里装着的两个提供方；
- * 选中只改卡片正在显示的那一套字段，真正切换发生在「保存」。
- *
- * 第 99 轮按用户口径改形状：**去掉提供方名字下面那句讲解**、每个提供方一枚图标、每一项套上
- * 与设置页卡片同款的方框（[SettingsCard]：.5px border-l4 + 圆角 16），选中态用底色 + 对勾表达。
+ * 「更换搜索引擎」子窗口（dsh 没有这一层 UI：搜索提供方由配置文件的 provider id 决定，这里做成设置页
+ * 里的选择器）。选中只改卡片正在显示的那一套字段，真正切换发生在「保存」；形状是每个提供方一枚图标、
+ * 套上与设置页卡片同款的方框（[SettingsCard]：.5px border-l4 + 圆角 16），选中态用底色 + 对勾。
  */
 @Composable
 internal fun WebSearchBackendDialog(
@@ -397,18 +399,9 @@ internal fun WebSearchBackendDialog(
 }
 
 /**
- * 搜索后端的**品牌标识**：
- *  - DeepSeek：官方鲸鱼 mark（`ic_dsh_whale`，路径取自 dsh 前端自身的 FISH_LOGO_PATH），
- *    用 DeepSeek 的品牌蓝；
- *  - Exa：官方 logomark（`ic_exa_mark`，取自 exa.ai 的 wordmark SVG 里那条沙漏形 path），
- *    用 Exa 品牌页 Figure 4 的 Exa blue；
- *  - Tavily（第 103 轮加的）：官方 brand mark 的**符号部分**（`ic_tavily_mark`：三个箭头，
- *    取自 tavily.com/logos/tavily-mark-black.svg 的后三条子路径 —— 那条 path 的第一条子路径是
- *    「应用图块」的实心底，会把 18dp 的格子填成一个黑方块；用户第 104 轮点名「图标不对，我记得
- *    不是这样的」）。官方指引是「浅色底用黑、深色底用米白」，所以这一个**跟着主题走**，
- *    与另外几个固定品牌色不同；
- *  - 秘塔搜索（第 103 轮加的）：官方应用图标（`ic_metaso_mark`，metaso.cn 的 apple-touch-icon），
- *    本身就是蓝色圆角方块 + 白色标记的**彩色**图形，所以不 tint。
+ * 搜索后端的**品牌标识**（官方 mark 路径已内嵌为 drawable）：DeepSeek = 鲸鱼 mark（`ic_dsh_whale`）+ 品牌蓝，
+ * Exa = logomark（`ic_exa_mark`）+ Exa blue，秘塔搜索 = 应用图标（`ic_metaso_mark`，彩色、**不 tint**）。
+ * Tavily 只能用 brand mark 的符号部分（`ic_tavily_mark`：三个箭头），且**跟主题走**（浅底黑 / 深底米白）。
  */
 @Composable
 internal fun WebBackendMark(id: String) {

@@ -1,12 +1,12 @@
 package com.adsh.app.core.session
 
-import com.adsh.app.core.ptc.SubCall
+import com.adsh.app.seam.ptc.SubCall
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 会话日志的契约（dsh 的 `Session`，spec-log §1 / §7.2）。
+ * 会话日志的契约（dsh 的 `Session` 与它的不变式，见 `packages/core/session`）。
  *
  * 这些断言是重写的护栏：界面以后只读日志，所以「seq 连续」「结果必有调用」「子调用必须挂在
  * 已开始的父调用上」这三条一旦破了，界面表现为「少一行 / 多一行」，而不是抛错。
@@ -34,7 +34,7 @@ class SessionLogTest {
         assertTrue(SessionLog.violations(log.events).isEmpty())
     }
 
-    /** 一步定稿也是一条普通事件：进日志、占一个 seq、不影响任何跨事件不变量（第 111 轮） */
+    /** 一步定稿也是一条普通事件：进日志、占一个 seq、不影响任何跨事件不变量 */
     @Test
     fun aCommittedStepIsJustAnotherEvent() {
         val log = SessionLog()

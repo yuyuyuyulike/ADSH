@@ -4,11 +4,16 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.adsh.app.seam.tool.PresentedFile
+import com.adsh.app.seam.tool.collectDeliverables
+import com.adsh.app.seam.tool.decodeDeliverables
+import com.adsh.app.seam.tool.deliverableDisplayPath
+import com.adsh.app.seam.tool.encodeDeliverables
 
 /**
  * 交付物（dsh 的 `deliverables/presented`）的落库形态与轮内收集规则。
  *
- * 第八十三轮：present 的文件卡片要画在**一轮的最下方**（dsh 的 turnTail 槽），
+ * present 的文件卡片要画在**一轮的最下方**（dsh 的 turnTail 槽），
  * 数据源是工具行上的 deliverablesJson —— 这两条不变量在这里钉住。
  */
 class DeliverablesTest {
@@ -36,7 +41,7 @@ class DeliverablesTest {
 
     /**
      * 交付物卡片里显示的路径：工作区内裁掉工作区前缀，工作区外原样
-     * （用户第 85 轮：「保留路径，但前面那段工作区的路径要去掉（这样省空间）」）。
+     * （用户点名：「保留路径，但前面那段工作区的路径要去掉（这样省空间）」）。
      */
     @Test
     fun displayPathDropsTheWorkspacePrefixOnly() {

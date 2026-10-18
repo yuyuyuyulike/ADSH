@@ -1,6 +1,6 @@
 package com.adsh.app.ui
 
-import com.adsh.app.core.data.ApiProtocol
+import com.adsh.app.seam.llm.ApiProtocol
 import com.adsh.app.core.data.BuiltInProviders
 import com.adsh.app.core.data.ModelDef
 import com.adsh.app.core.data.ProviderDef
@@ -203,7 +203,7 @@ internal sealed interface ProviderSave {
 }
 
 /**
- * 编辑卡按「保存」时那三个字段的规范化与校验（原先写在按钮的 onClick 里）。
+ * 编辑卡按「保存」时那三个字段的规范化与校验（纯函数；按钮只负责调它）。
  *
  * 与 dsh 的 keyStored 语义一致 —— **密钥框不回显**，所以：
  *  - 密钥留空 = 保持原密钥（用户没打算换）；
@@ -213,12 +213,12 @@ internal sealed interface ProviderSave {
  * 校验两条（与 dsh 的编辑卡同口径）：
  *  - 目录里第一处不合法的行（ID 空 / trim 后重复）→ **整条不保存**，报文是 dsh 的
  *    `模型 N: 原因`（[modelProblemText]）。dsh 那边保存键在 `modelFailure !== undefined`
- *    时就是暗的（见 ProviderCard 的 `enabled`），这里再兜一道：旧版本可能已经往设置里
- *    存进去一条 id = "" 的模型；
+ *    时就是暗的（见 ProviderCard 的 `enabled`），这里再兜一道：设置里可能已经存在一条
+ *    id = "" 的模型（保存键变暗挡不住已经落盘的那条）；
  *  - 目录为空 → **整条不保存**（[PROVIDER_NEEDS_MODELS]）。这一条是 ADSH 自己的口径
  *    （dsh 的编辑卡允许存一份空目录，靠 ModelCatalogEditor 那句「模型选择器中将不显示
  *    任何模型」的空态提示），保留是因为「恢复默认模型」与那句空态都建立在这条守卫上；
- *    要与 dsh 完全对齐是单独一轮的决定。
+ *    与 dsh 完全对齐需要同时改掉那两处。
  */
 internal fun providerSaved(
     provider: ProviderDef,
@@ -321,15 +321,14 @@ internal fun providersAdded(providers: List<ProviderDef>, created: ProviderDef):
  *
  * **ADSH 的偏差**（写清楚免得被当成漏改）：目录里已经有的**不列出来**。dsh 会把服务端给的
  * 全部列出来、只把「目录里还没有的」预先勾上（勾一条已有的等于什么都不做），ADSH 直接不列。
- * 这个偏差从第 60 几轮就在，[FetchModelsDialog] 的两句空态文案（「服务端返回 N 个模型，
- * 全部已经在目录里了」）也建立在它上面。
+ * 空态文案跟着它走：[FetchModelsDialog] 的「服务端返回 N 个模型，全部已经在目录里了」就是按「全被过滤光」说的。
  */
 internal fun fetchCandidates(fetchedIds: List<String>, existing: List<String>): List<String> =
     fetchedIds.filterNot { it in existing }
 
 /**
  * 搜索框过滤（dsh 的 `normalizedCandidateQuery`）：**先去前后空格**，再大小写不敏感地包含。
- * 以前不去空格 —— 输入「 gpt」一个都匹配不到，而 dsh 会匹配。
+ * 不去空格的话输入「 gpt」一个都匹配不到（dsh 会匹配）。
  * dsh 还会匹配模型的显示名，ADSH 的 `LlmClient.listModels()` 只回 id，没有名字可匹配。
  */
 internal fun candidateFilter(candidates: List<String>, query: String): List<String> {
@@ -347,8 +346,8 @@ internal fun allVisiblePicked(selected: Set<String>, visible: List<String>): Boo
  *  - 可见的**全部**已选 → 清空（dsh 也是 `new Set()`，连当前看不见的一起清）；
  *  - 否则 → **并集**（保留看不见的那些已选）。
  *
- * 以前写的是「替换成可见的那些」，于是「先勾 A → 再搜出 B → 点全选」会把 A 悄悄丢掉
- * （接着点「添加所选」就少加一个模型）—— dsh 是并集，这里照它。
+ * **不能写成「替换成可见的那些」**：那样「先勾 A → 再搜出 B → 点全选」会把 A 悄悄丢掉
+ * （接着点「添加所选」就少加一个模型）；dsh 是并集，这里照它。
  * 可见为空时那枚按钮本来就是禁用的，[allVisiblePicked] 返回 false 也就不会走清空那一支。
  */
 internal fun toggleAllVisible(selected: Set<String>, visible: List<String>): Set<String> =
@@ -359,7 +358,7 @@ internal fun toggleAllVisible(selected: Set<String>, visible: List<String>): Set
  * `candidates` 而不是勾选集合），并用内置目录把档案补齐 —— [BuiltInProviders.knownModel]
  * 决定 acceptsImages / contextWindow，图片能力就靠它（否则从服务端加回来的 deepseek-flash
  * 会把用户发的图片换成「image omitted」占位）。
- * 以前是 `selected.sorted()` —— 按字母序，与弹窗里看到的顺序不一致。
+ * **不要对勾选集合排序**：按字母序会与弹窗里看到的顺序不一致，返回顺序必须跟 candidates 一致。
  */
 internal fun adoptedModels(candidates: List<String>, selected: Set<String>): List<ModelDef> =
     candidates.filter { it in selected }.map { BuiltInProviders.knownModel(it) ?: ModelDef(it) }
@@ -370,10 +369,9 @@ internal fun adoptedModels(candidates: List<String>, selected: Set<String>): Lis
  * 改一行（dsh 的 DeepSeekModelsEditor.update：只动那一行，其余行原样）。
  *
  * **下标越界天然是空操作**：`mapIndexed` 只枚举 0..size-1，越界的下标命中不了任何一行，
- * 结果就是「原样返回」。旧写法 `models.toMutableList().also { it[index] = … }` 会直接抛
- * IndexOutOfBounds，而组合里删行与重组之间确实可能差一帧 —— 所以这个形状本身就是保护。
- * （R51 的变异测试试过给它加一道 `if (index !in models.indices) return models`：
- * 拿掉那道 guard 之后 567 个用例仍全绿 —— 说明它是死代码，已删。）
+ * 结果就是「原样返回」。**不要改成 `models.toMutableList().also { it[index] = … }`**：
+ * 那会直接抛 IndexOutOfBounds，而组合里删行与重组之间确实可能差一帧 —— 所以这个形状本身就是保护。
+ * 额外再加 `if (index !in models.indices) return models` 这样的 guard 是死代码（变异测试证实），不要加。
  */
 internal fun modelEdited(models: List<ModelDef>, index: Int, edit: (ModelDef) -> ModelDef): List<ModelDef> =
     models.mapIndexed { at, model -> if (at == index) edit(model) else model }

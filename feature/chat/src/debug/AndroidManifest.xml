@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Robolectric 的 Compose ui-test 需要清单里有一个已声明的宿主 Activity（ActivityScenario）。
+  :app 的 debug 变体已经通过 ui-test-manifest 依赖声明了同一个 androidx.activity.ComponentActivity，
+  所以这里只声明进 debug 清单：库模块自己的单测读的是本模块的合并清单，读不到 app 的那一份。
+  与 ui-test-manifest 里的声明逐字一致（相同节点会被清单合并器合并，不产生重复）。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name="androidx.activity.ComponentActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

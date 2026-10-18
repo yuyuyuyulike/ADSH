@@ -4,11 +4,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * 视口 → PTY 网格（[terminalGrid]）—— R10 从 LazyColumn 的 onSizeChanged 里提出来的纯函数。
+ * 视口 → PTY 网格（[terminalGrid]）：从 LazyColumn 的 onSizeChanged 里提出的纯函数。
  *
  * 这条公式决定终端里所有程序怎么排版（apt 的进度条、ls 的分栏、less 的分页、top 的整屏刷新）：
- * PTY 说自己 100 列宽、屏幕只有 45 列，输出就会在屏幕中间硬折行。它以前长在 538 行的
- * @Composable 里，一行都测不了；现在截断方向与上下限都有打表。
+ * PTY 说自己 100 列宽、屏幕只有 45 列，输出就会在屏幕中间硬折行。截断方向与上下限都有打表。
  */
 class TerminalGridTest {
 

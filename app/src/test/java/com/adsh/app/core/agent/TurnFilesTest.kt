@@ -4,9 +4,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.adsh.app.seam.tool.PresentedFile
+import com.adsh.app.seam.model.FileChange
 
 /**
- * 轮尾文件卡片的行集合（第 86 轮并表）。
+ * 轮尾文件卡片的行集合（两张卡并成一张）。
  *
  * 起因是用户点名两条：「交付的文件上面多了一块」（同一个文件被画了两张卡）
  * 与「你做的那一块少了 +a -b 部分」—— 现在改动与交付并成一行一个文件，

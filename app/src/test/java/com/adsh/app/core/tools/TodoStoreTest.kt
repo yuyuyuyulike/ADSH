@@ -5,7 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 任务清单的**会话隔离**（第 71 轮用户实测：换个会话，上一个会话的任务横窗还挂在输入框上面）。
+ * 任务清单的**会话隔离**（用户实测过：换个会话，上一个会话的任务横窗还挂在输入框上面）。
  *
  * 对齐 dsh 的 session projection「todos」：清单属于写它的那条会话，
  * 并且 `turn/start` 会把它清空。

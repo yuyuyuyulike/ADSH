@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * 终端输出清洗流水线（[TerminalText]）—— 第六十九轮。
+ * 终端输出清洗流水线（[TerminalText]）。
  *
  * 这一层是终端页唯一有状态、且直接决定「屏幕上看到什么」的逻辑：PTY 出来的是**原始字节流**，
  * 一次 read 会从任意位置切开（多字节字符、`\r\n`、转义序列都可能被劈成两半）。
@@ -49,8 +49,7 @@ class TerminalTextTest {
     /**
      * 真机实测的字节（PTY 里 `bash -i` 开头就是这些）：readline 的**括号粘贴模式**
      * `ESC[?2004h` / `ESC[?2004l` 是 CSI 的**私有模式**（'?' 不是终结字节，h/l 才是），
-     * 终端必须照样吃掉 —— 漏一个，用户每敲一条命令就看见一次 `[?2004h` 垃圾
-     * （run-as 深测 bash 时抓到的原始字节，见 R78）。
+     * 终端必须照样吃掉 —— 漏一个，用户每敲一条命令就看见一次 `[?2004h` 垃圾。
      */
     @Test
     fun ansiPrivateModesAreEatenNotPrinted() {

@@ -4,6 +4,19 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.adsh.app.seam.model.UserAttachment
+import com.adsh.app.seam.model.decodeAttachments
+import com.adsh.app.seam.model.encodeAttachments
+import com.adsh.app.seam.model.fileHandleText
+import com.adsh.app.seam.model.hasImageAttachment
+import com.adsh.app.seam.model.imageHandleText
+import com.adsh.app.seam.model.imageRouteHintText
+import com.adsh.app.seam.model.textOnlyImageText
+import com.adsh.app.seam.tool.ToolImage
+import com.adsh.app.seam.tool.decodeToolImages
+import com.adsh.app.seam.tool.encodeToolImages
+import com.adsh.app.seam.tool.requestImageDimensions
+import com.adsh.app.seam.tool.toolImageEnvelope
 
 /**
  * 附件在模型侧的表示（dsh 的 dsh-llm/content.ts）：
@@ -105,7 +118,7 @@ class AttachmentsTest {
     }
 
     /**
-     * 「这一轮带没带图片」与失败文案（第八十三轮）：模型目录里没收录的新模型默认按能收图发，
+     * 「这一轮带没带图片」与失败文案：模型目录里没收录的新模型默认按能收图发，
      * 收不了就在报错后面直接指路回设置页 —— 判据只看这一轮的用户消息有没有图片附件。
      */
     @Test

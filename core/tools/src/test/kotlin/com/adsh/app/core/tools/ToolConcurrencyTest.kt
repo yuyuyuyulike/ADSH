@@ -1,0 +1,406 @@
+package com.adsh.app.core.tools
+
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.coroutineContext
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+
+/**
+ * 并行工具闸门：30 个并发请求 + 上限 10，实际重叠数不能超过 10
+ * （用户实测 dsh 里 10、ADSH 里一瞬间 30，这条测试就是钉住这个上限）。
+ */
+class ToolConcurrencyTest {
+
+    /** 每个用例一份新调度器 —— 生产里也是每个 run_code 一份（见 ToolConcurrency 的 KDoc） */
+    private lateinit var gate: ToolConcurrency
+
+    @Before
+    fun setUpGate() {
+        gate = ToolConcurrency(10)
+    }
+
+    @Test(timeout = 30_000)
+    fun neverExceedsConfiguredLimit() = runBlocking {
+        gate.configure(10)
+        var peakInside = 0
+        val running = java.util.concurrent.atomic.AtomicInteger(0)
+        (1..30).map {
+            async(Dispatchers.Default) {
+                gate.withToolPermit("read") {
+                    val now = running.incrementAndGet()
+                    if (now > peakInside) peakInside = now
+                    Thread.sleep(5)
+                    running.decrementAndGet()
+                }
+            }
+        }.awaitAll()
+        assertTrue("重叠数 $peakInside 超过了上限 10", peakInside <= 10)
+        assertEquals(0, gate.running)
+    }
+
+    @Test(timeout = 30_000)
+    fun limitOneIsSerial() = runBlocking {
+        gate.configure(1)
+        var peakInside = 0
+        val running = java.util.concurrent.atomic.AtomicInteger(0)
+        (1..8).map {
+            async(Dispatchers.Default) {
+                gate.withToolPermit("read") {
+                    val now = running.incrementAndGet()
+                    if (now > peakInside) peakInside = now
+                    Thread.sleep(2)
+                    running.decrementAndGet()
+                }
+            }
+        }.awaitAll()
+        assertEquals(1, peakInside)
+    }
+
+    /**
+     * 闸门必须**可重入**：工具自己内部再并发时（web_search 把多个 query 扇出去就是）
+     * 会在同一个信号量上再取一次许可 —— 上限是 1 的时候，外层那一下就把许可拿光了，
+     * 内层永远等不到，一直到 run_code 的 120s 超时才有结果。
+     * dsh 里不存在这个问题：它的上限只挂在「一次子调用」上，工具内部的事与它无关。
+     */
+    @Test(timeout = 30_000)
+    fun nestedFanOutDoesNotDeadlockAtLimitOne() = runBlocking {
+        gate = ToolConcurrency(1)
+        val done = async(Dispatchers.Default) {
+            gate.withToolPermit("read") {
+                // 模拟 web_search 的 queries 扇出：真实代码是 coroutineScope { async { … } }，
+                // 扇出的 scope 从**当前协程**派生（才带得上「已持有许可」的标记）
+                kotlinx.coroutines.coroutineScope {
+                    (1..4).map { async(Dispatchers.Default) { gate.withToolPermit("read") { it } } }.awaitAll()
+                }
+            }
+        }
+        assertEquals(listOf(1, 2, 3, 4), kotlinx.coroutines.withTimeout(5_000) { done.await() })
+        assertEquals("嵌套调用不该重复计数", 0, gate.running)
+    }
+
+    /** 嵌套调用占的还是同一个名额：并发数不会因为可重入而被放大 */
+    @Test(timeout = 30_000)
+    fun nestedCallsStillCountAsOneSlot() = runBlocking {
+        gate = ToolConcurrency(2)
+        val running = java.util.concurrent.atomic.AtomicInteger(0)
+        var peakInside = 0
+        (1..8).map {
+            async(Dispatchers.Default) {
+                gate.withToolPermit("read") {
+                    val now = running.incrementAndGet()
+                    if (now > peakInside) peakInside = now
+                    kotlinx.coroutines.coroutineScope {
+                        (1..3).map { async(Dispatchers.Default) { gate.withToolPermit("read") { Thread.sleep(2) } } }
+                            .awaitAll()
+                    }
+                    running.decrementAndGet()
+                }
+            }
+        }.awaitAll()
+        assertTrue("重叠数 $peakInside 超过了上限 2", peakInside <= 2)
+        assertEquals(0, gate.running)
+        gate = ToolConcurrency(10)
+    }
+
+    // ------------------------------------------------------------ 写类独占
+
+    /**
+     * 写类调用（bash / write / edit / 未知工具）**独占**：同时刻最多一个在跑。
+     *
+     * dsh 的 tools:sdk 段里逐字写着 "safe calls run concurrently; mutating calls run alone,
+     * in submission order"。ADSH **不能只用一个计数信号量** —— 那句承诺会是假的：
+     * `Promise.all([tools.write(a), tools.write(b)])` 真的会同时写同一个文件。
+     */
+    @Test(timeout = 30_000)
+    fun exclusiveCallsNeverOverlap() = runBlocking {
+        gate = ToolConcurrency(4)
+        val running = java.util.concurrent.atomic.AtomicInteger(0)
+        var peakInside = 0
+        (1..6).map {
+            async(Dispatchers.Default) {
+                gate.withToolPermit("bash") {
+                    val now = running.incrementAndGet()
+                    if (now > peakInside) peakInside = now
+                    Thread.sleep(5)
+                    running.decrementAndGet()
+                }
+            }
+        }.awaitAll()
+        assertEquals("写类调用重叠了", 1, peakInside)
+        assertEquals(0, gate.running)
+        gate = ToolConcurrency(10)
+    }
+
+    /** 写类调用要等**正在跑的读类调用**跑完才进来（run alone 的另一半） */
+    @Test(timeout = 30_000)
+    fun exclusiveWaitsForRunningSafeCalls() = runBlocking {
+        gate = ToolConcurrency(4)
+        val safeInside = CompletableDeferred<Unit>()
+        val releaseSafe = CompletableDeferred<Unit>()
+        val writerStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+        val safe = async(Dispatchers.Default) {
+            gate.withToolPermit("read") {
+                safeInside.complete(Unit)
+                releaseSafe.await()
+            }
+        }
+        safeInside.await()
+        val writer = async(Dispatchers.Default) {
+            gate.withToolPermit("bash") {
+                writerStarted.set(true)
+            }
+        }
+        // 读类还在跑：写类必须还在等（给它两帧的时间，别把「还没调度到」误判成「等着」）
+        Thread.sleep(30)
+        assertTrue("读类调用还在跑时，写类调用就已经进来了", !writerStarted.get())
+        releaseSafe.complete(Unit)
+        safe.await()
+        writer.await()
+        assertTrue("读类结束后写类没有进来", writerStarted.get())
+        gate = ToolConcurrency(10)
+    }
+
+    /**
+     * 反向的那一半（单测抓到的真 bug）：写类**开始跑之后**，排在它后面的读类
+     * 也必须等着 —— 只保证「写类等到池子排空才开跑」是不够的：一旦它开跑，
+     * `inFlight(1) < maxParallel` 又成立，后面的读类调度位照样被放行，于是读文件的同时
+     * bash 把它改掉。真正独占要求「它在跑的整段时间里没有任何新调度位被放行」。
+     */
+    @Test(timeout = 30_000)
+    fun safeCallWaitsWhileAnExclusiveCallRuns() = runBlocking {
+        gate = ToolConcurrency(4)
+        val writerInside = CompletableDeferred<Unit>()
+        val releaseWriter = CompletableDeferred<Unit>()
+        val safeStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+        val writer = async(Dispatchers.Default) {
+            gate.withToolPermit("bash") {
+                writerInside.complete(Unit)
+                releaseWriter.await()
+            }
+        }
+        writerInside.await()
+        val safe = async(Dispatchers.Default) {
+            gate.withToolPermit("read") { safeStarted.set(true) }
+        }
+        Thread.sleep(30)
+        assertTrue("写类还在跑时读类就进来了", !safeStarted.get())
+        releaseWriter.complete(Unit)
+        writer.await()
+        safe.await()
+        assertTrue("写类结束后读类没有进来", safeStarted.get())
+        assertEquals(0, gate.running)
+        gate = ToolConcurrency(10)
+    }
+
+    /** 分类表：只有登记过的工具名算并行安全；未知工具按写类处理（宁严勿松） */
+    @Test
+    fun onlyListedToolsAreSafe() {
+        assertTrue(ToolConcurrency.isSafe("read"))
+        assertTrue(ToolConcurrency.isSafe("grep"))
+        assertTrue(ToolConcurrency.isSafe("web_search"))
+        assertTrue(!ToolConcurrency.isSafe("bash"))
+        assertTrue(!ToolConcurrency.isSafe("write"))
+        assertTrue(!ToolConcurrency.isSafe("edit"))
+        assertTrue(!ToolConcurrency.isSafe("some-future-tool"))
+    }
+
+    // ------------------------------------------------- 独立调用：提交顺序 + 并发
+
+    /**
+     * 生产形状的骨架：宿主用一个**单线程派发器**按到达顺序 launch 每个调用（[com.adsh.app.platform.ptc.PtcProcess]），
+     * 调用在里面先登记调度位、再把工具体挪到 IO。顺序保证来自「单线程派发 → 登记顺序 = 到达顺序」，
+     * 并发保证来自闸门。这三条用例就是把这两件事钉住。
+     */
+    private fun submitInOrder(count: Int, block: suspend (Int) -> Unit) = runBlocking {
+        val dispatch = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val scope = kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.SupervisorJob() + dispatch.asCoroutineDispatcher(),
+        )
+        try {
+            (0 until count).map { index -> scope.launch { block(index) } }.forEach { it.join() }
+        } finally {
+            dispatch.shutdown()
+        }
+    }
+
+    /**
+     * 写类调用必须**按提交顺序**跑（测试报告 1.1 的真机实测：10 个并发 bash 的顺序是
+     * 2,1,3,5,6,7,8,10,9,4）。SDK 段逐字写着 dsh 的 "mutating calls run alone, in submission
+     * order" —— 串行只是其中一半，顺序是另一半。
+     */
+    @Test(timeout = 30_000)
+    fun mutatingCallsRunInSubmissionOrder() {
+        gate = ToolConcurrency(10)
+        val order = java.util.Collections.synchronizedList(ArrayList<Int>())
+        submitInOrder(10) { index ->
+            gate.withToolPermit("bash") {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    order.add(index)
+                    Thread.sleep(3)
+                }
+            }
+        }
+        assertEquals("写类调用的执行顺序必须等于提交顺序", (0..9).toList(), order.toList())
+        assertEquals(0, gate.running)
+    }
+
+    /** 读类调用照样能重叠：顺序保证不能把并行一起吃掉（名额仍由闸门管） */
+    @Test(timeout = 30_000)
+    fun safeCallsOverlap() {
+        gate = ToolConcurrency(4)
+        val peak = java.util.concurrent.atomic.AtomicInteger(0)
+        val running = java.util.concurrent.atomic.AtomicInteger(0)
+        submitInOrder(8) {
+            gate.withToolPermit("read") {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    val now = running.incrementAndGet()
+                    peak.updateAndGet { maxOf(it, now) }
+                    Thread.sleep(5)
+                    running.decrementAndGet()
+                }
+            }
+        }
+        assertTrue("读类调用没有重叠（peak=$peak）", peak.get() > 1)
+        assertTrue("读类调用超过了上限（peak=$peak）", peak.get() <= 4)
+        assertEquals(0, gate.running)
+    }
+
+    /**
+     * 混批：队头的读类彼此重叠，随后的写类**独占**（跑的时候没有任何别的调用在跑）且按提交顺序。
+     *
+     * 注意顺序构造：调度器是**提交顺序 + 队头阻塞**（dsh 的 pendingQueue）—— 队首是写类时，
+     * 它后面的读类也要等它跑完（不让写类被后面源源不断的读类饿死）。所以「读类重叠」这条
+     * 要在写类**之前**提交才能观察到。
+     */
+    @Test(timeout = 30_000)
+    fun mutatingCallsStayExclusiveAmongSafeOnes() {
+        gate = ToolConcurrency(4)
+        val inside = java.util.concurrent.atomic.AtomicInteger(0)
+        val writerOverlapped = java.util.concurrent.atomic.AtomicBoolean(false)
+        val writersSeen = java.util.concurrent.atomic.AtomicInteger(0)
+        val peakSafe = java.util.concurrent.atomic.AtomicInteger(0)
+        val names = listOf("read", "read", "read", "bash", "edit", "write")
+        submitInOrder(names.size) { index ->
+            gate.withToolPermit(names[index]) {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    val now = inside.incrementAndGet()
+                    if (ToolConcurrency.isSafe(names[index])) peakSafe.updateAndGet { maxOf(it, now) }
+                    if (!ToolConcurrency.isSafe(names[index])) {
+                        writersSeen.incrementAndGet()
+                        if (now > 1) writerOverlapped.set(true)
+                    }
+                    Thread.sleep(4)
+                    inside.decrementAndGet()
+                }
+            }
+        }
+        assertEquals("三个写类调用都要跑", 3, writersSeen.get())
+        assertTrue("写类调用与别的调用重叠了", !writerOverlapped.get())
+        assertTrue("读类一条都没重叠（peak=$peakSafe）", peakSafe.get() > 1)
+        assertEquals(0, gate.running)
+    }
+
+    /**
+     * 等名额时被取消（用户中断 / run_code 的看门狗）**不能漏水**：名额可能已经被 pump 兑现，
+     * 不还回去的话池子永久少一格 —— 攒够上限之后所有写类调用一起卡死（实测现场：
+     * 「停止」之后整条会话再也跑不动工具）。
+     */
+    @Test(timeout = 30_000)
+    fun cancellingWhileQueuedReleasesTheSlot() = runBlocking {
+        gate = ToolConcurrency(1)
+        val firstInside = CompletableDeferred<Unit>()
+        val releaseFirst = CompletableDeferred<Unit>()
+        val first = async(Dispatchers.Default) {
+            gate.withToolPermit("read") {
+                firstInside.complete(Unit)
+                releaseFirst.await()
+            }
+        }
+        firstInside.await()
+        // 第二个（写类）只能排队等着 —— 它要么在 granted.await() 上被取消，要么已经兑现
+        val second = async(Dispatchers.Default) {
+            gate.withToolPermit("bash") { }
+        }
+        Thread.sleep(50)
+        second.cancel()
+        releaseFirst.complete(Unit)
+        first.await()
+        runCatching { second.await() }
+        // 给 pump 一点时间把归还后的名额放出去
+        Thread.sleep(50)
+        assertEquals("取消一个排队中的调用漏水了：池子里还占着名额", 0, gate.running)
+        gate = ToolConcurrency(10)
+    }
+
+    // ------------------------------------------------------------ 标记是怎么传下去的
+
+    private class Marker : AbstractCoroutineContextElement(Marker) {
+        companion object Key : CoroutineContext.Key<Marker>
+    }
+
+    /** 协程上下文里的自定义元素能穿过 withContext + async(Dispatchers.Default) */
+    @Test(timeout = 20_000)
+    fun aContextElementSurvivesWithContextAndAsync() = runBlocking {
+        val seen = CompletableDeferred<Boolean>()
+        kotlinx.coroutines.withContext(Marker()) {
+            seen.complete(async(Dispatchers.Default) { coroutineContext[Marker.Key] != null }.await())
+        }
+        assertTrue("标记没有传下去", seen.await())
+    }
+
+    /**
+     * 「已持有许可」的标记确实传到了嵌套的扇出里。
+     *
+     * 注意 `async` 绑的是**词法上的 CoroutineScope 接收者**：直接写在
+     * `runBlocking { withToolPermit("read") { async(…) } }` 里时它绑的是 runBlocking 的 scope（不带标记），
+     * 只有 `coroutineScope { async(…) }` 这种「从当前协程派生」的形状才带得上 ——
+     * 真实代码（QuickJsRuntime → WebSearchTool）正是后一种形状。
+     * 第一版测试就是写成了前一种形状，于是把一段正确的实现误判成了死锁。
+     */
+    /**
+     * 上一轮卡死在非协作取消里的调用**不能拖死下一轮**：每轮一份调度器时，旧实例里占着写类名额的
+     * 协程不在新实例的队列里。真机事故：一次 edit 卡住后，下一次 run_code 连参数校验都进不去。
+     */
+    @Test(timeout = 30_000)
+    fun aStuckRunDoesNotWedgeTheNextRun() = runBlocking {
+        val stuckGate = ToolConcurrency(4)
+        val neverReleased = CompletableDeferred<Unit>()
+        val stuck = async(Dispatchers.Default) {
+            stuckGate.withToolPermit("edit") { neverReleased.await() }
+        }
+        // 等它真的占住写类名额
+        while (stuckGate.running == 0) Thread.sleep(5)
+        // 新的一轮（新实例）照常跑，且读类/写类都不受旧实例影响
+        val next = ToolConcurrency(4)
+        kotlinx.coroutines.withTimeout(5_000) {
+            next.withToolPermit("read") { }
+            next.withToolPermit("bash") { }
+        }
+        assertEquals(0, next.running)
+        neverReleased.complete(Unit)
+        stuck.await()
+        assertEquals(0, stuckGate.running)
+    }
+
+    @Test(timeout = 20_000)
+    fun theHoldingMarkerReachesNestedFanOut() = runBlocking {
+        gate = ToolConcurrency(1)
+        val inside = CompletableDeferred<Boolean>()
+        gate.withToolPermit("read") {
+            inside.complete(coroutineScope { async(Dispatchers.Default) { gate.holdingNow() }.await() })
+        }
+        assertTrue("withToolPermit 的标记没有传到嵌套的 async 里", inside.await())
+        gate = ToolConcurrency(10)
+    }
+}

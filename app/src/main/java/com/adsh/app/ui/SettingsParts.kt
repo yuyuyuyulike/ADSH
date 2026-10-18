@@ -47,10 +47,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.adsh.app.ui.theme.LocalDshPalette
+import com.adsh.app.ui.kit.DshSpacing
+import com.adsh.app.ui.kit.DshSettingIcons
+import com.adsh.app.ui.kit.dshClickable
+import com.adsh.app.ui.kit.dshInteraction
 
 /**
- * 设置页**共用的小件**（尺寸与配色都来自 dsh 的 settings CSS；从 [SettingsScreen] 切出来的
- * 第三簇，R55）。
+ * 设置页**共用的小件**（尺寸与配色都来自 dsh 的 settings CSS）。
  *
  * 卡片与分隔线（SettingsCard / DshHairline / DisclosureCard / CardFrame / PluginCard）、
  * 药丸与标签（SelectorPill / DshTag / TagTone / CredentialDot）、输入框（DshInput / ValueField /
@@ -58,7 +61,7 @@ import com.adsh.app.ui.theme.LocalDshPalette
  * CircleIconAction）与勾选框（CheckBoxMark）。
  *
  * 这一簇的可见性是 `internal`：三块分节（通用设置 / [SettingsModelsSection] /
- * [SettingsFeaturesSection]）都从别的文件用它们。切缝口径见 [SettingsModelsSection] 的说明。
+ * [SettingsFeaturesSection]）都从别的文件用它们。[SettingsFeaturesSection]）都从别的文件用它们。分节边界见 [SettingsModelsSection] 的说明。
  */
 
 // ------------------------------------------------------------------ 设置页共用的小件（尺寸都来自 dsh 的 CSS）

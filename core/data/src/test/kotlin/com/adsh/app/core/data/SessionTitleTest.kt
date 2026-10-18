@@ -1,0 +1,137 @@
+package com.adsh.app.core.data
+
+import com.adsh.app.core.llm.ThinkingOption
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * 会话标题的三条纯判定（照 dsh 的 session-title / normalize 口径，见 SessionTitle.kt 的引用）：
+ * 兜底标题怎么切、模型返回的标题怎么洗、以及字节级截断不切码点。
+ */
+class SessionTitleTest {
+
+    @Test
+    fun `兜底标题取前五个空格分隔的词`() {
+        assertEquals("one two three four five", fallbackSessionTitle("one two three four five six seven"))
+        // 中文没有空格 ⇒ 整段算一个 token（dsh 的实测行为）
+        assertEquals("帮我配置一下镜像", fallbackSessionTitle("帮我配置一下镜像"))
+    }
+
+    /**
+     * 取哪一条：dsh 的 `titleInputOf().first`（首条真人消息）。通知 / 插话带 name，不算。
+     */
+    @Test
+    fun `兜底标题取第一条真人消息`() {
+        val messages = listOf(
+            MessageEntity(conversationId = 1, createdAt = 0L, role = "sysprompt", content = "系统提示词"),
+            MessageEntity(conversationId = 1, createdAt = 0L, role = "user", name = "tool-jobs", content = "任务跑完了"),
+            MessageEntity(conversationId = 1, createdAt = 0L, role = "user", content = "帮我配置一下镜像源"),
+            MessageEntity(conversationId = 1, createdAt = 0L, role = "assistant", content = "好的"),
+            MessageEntity(conversationId = 1, createdAt = 0L, role = "user", content = "再改一下别的"),
+        )
+        // 中文没有空格 ⇒ 整段算一个 token、27 字节没到 40 的坎，原样留下
+        assertEquals("帮我配置一下镜像源", fallbackTitleOf(messages))
+        // 没有真人消息 / 清洗后什么都不剩：不写（dsh 的 appendFallback 同样什么都不写）
+        assertNull(fallbackTitleOf(emptyList()))
+        assertNull(
+            fallbackTitleOf(
+                listOf(MessageEntity(conversationId = 1, createdAt = 0L, role = "user", content = " \u200B\u001B[31m ")),
+            ),
+        )
+    }
+
+    @Test
+    fun `兜底标题按 40 个 UTF-8 字节截断`() {
+        // 20 个汉字 = 60 字节 ⇒ 只能留下 13 个（39 字节），第 14 个会超到 42
+        val long = "一二三四五六七八九十一二三四五六七八九十"
+        val title = fallbackSessionTitle(long)
+        assertTrue("字节数应当 ≤40：" + title.toByteArray(Charsets.UTF_8).size, title.toByteArray(Charsets.UTF_8).size <= 40)
+        assertEquals("一二三四五六七八九十一二三四五六七八九十".take(13), title)
+    }
+
+    @Test
+    fun `清洗去掉 ANSI 转义 零宽字符 并压缩空白`() {
+        assertEquals("红色 标题", normalizeSessionTitle("\u001B[31m红色\u001B[0m\n\t标题\u200B"))
+        // 不去引号、不去标点：dsh 只靠 system prompt 约束模型
+        assertEquals("\"带引号的标题\"", normalizeSessionTitle("\"带引号的标题\""))
+    }
+
+    @Test
+    fun `按字节截断不切码点`() {
+        assertEquals("aaaa", truncateTitleUtf8("aaaa\uD83D\uDE00", 4))
+        assertEquals("a\uD83D\uDE00", truncateTitleUtf8("a\uD83D\uDE00", 5))
+        // 80 字节上限：21 个汉字（63 字节）原样留下
+        val twenty = "一二三四五六七八九十一二三四五六七八九十"
+        assertEquals(twenty, normalizeSessionTitle(twenty))
+    }
+
+    /**
+     * 标题请求的**两个关键字段**：`max_tokens = 64` 与调用点算出来的 `thinking = disabled`。
+     *
+     * 这条钉的是用户报的 bug（DeepSeek 的会话标题没有总结）：少了 thinking，会推理的模型会把
+     * 64 个 token 全花在推理上、`content` 为空 → 标题永远生成不出来。实测（api.deepseek.com，
+     * model = deepseek-flash）：不加字段 finish=length / content 0 字 / reasoning 175 字；
+     * 加了 `thinking: {type: disabled}` 之后 finish=stop / content 10 字 / 6 个 token。
+     */
+    @Test
+    fun `标题请求带上 max_tokens 与关掉的 thinking`() {
+        val request = titleRequest("deepseek-flash", "你好，帮我看看这个 bug", ThinkingOption("disabled"))
+        assertEquals("deepseek-flash", request.model)
+        assertEquals(TITLE_MAX_OUTPUT_TOKENS, request.maxTokens)
+        assertEquals(ThinkingOption("disabled"), request.thinking)
+        assertNull(request.reasoningEffort)
+        assertEquals(2, request.messages.size)
+        assertEquals(listOf("system", "user"), request.messages.map { it.role })
+        assertTrue(request.stream)
+    }
+
+    /** 不给 thinking 时这个键整个不发（explicitNulls = false）——别的提供方不认识它 */
+    @Test
+    fun `没有 thinking 时请求里没有这个字段`() {
+        assertNull(titleRequest("qwen3.8-flash", "你好", null).thinking)
+        assertNull(titleRequest("qwen3.8-flash", "你好", null).enableThinking)
+    }
+
+    /**
+     * qwen 系走的是另一个字段：enable_thinking = false（判据见 titleNoThink 的 KDoc）。
+     * 两个字段不会同时发：DeepSeek 只发 thinking，DashScope 只发 enable_thinking。
+     */
+    @Test
+    fun dashScopeRouteDisablesEnableThinkingForTheTitleCall() {
+        val request = titleRequest("qwen3.8-flash", "你好", null, enableThinking = false)
+        assertEquals(false, request.enableThinking)
+        assertNull("DeepSeek 那个字段在这条路由上又慢又没用，不发", request.thinking)
+        assertEquals(TITLE_MAX_OUTPUT_TOKENS, request.maxTokens)
+    }
+
+    @Test
+    fun `user 提示词就是 dsh 那句加一个 JSON 数组`() {
+        val prompt = titleUserPrompt("帮我看看这个 bug")
+        assertTrue(prompt.startsWith("Generate the session title from this JSON array of human messages:"))
+        assertEquals("Generate the session title from this JSON array of human messages:\n[{\"seq\":1,\"text\":\"帮我看看这个 bug\"}]", prompt)
+        // 引号与反斜杠按 JSON 转义
+        assertTrue(titleUserPrompt("a \"b\" c\\d").endsWith("[{\"seq\":1,\"text\":\"a \\\"b\\\" c\\\\d\"}]") || titleUserPrompt("a \"b\" c\\d").contains("\\\"b\\\""))
+    }
+
+    @Test
+    fun `system 提示词逐字是 dsh 的那四行`() {
+        assertTrue(TITLE_SYSTEM_PROMPT.startsWith("Create a concise title for an AI coding-assistant session"))
+        assertTrue(TITLE_SYSTEM_PROMPT.contains("Use the language of the messages."))
+        assertTrue(TITLE_SYSTEM_PROMPT.contains("about 5 words in non-CJK languages or 10 CJK characters"))
+    }
+
+    /**
+     * 写进去的值与判据里的值必须是同一个字符串 —— 这条断言就是那个「同一个」。
+     *
+     * 时序（按 dsh 核对）：首条人类消息落库时写**兜底值**（`ChatViewModel.writeFallbackTitle`
+     * = dsh 的 `ensureFallback`），主请求写到连接上时再跑标题模型覆盖它（`ChatEvent.RequestHeader`
+     * = dsh 的 `onRequestHeader`）。原先那 6 条钉 `sessionTitleFor`（repository 追加消息时算标题）
+     * 的用例随那个函数一起删了，判定现在只有上面两条纯函数 + 一次 CAS。
+     */
+    @Test
+    fun `兜底值是「新会话」三个字`() {
+        assertEquals("新会话", NEW_SESSION_TITLE)
+    }
+}

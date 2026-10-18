@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  :feature:chat 的 debug 清单为它自己的 Robolectric Compose 单测声明了一个
+  androidx.activity.ComponentActivity（带 MAIN/LAUNCHER）—— 那个节点会随库的 debug 变体合并进
+  本 App 的 debug APK，于是桌面上多出第二个图标（打开是一个空白 Activity）。
+  :app 自己不用它（:app 的单测没有 Compose 规则用例），所以这里把节点从最终清单里删掉。
+
+  以后若 :app 也要写 createComposeRule 单测：把用例放进 :feature:chat（它的合并清单里有这个
+  Activity），或删掉下面的 remove 并接受 debug 包多一个空白入口。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <activity
+            android:name="androidx.activity.ComponentActivity"
+            tools:node="remove" />
+    </application>
+</manifest>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- lint 配置：只收录「本仓库有意为之、理由写在硬约束里」的检查项，逐条注明原因。
+     其余检查一律照常上报；修不动的告警留在报告里，不进这个文件。 -->
+<lint>
+    <!-- targetSdk 必须 28（内嵌 Termux 直接 exec 的前提，docs/ARCHITECTURE.md 硬约束 1），
+         拿回 legacy 外部存储是这条前提的组成部分。 -->
+    <issue id="ScopedStorage" severity="ignore" />
+    <!-- /data/data/com.termux/files/... 是包名取 com.termux 之后的真实应用数据目录，不是外置存储卡。 -->
+    <issue id="SdCardPath" severity="ignore" />
+    <!-- 只出 arm64-v8a：内嵌 Termux 的 ELF 与 bootstrap 都是 aarch64，x86 ChromeOS 无从谈起。 -->
+    <issue id="ChromeOsAbiSupport" severity="ignore" />
+</lint>

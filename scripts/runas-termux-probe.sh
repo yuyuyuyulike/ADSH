@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# ADSH 内嵌 Termux 的 run-as 深度探针（第 183 轮，R94）。每个判定都打 ok / FAIL / skip，末尾给合计。
+# ADSH 内嵌 Termux 的 run-as 深度探针。每个判定都打 ok / FAIL / skip，末尾给合计。
 # 配套的 runas-termux-runner.sh 负责把环境摆成 App 的样子（LD_PRELOAD 必须在 bash 启动前就在）。
 #
 # 覆盖：身份/内核 → 环境事实（前缀/家目录/TMPDIR/预载库）→ bash 本体与链接 → 工具可达性

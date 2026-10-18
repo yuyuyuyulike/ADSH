@@ -6,7 +6,7 @@ import com.adsh.app.runtime.termux.PtySession
 import com.adsh.app.runtime.termux.ShellLaunch
 
 /**
- * 终端页的**会话侧**（R10 从 538 行的 TerminalPanel 里按「状态与 I/O」/「渲染」切出来的第一刀）：
+ * 终端页的**会话侧**（与 TerminalParts.kt 的「渲染」相对）：
  * PTY 的启动与读循环、输出清洗流水线、视口算出来的网格，以及只被这些逻辑用到的常量。
  * 这个文件里一行 Compose UI 都没有 —— 三块布局在 TerminalParts.kt，页面状态机在 TerminalPanel.kt。
  *
@@ -99,8 +99,7 @@ private const val BUFFER_PUSH_MS = 16L
 /**
  * 读 PTY 的输出：清洗之后攒到一帧的量写回界面（[onFrame]），会话结束（EOF / 出错）时回调 [onExited]。
  *
- * 跑在自己的守护线程上（原来是就地 Thread { … }.apply { isDaemon = true }.start()）：
- * 读循环会一直阻塞在 read 上，不能占着 Compose 的协程调度器。
+ * **必须跑在自己的守护线程上**：读循环会一直阻塞在 read 上，不能占着 Compose 的协程调度器。
  */
 internal fun startPtyPump(
     session: PtySession,

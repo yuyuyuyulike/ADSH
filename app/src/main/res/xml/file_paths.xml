@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 「用其他应用打开」的受控路径：工作区（共享存储）与 App 私有目录；SD 卡走 root-path -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path name="internal" path="." />
+    <cache-path name="cache" path="." />
+    <external-path name="external" path="." />
+    <root-path name="root" path="." />
+</paths>

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# 第 64 轮：写围栏 shim（app/src/main/cpp/fence.c）的本地行为自测。
+# 写围栏 shim（platform/termux/src/main/cpp/fence.c）的本地行为自测。
 # 把与真机同一份源码编成 Linux .so，LD_PRELOAD 挂进 bash，按模式分组验证判决：
-#   A 没有任何围栏变量 = 不判决（第 64 轮的 bug 现场，完全权限就长这样）
+#   A 没有任何围栏变量 = 不判决（bug 现场，完全权限就长这样）
 #   B workspace-write = 只有白名单内可写（区外拒 + 逐字标记）  C read-only = 任何写都拒
 #   D 显式 danger-full-access = 不判决                        E/F 有模式无根 = 失败关闭
 #   G bionic 自传播（env -u LD_PRELOAD 摘不掉）  H 非 bionic 不塞 preload  I chmod 不误报
-#   J shebang 自愈（第 67 轮）：脚本被拒时改 exec 解释器（自测旋钮 ADSH_SHEBANG_FORCE 复现）
+#   J shebang 自愈：脚本被拒时改 exec 解释器（自测旋钮 ADSH_SHEBANG_FORCE 复现）
 # 用法：bash scripts/fence-selftest.sh     （40 项全过 = 门闸语义正确）
 # 坑：测试树必须放在 /tmp **之外**（ADSH_TMP_REDIRECT 会把 /tmp 映射走，放 /tmp 下路径会被 shim 改写）
 set -uo pipefail
@@ -17,7 +17,7 @@ WS="$T/ws"
 export T FENCE TMPMAP WS
 mkdir -p "$WS" "$T/outside" "$TMPMAP"
 cd "$T" || exit 1
-gcc -shared -fPIC -O2 -o "$FENCE" "$ROOT/app/src/main/cpp/fence.c" -ldl -lpthread 2> "$T/gcc.log" || { echo "BUILD FAILED"; cat "$T/gcc.log"; exit 1; }
+gcc -shared -fPIC -O2 -o "$FENCE" "$ROOT/platform/termux/src/main/cpp/fence.c" -ldl -lpthread 2> "$T/gcc.log" || { echo "BUILD FAILED"; cat "$T/gcc.log"; exit 1; }
 echo "build ok: $(stat -c%s "$FENCE") bytes, gcc warnings $(grep -c warning: "$T/gcc.log")"
 
 unset ADSH_FENCE_MODE ADSH_FENCE_ROOTS ADSH_FENCE_MARK ADSH_SHIM_DIAG LD_PRELOAD ADSH_TMP_REDIRECT
@@ -38,7 +38,7 @@ probe() { # probe <label> <expect allow|deny> <env-string> <script>
   else printf 'FAIL  %-44s expected=%s got=%s rc=%s\n      %s\n' "$label" "$expect" "$verdict" "$rc" "$(printf '%s' "$out" | head -2 | tr '\n' '|')"; fi
 }
 
-echo "--- A 完全权限：shim 挂着、没有任何围栏变量（第 64 轮的 bug 现场）"
+echo "--- A 完全权限：shim 挂着、没有任何围栏变量（bug 现场）"
 probe "A1 写工作区" allow "" 'echo a > "$WS/a1"'
 probe "A2 写工作区外" allow "" 'echo a > "$T/outside/a2"'
 probe "A3 删工作区外文件" allow "" 'rm -f "$T/outside/a2"'
@@ -75,7 +75,7 @@ probe "E1 写工作区" deny "ADSH_FENCE_MODE=workspace-write ADSH_FENCE_ROOTS="
 
 echo "--- F 未给白名单时的 read-only（fenceEnv 的形状就是 MODE + 空 ROOTS）"
 probe "F1 写工作区" deny "ADSH_FENCE_MODE=read-only" 'echo f > "$WS/f1"'
-echo "--- G bionic 自传播：env -u LD_PRELOAD 摘不掉围栏（第 66 轮）"
+echo "--- G bionic 自传播：env -u LD_PRELOAD 摘不掉围栏"
 INTERP="$(readelf -l /bin/sh 2>/dev/null | sed -n 's/.*interpreter: \(.*\)\]/\1/p' | head -1)"
 if [ -z "$INTERP" ]; then INTERP="/lib64/ld-linux-x86-64.so.2"; fi
 g_env() { # g_env <额外env串> <shell 正文>
@@ -101,7 +101,7 @@ echo "   /glibc/sh 命中=$a（应 0）  普通路径命中=$b（应 >0）"
 if [ "$a" = "0" ]; then echo "PASS  H1 glibc 前缀下的目标不再被塞 bionic preload"; else echo "FAIL  H1 glibc 前缀下仍然挂了 shim（=$a）"; fi
 if [ "$b" != "0" ]; then echo "PASS  H2 bionic 目标仍然挂着 shim（=$b）"; else echo "FAIL  H2 普通 bionic 目标的 shim 被摘掉了"; fi
 
-# H3（第 72 轮按真机 diag 补的）：**脚本**的 shebang 里写的是**解释器程序**，不是加载器 ——
+# H3（按真机 diag 补的）：**脚本**的 shebang 里写的是**解释器程序**，不是加载器 ——
 # 不能拿「不是 linker64 就算外部 libc」去判它。误判的后果很实：脚本子进程丢掉围栏 shim 与
 # termux-exec（真机 diag：`[fixup] … foreign=1 … -> (empty)`），read-only 下脚本照样写得出去。
 cat > "$T/h3.sh" <<'H3EOF'
@@ -118,7 +118,7 @@ iout=$(g_env "ADSH_FENCE_MODE=workspace-write ADSH_FENCE_ROOTS=$WS" "touch \"$WS
 echo "   结果：$iout"
 case "$iout" in *"[fs: chmod"*) echo "FAIL  I1 正常 chmod 也被判成静默改写";; *) echo "PASS  I1 正常 chmod 不报警";; esac
 case "$iout" in *755*) echo "PASS  I2 权限位就是 755";; *) echo "FAIL  I2 权限位不是 755";; esac
-echo "--- J shebang 自愈（第 67 轮）：内核拒绝脚本 exec 时改走解释器"
+echo "--- J shebang 自愈：内核拒绝脚本 exec 时改走解释器"
 # 桌面 Linux 没有安卓那条 W^X（真机上 app 私有目录里的脚本一律 EACCES），所以用 shim 的自测旋钮
 # ADSH_SHEBANG_FORCE=1：只对 #! 脚本假装「内核刚拒绝了这次 exec」，ELF 目标不受影响。
 j_env() { # j_env <额外env串> <shell 正文>
@@ -171,7 +171,7 @@ grep -q '\[shebang\]' "$T/j8.log" 2>/dev/null && echo "FAIL  J8 空解释器也�
 j_env "ADSH_SHEBANG_FORCE=1 ADSH_SHIM_DIAG=$T/j9.log" "\"$J1\"" >/dev/null 2>&1
 grep -q '\[shebang\]' "$T/j9.log" 2>/dev/null && echo "PASS  J9 自愈留下诊断行" || echo "FAIL  J9 诊断里没有 [shebang] 行"
 
-echo "--- L 模拟存储（FUSE）固有约束的提示（第 98 轮，测试报告 3.1）"
+echo "--- L 模拟存储（FUSE）固有约束的提示（测试报告 3.1）"
 # L1 需要一条「路径在 /storage、/sdcard、/mnt、/media 下、且调用真的 EPERM/EACCES」的场景。
 # 桌面 Linux 上只有 /mnt（root 属主、普通用户不可写）能复现；容器里常常是 root，那就跳过
 # （真机那两条 —— 工作区脚本 exec 与工作区符号链接 —— 由真机核对覆盖）。
@@ -186,13 +186,13 @@ if [ -d /mnt ] && [ ! -w /mnt ]; then
       esac;;
     *) echo "FAIL  L1a 模拟存储上的符号链接失败没有提示：$lout";;
   esac
-  # L1b：**相对路径**（第 99 轮的真凶）—— `cd /mnt && ln -s a b` 交给 symlink() 的是 "b"，
+  # L1b：**相对路径**（真凶）—— `cd /mnt && ln -s a b` 交给 symlink() 的是 "b"，
   # 只看字面前缀判不出来，提示一条都不会打（测试 agent 报的正是这个：只有 chmod 那条有 fs 标记）。
   lout=$(cd /mnt && env ADSH_FENCE_MODE=danger-full-access LD_PRELOAD="$FENCE" ADSH_TMP_REDIRECT="$TMPMAP" \
       ln -s /etc/hostname adsh-selftest-rel 2>&1)
   case "$lout" in
     *'[fs: symbolic links cannot be created here'*) echo "PASS  L1b 相对路径（cwd 在模拟存储里）也带 [fs: …] 提示";;
-    *) echo "FAIL  L1b 相对路径没有提示（第 99 轮修的就是这一条）：$lout";;
+    *) echo "FAIL  L1b 相对路径没有提示（修的就是这一条）：$lout";;
   esac
 else
   echo "SKIP  L1 /mnt 不存在或可写，本地无法复现模拟存储的 EPERM/EACCES"

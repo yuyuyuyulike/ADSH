@@ -26,20 +26,16 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.adsh.app.ui.blocks.DshIcons
 import com.adsh.app.ui.theme.LocalDshPalette
+import com.adsh.app.ui.kit.DshSpacing
+import com.adsh.app.ui.kit.dshClickable
+import com.adsh.app.ui.kit.dshInteraction
 
 /**
- * 设置-功能页的「权限」卡：标题 + 一句小字（用户口径：「快捷授予权限。」），展开后三项，每项是
- * **卡体内的一行**（标签 + 状态 + 倒角，行与行之间一条 .5px 分线 —— 与终端 / 智能体循环那些卡里的
- * ValueField 同一套），点一下跳到 adsh 在这个系统上的对应权限页。
- *
- * 第 181 轮用户口径：「方框不要有气泡，风格和其他卡片一致」—— 以前每一行套了一个
- * bgModulePlatform、圆角 12 的方框，看着像一排药丸（同页别的卡的行都是分线分隔、没有底）。
- * 现在去掉底色与圆角，只留分线；行内字号也换成卡体内的那一套（13/20 Medium + 12/18）。
- *
- * 「授予后卡片里也要显示已授权」这条靠**回前台重算**实现：跳出去时本页只是 stop，用户回来会走
- * ON_RESUME（[LifecycleEventObserver]），那一刻把三项状态重新读一遍（[permissionStatus] 每次都读
- * 系统真值，没有本地缓存）。
+ * 设置-功能页的「权限」卡：标题 + 一句小字，展开后三项，每项是**卡体内的一行**（标签 + 状态 + 倒角，
+ * 行间一条 .5px 分线 —— 与终端 / 智能体循环那些卡里的 ValueField 同一套），点一下跳到对应的权限页。
+ * 行内**不要底色与圆角**（套方框会像一排药丸），字号用卡体内那一套；「授予后显示已授权」靠回前台重算。
  */
 @Composable
 internal fun PermissionsCard() {

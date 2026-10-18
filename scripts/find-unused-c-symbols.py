@@ -8,7 +8,7 @@ import os
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CPP = os.path.join(ROOT, 'app', 'src', 'main', 'cpp')
+CPP = os.path.join(ROOT, 'platform', 'termux', 'src', 'main', 'cpp')
 
 corpus = []
 for base, dirs, files in os.walk(ROOT):

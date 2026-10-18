@@ -5,11 +5,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 终端输入行的纯逻辑（R10 第一步：把它们从 548 行的 TerminalPanel 里拆出来）。
+ * 终端输入行的纯逻辑。
  *
- * 为什么先拆这一层：这几个决定原来是 @Composable 里的局部函数，**一行都测不了** ——
- * 纯 JVM 单测起不了 Compose，离线缓存里也没有 Robolectric。而它们恰恰是用户最常撞见的问题：
- * 退格删不掉、↑ 翻不出历史、Ctrl-C 不生效。拆成纯函数之后这里直接打表。
+ * 这些决定必须是纯函数：**一行都测不了 Composable 里的局部函数** —— 纯 JVM 单测起不了
+ * Compose，离线缓存里也没有 Robolectric。而它们恰恰是用户最常撞见的问题：
+ * 退格删不掉、↑ 翻不出历史、Ctrl-C 不生效。这里直接打表。
  */
 class TerminalInputTest {
 
@@ -133,7 +133,7 @@ class TerminalInputTest {
         assertEquals('X', firstInsertedChar("ab", "abX"))
     }
 
-    /** 光标在行中时**不能**取末尾那一位：旧实现拿的是别人家的字符（行尾 c → 误发 Ctrl-C）。 */
+    /** 光标在行中时**不能**取末尾那一位：那是别人家的字符（行尾 c → 误发 Ctrl-C）。 */
     @Test
     fun `光标在行中插入时取插入点那一个`() {
         assertEquals('X', firstInsertedChar("abc", "aXbc"))
@@ -203,7 +203,7 @@ class TerminalInputTest {
     fun `粘滞 Ctrl 取插入点那一个字符`() {
         // 末尾插入 c → Ctrl-C
         assertEquals(DraftOutcome.Control("\u0003"), draftOutcome("ab", "abc", ctrl = true))
-        // 行中插入 X → Ctrl-X（不能取末尾那一位，那是 R38 修的 bug）
+        // 行中插入 X → Ctrl-X（不能取末尾那一位，光标在行中时那是别人家的字符）
         assertEquals(DraftOutcome.Control("\u0018"), draftOutcome("abc", "aXbc", ctrl = true))
         // 一次落进来多个（输入法上屏 / 粘贴）只取第一个
         assertEquals(DraftOutcome.Control("\u0018"), draftOutcome("ab", "abXYZ", ctrl = true))

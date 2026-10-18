@@ -35,29 +35,45 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.adsh.app.core.data.ApiProtocol
+import com.adsh.app.AdshApp
+import com.adsh.app.seam.llm.ApiProtocol
 import com.adsh.app.core.data.BuiltInProviders
 import com.adsh.app.core.data.ProviderCatalog
 import com.adsh.app.core.data.ModelDef
 import com.adsh.app.core.data.ProviderDef
 import com.adsh.app.core.data.SettingsStore
 import com.adsh.app.core.llm.ProviderConfig
+import com.adsh.app.ui.blocks.DshButton
+import com.adsh.app.ui.blocks.DshButtonKind
+import com.adsh.app.ui.blocks.DshCheckbox
+import com.adsh.app.ui.blocks.DshIcons
+import com.adsh.app.ui.blocks.DshModal
+import com.adsh.app.ui.blocks.DshSidebarIcons
+import com.adsh.app.ui.chat.DshMenuCard
+import com.adsh.app.ui.chat.DshMenuRow
+import com.adsh.app.ui.chat.DshPopup
 import com.adsh.app.ui.theme.LocalDshPalette
+import com.adsh.app.ui.kit.DshSpacing
+import com.adsh.app.ui.kit.DshSettingIcons
+import com.adsh.app.ui.kit.dshClickable
+import com.adsh.app.ui.kit.dshInteraction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.adsh.app.seam.llm.DEEPSEEK_BASE_URL
+import com.adsh.app.seam.llm.DEEPSEEK_ID
 
 /**
- * 设置页「模型」区（从 [SettingsScreen] 切出来的一簇，R52）。
+ * 设置页「模型」区。
  *
- * 为什么切：`SettingsScreen.kt` 曾是全库最大的文件（2543 行、40 多个 composable），
- * 里面挤着四块互不引用的东西：外壳 + 通用设置 / 模型区 / 功能区 / 共用小件。切缝口径与
- * R13（ChatScreen 六刀）、R16（抽屉整簇搬 Drawer.kt）一致：**整簇搬走、正文一字不改**，
- * 只把顶层声明的 `private` 改成 `internal`（同包跨文件的最低可见性）。
+ * 分节边界：外壳 + 通用设置（[SettingsScreen]）/ 模型区 / 功能区（[SettingsFeaturesSection]）/
+ * 共用小件（[SettingsParts]），四块互不引用；每簇一个文件，顶层声明用 `internal`
+ * （同包跨文件的最低可见性），不要因为拆分把可见性放宽到 public。
  *
  * 这一簇里还留着 `MODE_CATALOG` / `MODE_CUSTOM` / 两句 Hint 常量 —— 它们只被本文件用到，
  * 所以仍是 `private const val`（文件私有）。
@@ -89,9 +105,8 @@ internal fun ModelsSection(settings: SettingsStore) {
     var editingId by remember { mutableStateOf<String?>(null) }
     var deleting by remember { mutableStateOf<ProviderDef?>(null) }
     /**
-     * dsh 的 adding / declaring 合并成**一个入口 + 卡片里的「添加方式」开关**（第 117 轮，
-     * 用户点名把两个按钮与两张卡片融合）：null = 没在添加，否则就是 dsh 的 AddMode
-     * （[MODE_CATALOG] / [MODE_CUSTOM]）。
+     * dsh 的 adding / declaring 合并成**一个入口 + 卡片里的「添加方式」开关**：null = 没在添加，
+     * 否则就是 dsh 的 AddMode（[MODE_CATALOG] / [MODE_CUSTOM]）。
      */
     var addMode by remember { mutableStateOf<String?>(null) }
     var presetId by remember { mutableStateOf<String?>(null) }
@@ -139,9 +154,9 @@ internal fun ModelsSection(settings: SettingsStore) {
             )
         }
 
-        // dsh 的 .addActions + addCard：**一个**贯穿整行的虚线按钮（「添加模型提供商」），
-        // 点下去之后按钮**被卡片替换** —— 卡片里再用「添加方式」开关分「第三方模型提供商 /
-        // 自定义模型 API」（第 117 轮融合；dsh 现在也是这一个入口 + 一张卡）。
+        // dsh 的 .addActions + addCard：**一个**贯穿整行的虚线按钮（「添加模型提供商」），点下去之后
+        // 按钮**被卡片替换** —— 卡片里再用「添加方式」开关分「第三方模型提供商 / 自定义模型 API」
+        // （dsh 也是这一个入口 + 一张卡）。
         val addedIds = providers.map { it.id }.toSet()
         val addable = ProviderCatalog.presets.filterNot { it.id in addedIds }
         val saved: (ProviderDef) -> Unit = { created ->
@@ -238,12 +253,11 @@ internal fun ProviderCard(
                 if (isCurrent) DshTag("当前", TagTone.Neutral)
                 Spacer(Modifier.weight(1f))
                 SecondaryButton(if (editing) "收起" else "编辑", small = true) { onToggleEdit() }
-                // dsh 的 `row.removable`：**随包内置的提供方右侧没有删除按钮**（ModelsSection 只在
-                // removable 为真时渲染 dangerButton）。dsh 的判据是「用户设置里有、base 里没有」——
-                // base 就是随包发的那一个，ADSH 里等于 [BuiltInProviders.deepseek]（用户第 99 轮点名：
-                // 「取消掉设置-模型里的 deepseek 供应方右侧的删除按钮」）。目录里加进来的（openai 等）
-                // 仍然可删，与 dsh 一致。
-                if (provider.id != BuiltInProviders.DEEPSEEK_ID) {
+                // dsh 的 `row.removable`：**随包内置的提供方右侧没有删除按钮**（只在 removable 为真时
+                // 渲染 dangerButton）。dsh 的判据是「用户设置里有、base 里没有」—— base 就是随包发的
+                // 那一个，ADSH 里等于 [BuiltInProviders.deepseek]。目录里加进来的（openai 等）仍然可删，
+                // 与 dsh 一致。
+                if (provider.id != DEEPSEEK_ID) {
                     DangerSmallButton("删除") { onDelete() }
                 }
             }
@@ -280,7 +294,7 @@ internal fun ProviderCard(
                         DshInput(
                             value = baseUrl,
                             onValueChange = { baseUrl = it },
-                            placeholder = BuiltInProviders.DEEPSEEK_BASE_URL,
+                            placeholder = DEEPSEEK_BASE_URL,
                         )
                     }
 
@@ -588,6 +602,8 @@ internal fun FetchModelsDialog(
 ) {
     val palette = LocalDshPalette.current
     val scope = rememberCoroutineScope()
+    // 一次性 listModels 通道由组合根建（AppContainer.newLlmClient）：这里只给提供方坐标
+    val container = (LocalContext.current.applicationContext as AdshApp).container
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var candidates by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -602,9 +618,7 @@ internal fun FetchModelsDialog(
         error = null
         val result = withContext(Dispatchers.IO) {
             runCatching {
-                com.adsh.app.core.llm.LlmClient(
-                    { com.adsh.app.core.llm.ProviderConfig(baseUrl = baseUrl, apiKey = apiKey, model = "") },
-                ).listModels()
+                container.newLlmClient(ProviderConfig(baseUrl = baseUrl, apiKey = apiKey, model = "")).listModels()
             }
         }
         result.fold(
@@ -717,12 +731,9 @@ internal fun FetchModelsDialog(
 }
 
 /**
- * dsh 的 .addButton：**一个**贯穿整行的虚线按钮（.addActions 里只有它一个，flex:1 1 0），
- * 44 高、圆角 lg、内容居中（图标 + 文案）。点下去按钮被「添加卡片」替换（见 ModelsSection）。
- *
- * 虚线的粗细与颜色按用户第 117 轮的要求调过：dsh 的 0.5px 在手机的高密度屏上只剩不到一个
- * 物理像素，加上 border-l3 只有 12% 不透明度，整圈框几乎看不见 —— 现在按 1dp 画、用
- * border-l4（面板上真正看得见的那一级边框，与提供方卡片同一档）。
+ * dsh 的 .addButton：**一个**贯穿整行的虚线按钮（.addActions 里只有它一个），44 高、圆角 lg、内容居中。
+ * 点下去按钮被「添加卡片」替换。虚线是手机侧调整：dsh 的 0.5px 在高密度屏上不到一个物理像素、border-l3
+ * 只有 12% 不透明度，几乎看不见 —— 这里按 1dp 画、用 border-l4（与提供方卡片同一档）。
  */
 @Composable
 internal fun AddProviderButton(
@@ -872,7 +883,7 @@ internal fun CustomProviderEditor(
         verticalArrangement = Arrangement.spacedBy(DshSpacing.Section),
     ) {
         // dsh 的 .addModes：分段控件 + 当前方式的一句话说明（.advancedHint，12/18 三级色）。
-        // 这里是两个按钮 / 两张卡片融合之后的那张「添加卡片」的抬头（第 117 轮，用户点名）。
+        // 这里是「添加卡片」的抬头（两个按钮 / 两张卡片融合之后）。
         Column(verticalArrangement = Arrangement.spacedBy(DshSpacing.Xl)) {
             AddProviderModeSwitch(mode, onModeChange)
             Text(
@@ -892,10 +903,9 @@ internal fun CustomProviderEditor(
                     if (providerOpen) {
                         DshPopup(onDismiss = { providerOpen = false }, alignStart = true, below = true) {
                             DshMenuCard(Modifier.width(260.dp)) {
-                                // **滚动必须发生在卡片内部**（第 99 轮）：把这个 Modifier 交给
-                                // DshMenuCard 自己，Surface 的 shape/background 就挂在滚动节点**里面**，
-                                // 一滑背景与圆角跟着滚走 —— 用户看到的是「小卡片上方消失了一点、圆角也没了」。
-                                // 与 Composer 的模型菜单同一个写法。
+                                // **滚动必须发生在卡片内部**：把这个 Modifier 交给 DshMenuCard 自己，
+                                // Surface 的 shape/background 就挂在滚动节点**里面** —— 挂在外面时一滑背景
+                                // 与圆角跟着滚走（「小卡片上方消失了一点、圆角也没了」）。与 Composer 的模型菜单同一写法。
                                 Column(
                                     Modifier
                                         .heightIn(max = 320.dp)
@@ -1067,4 +1077,3 @@ internal fun DeleteProviderDialog(
         )
     }
 }
-

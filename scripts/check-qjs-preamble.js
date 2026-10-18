@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * PREAMBLE 语义回归（第 92 轮新增）。
+ * PREAMBLE 语义回归。
  *
  * 为什么要有它：`QuickJsRuntime` 的 PREAMBLE 是一段**只在真机上跑**的 JS，Gradle 的 JVM 单测
  * 碰不到它 —— 于是 `Promise.all([tools.x()])` 坏了很久没人发现（`__adsh_runAll` 把已经解析好的
@@ -17,7 +17,10 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const SOURCE = path.join(ROOT, 'app/src/main/java/com/adsh/app/core/ptc/QuickJsRuntime.kt');
+const SOURCE = path.join(
+  ROOT,
+  'platform/termux/src/main/java/com/adsh/app/platform/ptc/QuickJsRuntime.kt',
+);
 
 function extractPreamble() {
   const src = fs.readFileSync(SOURCE, 'utf8');
@@ -36,9 +39,26 @@ let handler = (name, raw) => {
 };
 
 globalThis.__adsh_names = ['bash', 'glob', 'read', 'web_search'];
-globalThis.__adsh_call__ = (name, raw) => handler(name, raw);
-globalThis.__adsh_callAll__ = (payload) =>
-  JSON.stringify(JSON.parse(payload).map(([name, raw]) => JSON.parse(handler(name, raw))));
+/* 宿主的两个入口（旧的同步协议 __adsh_call__ / __adsh_callAll__ 已删除，只留异步调用）：
+   tools.x() -> __adsh_invoke -> __adsh_post__(id, name, raw)，宿主做活后由泵循环调
+   __adsh_settleAll__([[id, wire]]) 兑现。这里桩成立刻做活并兑现，语义等价。 */
+const posts = [];
+globalThis.__adsh_post__ = (id, name, raw) => {
+  posts.push([id, name, raw]);
+  let wire;
+  try {
+    wire = handler(name, raw);
+  } catch (e) {
+    wire = JSON.stringify({
+      __error: true,
+      message: String((e && e.message) || e),
+      toolName: name,
+      retryable: false,
+      code: 'EXEC',
+    });
+  }
+  globalThis.__adsh_settleAll__([[id, wire]]);
+};
 
 eval(extractPreamble());
 
@@ -121,11 +141,90 @@ function check(label, got, want) {
     'read',
   ]);
 
-  const before = calls.length;
-  tools.glob({ pattern: '*' }); // 忘了 await：收尾时由 __adsh_flush 补跑
-  globalThis.__adsh_flush();
-  check('unawaited call still runs (flush)', calls.length, before + 1);
+  const postsBefore = posts.length;
+  await tools.glob({ pattern: '*' });
+  check('每次调用都立刻发出调用帧（__adsh_post__）', posts.length - postsBefore, 1);
+
+  const beforeCalls = calls.length;
+  const beforePosts = posts.length;
+  tools.glob({ pattern: '*' }); // 忘了 await：调用帧在 __adsh_invoke 里同步发出，不靠收尾补跑
+  check('unawaited call still dispatches', [calls.length - beforeCalls, posts.length - beforePosts], [1, 1]);
+
+  /* ---------------------------------------------------------------- 参数 lossless JSON
+     dsh 的 ptc.ts jsonNormalizeArgs + util/values walkJsonValue：参数只允许无损 JSON。
+     两种文案：没给参数对象 → no-arguments 原文；其余非法值 → "tool arguments must be lossless JSON: <原因>"。
+     校验发生在发帧之前，所以每次拒绝都必须**没有**调用帧。 */
+  const NO_ARGS = 'tool arguments must be lossless JSON (call the tool with an arguments object, e.g. `{}`)';
+  const BEFORE_SEND = 'tool arguments must be lossless JSON: ';
+  /** 无参调用的哨兵（undefined 会被 wrapper 当「没给参数对象」） */
+  const NO_ARGUMENT = Symbol('no-argument');
+
+  async function rejects(label, args, wantMessage) {
+    const before = posts.length;
+    let err = null;
+    try {
+      if (args === NO_ARGUMENT) await tools.glob();
+      else await tools.glob(args);
+    } catch (e) {
+      err = e;
+    }
+    const pass = err instanceof ToolCallError
+      && err.name === 'ToolCallError'
+      && err.toolName === 'glob'
+      && err.message === wantMessage
+      && posts.length === before;
+    console.log((pass ? 'OK   ' : 'FAIL ') + label + '  -> ' + (err ? JSON.stringify(err.message) : 'resolved') +
+      ', frames=' + (posts.length - before));
+    if (!pass) {
+      failures.push(label + ': want ToolCallError(' + JSON.stringify(wantMessage) + '), dispatched=' +
+        (posts.length - before) + ', got=' + (err ? err.name + '/' + err.message : 'resolved'));
+    }
+  }
+
+  const sparse = [1];
+  sparse[2] = 3;
+  const cyclic = { pattern: '*' };
+  cyclic.self = cyclic;
+  class NotJson {}
+  const hidden = { pattern: '*' };
+  Object.defineProperty(hidden, 'hidden', { value: 1, enumerable: false });
+
+  await rejects('no arguments rejects with the dsh no-arguments message', NO_ARGUMENT, NO_ARGS);
+  await rejects('a root function is not JSON', () => 1, NO_ARGS);
+  await rejects('a function property is not JSON', { pattern: '*', f: () => 1 }, NO_ARGS);
+  await rejects('an undefined property is not JSON', { pattern: '*', a: undefined }, NO_ARGS);
+  await rejects('a symbol value is not JSON', { pattern: '*', s: Symbol('x') }, NO_ARGS);
+  await rejects('NaN is not JSON', NaN, NO_ARGS);
+  await rejects('Infinity is not JSON', Infinity, NO_ARGS);
+  await rejects('-0 is not JSON', -0, NO_ARGS);
+  await rejects('a class instance is not JSON', new NotJson(), NO_ARGS);
+  await rejects('a Date is not JSON', new Date(0), NO_ARGS);
+  await rejects('a cyclic object is not JSON', cyclic, NO_ARGS);
+  await rejects('a sparse array is not JSON', { pattern: '*', a: sparse }, NO_ARGS);
+  await rejects('a non-enumerable property is not JSON', hidden, NO_ARGS);
+  await rejects(
+    'a throwing getter reports the walk failure',
+    { get pattern() { throw new Error('boom'); } },
+    BEFORE_SEND + 'boom',
+  );
+
+  const lossless = { pattern: '*', count: 0, nested: { list: [1, null, 'x'] } };
+  const beforeAllowed = posts.length;
+  await tools.glob(lossless);
+  check(
+    'a lossless object dispatches the exact JSON it was given',
+    [posts.length - beforeAllowed, posts[posts.length - 1][2]],
+    [1, JSON.stringify(lossless)],
+  );
+
+  const beforeNull = posts.length;
+  await tools.glob(null);
+  check('a null root is lossless JSON and dispatches', [posts.length - beforeNull, posts[posts.length - 1][2]], [1, 'null']);
+
+  const concurrent = await Promise.all([tools.glob({ pattern: '*' }), tools.glob({ pattern: '**/*.kt' })]);
+  check('Promise.all still passes lossless arguments through', concurrent.map((v) => v.ok), [1, 1]);
 
   console.log(failures.length === 0 ? '\nALL OK' : '\n' + failures.length + ' FAILURE(S)');
-  process.exit(failures.length === 0 ? 0 : 1);
+  // 用 exitCode 而不是 process.exit：管道 / 重定向下 stdout 是异步写，立刻 exit 会把输出截掉。
+  process.exitCode = failures.length === 0 ? 0 : 1;
 })();

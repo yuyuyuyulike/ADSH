@@ -3,7 +3,7 @@
   {
    "category": "internal-test-only",
    "confidence": 65,
-   "file": "app/src/main/java/com/adsh/app/core/agent/AgentLoop.kt",
+   "file": "core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt",
    "kind": "fun",
    "name": "sendWithTools",
    "reason": "测试口：AgentLoopToolRoundTest 直接喂 TurnTools 替身，工具轮才能在纯 JVM 单测里跑（生产走 send）"
@@ -11,7 +11,7 @@
   {
    "category": "internal-test-only",
    "confidence": 65,
-   "file": "app/src/main/java/com/adsh/app/core/tools/ToolConcurrency.kt",
+   "file": "core/tools/src/main/kotlin/com/adsh/app/core/tools/ToolConcurrency.kt",
    "kind": "fun",
    "name": "holdingNow",
    "reason": "测试口：Holding 是 file-private 的协程上下文元素，测试没法自己读，只能由它代问（可重入判据）"
@@ -19,7 +19,7 @@
   {
    "category": "internal-test-only",
    "confidence": 65,
-   "file": "app/src/main/java/com/adsh/app/ui/WhaleTail.kt",
+   "file": "ui/blocks/src/main/java/com/adsh/app/ui/blocks/WhaleTail.kt",
    "kind": "val",
    "name": "WHALE_FRAME_COUNT",
    "reason": "测试口：WhaleTailTest 逐帧核对坐标表；渲染侧只走 whalePoseAt 插值，用不到帧表长度"
@@ -27,7 +27,7 @@
   {
    "category": "internal-test-only",
    "confidence": 65,
-   "file": "app/src/main/java/com/adsh/app/ui/WhaleTail.kt",
+   "file": "ui/blocks/src/main/java/com/adsh/app/ui/blocks/WhaleTail.kt",
    "kind": "fun",
    "name": "whaleFrame",
    "reason": "测试口：同上（逐帧原始坐标）"
@@ -35,10 +35,18 @@
   {
    "category": "public-test-only",
    "confidence": 55,
-   "file": "app/src/main/java/com/adsh/app/core/tools/ToolConcurrency.kt",
+   "file": "core/tools/src/main/kotlin/com/adsh/app/core/tools/ToolConcurrency.kt",
    "kind": "fun",
    "name": "resetForTest",
    "reason": "测试口：用例之间把队列与计数复位；生产代码没有调用方"
+  },
+  {
+   "category": "internal-test-only",
+   "confidence": 65,
+   "file": "feature/chat/src/main/java/com/adsh/app/ui/chat/ToolRowModel.kt",
+   "kind": "fun",
+   "name": "toolRowInputBody",
+   "reason": "测试口：inputBodyOf 是私有的，ToolRowSummaryTest 只能从这里验「哪些工具的展开体没有输入段」"
   }
  ]
 }

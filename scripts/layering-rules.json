@@ -1,0 +1,36 @@
+{
+  "note": "分层规则：只写「禁止的方向」。包名相对 com.adsh.app（core.agent 写成 core.*）；x 与 x.* 等价，按包段前缀匹配 —— core.* 命中 core 与 core.agent，不命中 corex。allow 是可选的已知豁免清单（登记正在拆的旧边，按文件收窄，同规则的新文件照样失败），当前为空。",
+  "forbid": [
+    {
+      "from": "core.*",
+      "to": "runtime.*",
+      "why": "core 只认端口（:seam:*），不认平台实现"
+    },
+    {
+      "from": "seam.*",
+      "to": ["core.*", "ui.*", "runtime.*", "island.*"],
+      "why": "缝是纯契约：零应用依赖，也不许反向依赖消费者"
+    },
+    {
+      "from": "ui.blocks",
+      "to": ["core.*", "ui.chat", "island.*"],
+      "why": "渲染基础（原 ui:kit + Markdown/LaTeX/块渲染）不许依赖业务层与具体 feature"
+    },
+    {
+      "from": "ui.chat",
+      "to": "island.*",
+      "why": "对话 feature 不许依赖 :app 的灵动岛实现（岛的状态类型已下沉到 chat，服务侧由 :app 实现）"
+    },
+    {
+      "from": "runtime.termux",
+      "to": ["core.*", "ui.*", "island.*"],
+      "why": "平台实现只认 :seam 端口，不许知道业务/界面"
+    },
+    {
+      "from": "platform.ptc",
+      "to": ["core.*", "ui.*", "island.*"],
+      "why": "PTC 运行时只认 :seam 的 PtcRunner 端口，不许知道业务/界面"
+    }
+  ],
+  "allow": []
+}

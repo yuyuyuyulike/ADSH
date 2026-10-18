@@ -6,7 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 供应方目录（第 103 轮重排 + 扩表）。
+ * 供应方目录（顺序与 id 合法性）。
  *
  * 这些断言盯的是**用户能看到的那一层**：下拉里的顺序（常用的在上面）、id 的合法性
  * （下拉选中之后要能直接当提供方 id 用）、地址必须能直连（https）、以及「小厂已经拿掉」。
@@ -59,7 +59,7 @@ class ProviderCatalogTest {
         // Anthropic / Google 用官方给的 OpenAI 兼容端点
         assertEquals("https://api.anthropic.com/v1", base("anthropic"))
         assertEquals("https://generativelanguage.googleapis.com/v1beta/openai", base("google"))
-        // 这两条第 103 轮修过：以前少了 /v1 与 /inference/v1，请求会打到上一层路径
+        // 路径必须带 /v1 与 /inference/v1：少了会打到上一层路径
         assertEquals("https://api.mistral.ai/v1", base("mistral"))
         assertEquals("https://api.fireworks.ai/inference/v1", base("fireworks"))
     }

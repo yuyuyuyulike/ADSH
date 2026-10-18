@@ -7,7 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 掉线重连的策略（第 95 轮，照搬 dsh 的 ConnectionController）。
+ * 掉线重连的策略（照搬 dsh 的 ConnectionController）。
  *
  * 这些数值不是随手定的：dsh 的 `ConnectionRecoveryConfigSchema` 就是
  * backoffBaseMs = 500 / backoffFactor = 2 / backoffMaxMs = 10000，
@@ -81,8 +81,8 @@ class ConnectionRecoveryTest {
      * 断网挂起（dsh 的 `setNetworkAvailable`）：网络不可用时 [ConnectionRecovery.awaitNetwork]
      * 不会返回，网络一回来立刻返回。
      *
-     * 这条钉的是「断网时不盲目退避」这条机制 —— 以前 ADSH 没有它：断网了也照 500ms/1s/2s…
-     * 一路重试，打服务端、界面还说「正在重连」，用户分不清「手机没网」和「服务端挂了」。
+     * 这条钉的是「断网时不盲目退避」：没有它就会照 500ms/1s/2s… 一路重试打服务端，
+     * 界面还显示「正在重连」，用户分不清「手机没网」和「服务端挂了」。
      */
     @Test
     fun awaitNetworkHoldsUntilTheNetworkComesBack() {

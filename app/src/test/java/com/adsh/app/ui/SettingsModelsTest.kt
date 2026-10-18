@@ -1,6 +1,6 @@
 package com.adsh.app.ui
 
-import com.adsh.app.core.data.ApiProtocol
+import com.adsh.app.seam.llm.ApiProtocol
 import com.adsh.app.core.data.BuiltInProviders
 import com.adsh.app.core.data.ModelDef
 import com.adsh.app.core.data.ProviderDef
@@ -9,6 +9,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.adsh.app.seam.llm.DEEPSEEK_BASE_URL
 
 /**
  * 设置页「模型」区的纯逻辑（[SettingsModels]）。
@@ -268,7 +269,7 @@ class SettingsModelsTest {
     @Test
     fun `地址留空保持原地址，填了就用新值并去空格`() {
         val kept = providerSaved(deepseek, "", "", deepseek.models).ok()
-        assertEquals(BuiltInProviders.DEEPSEEK_BASE_URL, kept.baseUrl)
+        assertEquals(DEEPSEEK_BASE_URL, kept.baseUrl)
         val replaced = providerSaved(deepseek, "", " https://gw.example/v1 ", deepseek.models).ok()
         assertEquals("https://gw.example/v1", replaced.baseUrl)
     }
@@ -291,8 +292,8 @@ class SettingsModelsTest {
 
     /**
      * 按 dsh 的口径（`validateDeepSeekModels` + `EditorFooter`）：目录里只要有一行 ID 是空的，
-     * **整条不保存**，报文是 dsh 的「模型 N: 原因」（N 从 1 数）。以前这里是「把 id = "" 的行
-     * 原样落盘」，R47 按用户要求照 dsh 改掉了 —— 保存键同时变暗，这条纯函数是第二道防线。
+     * **整条不保存**，报文是 dsh 的「模型 N: 原因」（N 从 1 数）。保存键同时变暗，
+     * 这条纯函数是第二道防线（不能把 id = "" 的行原样落盘）。
      */
     @Test
     fun `目录里有一行 ID 为空就整条不保存，报文指到那一行`() {
@@ -409,8 +410,8 @@ class SettingsModelsTest {
     }
 
     /**
-     * 现状：删除**不动当前模型**，哪怕它正属于被删掉的那个提供方（模型选择器里会留着它的
-     * id，用户下次自己挑）。这条以前只写在注释里，现在有用例。
+     * 删除**不动当前模型**，哪怕它正属于被删掉的那个提供方（模型选择器里会留着它的
+     * id，用户下次自己挑）。
      */
     @Test
     fun `删除不动当前模型，哪怕它属于被删掉的那个提供方`() {
@@ -503,7 +504,7 @@ class SettingsModelsTest {
         assertEquals(candidates, candidateFilter(candidates, ""))
         assertEquals(candidates, candidateFilter(candidates, "   "))
         assertEquals(listOf("gpt-6"), candidateFilter(candidates, "GPT"))
-        // 带空格的输入以前一个都匹配不到（dsh 会先 trim）—— 这条是回归钉子
+        // 带空格的输入必须能匹配（dsh 会先 trim）—— 这条是回归钉子
         assertEquals(listOf("gpt-6"), candidateFilter(candidates, " gpt "))
         assertEquals(listOf("DeepSeek-V4"), candidateFilter(candidates, "seek"))
         assertEquals(emptyList<String>(), candidateFilter(candidates, "nope"))
@@ -593,7 +594,7 @@ class SettingsModelsTest {
 
     @Test
     fun `被删掉的那一行自己的展开状态要丢掉，它后面那一行跟着前移`() {
-        // {0,1} 里删掉第 0 行：原来的第 1 行挪到 0（它还是展开的），0 号自己的状态丢掉
+        // {0,1} {0,1} 里删掉第 0 行：第 1 行挪到 0（它还是展开的），0 号自己的状态丢掉
         assertEquals(setOf(0), reindexOnRemove(setOf(0, 1), 0))
         assertEquals(emptySet<Int>(), reindexOnRemove(setOf(1), 1))
     }

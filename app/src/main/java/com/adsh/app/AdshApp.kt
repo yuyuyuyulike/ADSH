@@ -9,13 +9,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 
 class AdshApp : Application() {
+
+    /** 组合根：设置 / 数据库 / LLM / 运行环境 / AgentLoop 的唯一创建点（见 [AppContainer]） */
+    val container: AppContainer by lazy { AppContainer(this) }
+
     override fun onCreate() {
         super.onCreate()
-        // QuickJS 原生库在每个进程都要初始化：PTC 程序跑在 :ptc 进程里（见 core/ptc/PtcWorkerService）
+        // QuickJS 原生库在每个进程都要初始化：PTC 程序跑在 :ptc 进程里（见 platform/ptc/PtcWorkerService）
         QuickJSLoader.init()
         // 以下两件只对**主进程**有意义。:ptc 只是 PTC 程序的沙箱进程，跟着做只会多出一份副作用
-        // （多一个 phone 轮询线程、多一份网络订阅）—— 第 183 轮引入 :ptc 时一并收口。
+        // （多一个 phone 轮询线程、多一份网络订阅）。
         if (!isMainProcess()) return
+        // 诊断开关交给 UI 层只读使用：库模块不许读自己的 BuildConfig（side 变体里它是 true）
+        com.adsh.app.ui.chat.ChatDebug.enabled = BuildConfig.DEBUG
         // 网络状态 → 掉线重连策略（dsh 的 setNetworkAvailable）：断网时暂停自动重试、
         // 网络回来立刻重来，界面显示「断开」而不是「正在重连」。
         watchNetwork(this)

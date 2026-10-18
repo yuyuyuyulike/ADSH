@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      NetworkWatcher 读系统默认网络状态（registerDefaultNetworkCallback / getActiveNetwork）：
+      lint 的 MissingPermission 按模块自己的清单判，权限由这里声明、随宿主清单合并出去。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+</manifest>

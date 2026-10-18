@@ -22,6 +22,12 @@ import android.os.IBinder
 import androidx.core.content.ContextCompat
 import com.adsh.app.MainActivity
 import com.adsh.app.R
+import com.adsh.app.ui.chat.ISLAND_DONE_DWELL_MS
+import com.adsh.app.ui.chat.IslandFrame
+import com.adsh.app.ui.chat.IslandPhase
+import com.adsh.app.ui.chat.IslandWork
+import com.adsh.app.ui.chat.islandFrameOf
+import com.adsh.app.ui.chat.phaseTint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
