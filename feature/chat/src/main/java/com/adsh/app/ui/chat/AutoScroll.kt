@@ -37,10 +37,9 @@ import androidx.compose.runtime.snapshotFlow
  *    可内容早就缩到贴底了：右侧的「回到底部」按钮白留在屏幕上、点它也不滚。
  * ⑨ **读者往上滑（偏移变小）立刻交出跟随**，哪怕只有几个像素（[ChatScrollState.sampled] 的
  *    readerScrolling 那一支）：25dp 迟滞只判「还在不在底部」，不吞读者的上滑意图。
- * ⑩ **自动贴底有生命周期**（[ChatScrollState.autoScroll]）：只在**这一轮进行期间**（`sending ||`
- *    `liveTurnId != null`）活着，轮次结束的那一拍做一次收尾贴底（轮尾动作行 / 文件卡要落在屏幕里），
- *    随后关掉 —— 之后图片解码、输入区高度变化、流式残留都不再自动滚。下一轮 / 自己发消息 /
- *    点「回到底部」重新打开。跟随意图与它分开：意图留在原地，读者的「回到底部」按钮不因此常驻。
+ * ⑩ **跟随意图是唯一闸门**（[ChatScrollState.following]）：读者翻过历史（右侧滚动条上移 /
+ *    「回到底部」按钮出现）时，内容长高、键盘弹起、输入区变高**一律不动视口**；读者还贴着底时，
+ *    这些变化照常把视口带到新末端（键盘弹起时消息跟着一起上移）。轮次结束不额外做收尾贴底。
  */
 
 /**
@@ -82,15 +81,12 @@ internal class ScrollFollow(initial: Boolean = true) {
  *    时才 `followTail()`，读者的每一次滚动投递都带 movedByReader，那一拍**不贴底**。
  *    少了这道门，流式期间内容每长高一点都会发一次贴底请求，把读者那一下「极小幅度快速上滑」
  *    的惯性按回去。
- *  - [autoScroll]：这一轮的自动贴底生命周期（[ChatScrollState.autoScroll]）已经结束就不贴 ——
- *    跟随意图还在（「回到底部」按钮不因此常驻），但不再替读者滚（⑩）。
  */
 internal fun pinAllowed(
     following: Boolean,
     touching: Boolean,
     scrolling: Boolean,
-    autoScroll: Boolean = true,
-): Boolean = following && autoScroll && !touching && !scrolling
+): Boolean = following && !touching && !scrolling
 
 /**
  * ⑧ 「折叠回去之后视口已经落在会话末端」这一拍要不要**恢复跟随意图**（右侧「回到底部」按钮据此消失）。
@@ -145,20 +141,6 @@ internal class ChatScrollState(
     /** 跟随意图（dsh 的 `ScrollFollow`）：**自动滚动唯一的状态**，只有 ②⑤⑥ 会写它 */
     val following: Boolean get() = follow.following
 
-    /**
-     * 这一轮的**自动贴底**还开着吗（⑩）——与 [following] 是两件事。
-     *
-     * [following] 答的是「内容长高要不要跟着走」；这里答的是「这一轮还要不要自动贴」。轮次结束后
-     * 意图留在原地（读者没有离开底部，「回到底部」按钮不因此常驻），但自动贴底一律停掉：图片 /
-     * LaTeX 解码、输入区高度变化、流式残留都不再把读者拽回底部。下一轮开始 / 自己发消息 /
-     * 点「回到底部」时 [resume] 重新打开。
-     */
-    var autoScroll by mutableStateOf(true)
-        private set
-
-    /** 这一轮是否还在跑：用来抓「结束的那一拍」（[turnRunning]） */
-    private var turnActive = false
-
     /** 手指按下 / 抬起（消息区那个 pointerInput 每一下都报，见 ChatScreen） */
     fun touch(down: Boolean) {
         touching = down
@@ -169,27 +151,17 @@ internal class ChatScrollState(
         follow.pause()
     }
 
-    /** dsh 的 `toBottom()` / `followTail()`：无条件恢复跟随并重新打开自动贴底，见上面 ⑥ */
+    /** dsh 的 `toBottom()` / `followTail()`：无条件恢复跟随，见上面 ⑥ */
     fun resume() {
         follow.follow()
-        autoScroll = true
     }
 
     /**
-     * ⑩ 轮次状态上报（true = 这一轮还在跑：`sending || liveTurnId != null`）。
-     *
-     * @return true = 刚结束的那一拍：调用方据此做**收尾贴底**，贴完调 [settleDone] 把自动贴底关掉
+     * 只收回跟随意图的反面：折叠让内容缩到末端、视口其实已经在底部时，把意图收回来
+     * （右侧「回到底部」按钮据此消失）。与 [resume] 是同一个写入，单独命名是为了让调用点说清意图。
      */
-    fun turnRunning(active: Boolean): Boolean {
-        val ended = turnActive && !active
-        turnActive = active
-        if (active) autoScroll = true
-        return ended
-    }
-
-    /** ⑩ 收尾贴底已经落地：这一轮之后的自动贴底全部停掉（[resume] / 下一轮会重新打开） */
-    fun settleDone() {
-        autoScroll = false
+    fun restoreFollow() {
+        follow.follow()
     }
 
     /**
@@ -238,22 +210,19 @@ internal class ChatScrollState(
      * [content] 传 `items`（列表任何一个输入变了它就换实例）、[viewport] 传 IME 下边距。
      * 指纹**先记后判**：即使这一拍被 [pinAllowed] 挡掉，下一次也不该拿旧指纹去比。
      *
-     * @param allowWhenStopped 收尾那一拍为 true：允许在自动贴底已经关掉之后还贴一次
      * @return true = 内容或视口变了、且 [pinAllowed] 的门过了 ⇒ 调用方贴底
      */
     fun pinRequest(
         content: Any?,
         viewport: Int,
         scrolling: Boolean,
-        allowWhenStopped: Boolean = false,
     ): Boolean {
         val contentChanged = pinnedContent !== content
         val viewportChanged = pinnedViewport != viewport
         pinnedContent = content
         pinnedViewport = viewport
         pinReason = (if (contentChanged) "content" else "") + (if (viewportChanged) "vp" else "")
-        if (!autoScroll && !allowWhenStopped) return false
-        if (!pinAllowed(follow.following, touching, scrolling, autoScroll || allowWhenStopped)) return false
+        if (!pinAllowed(follow.following, touching, scrolling)) return false
         return contentChanged || viewportChanged
     }
 
@@ -267,7 +236,7 @@ internal class ChatScrollState(
         if (height == chromeHeight) return false
         val first = chromeHeight < 0
         chromeHeight = height
-        return !first && following && autoScroll && !touching && total > 0
+        return !first && following && !touching && total > 0
     }
 }
 
@@ -299,9 +268,9 @@ internal fun KeepPinnedEffect(scrollState: ScrollState, scroll: ChatScrollState)
                     hasContent = true,
                 )
             ) {
-                scroll.resume()
+                scroll.restoreFollow()
             }
-            if (!pinAllowed(scroll.following, scroll.touching, scrolling, scroll.autoScroll)) return@collect
+            if (!pinAllowed(scroll.following, scroll.touching, scrolling)) return@collect
             if (atBottom) return@collect
             if (com.adsh.app.ui.chat.ChatDebug.enabled) {
                 trace("pin keep", "gap=" + (maxValue - value) + " max=" + maxValue)

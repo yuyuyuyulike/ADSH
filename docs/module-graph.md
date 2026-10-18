@@ -63,11 +63,11 @@
 | core.data | ui | 15 | app/src/main/java/com/adsh/app/ui/AppRoot.kt:51<br>app/src/main/java/com/adsh/app/ui/Drawer.kt:59<br>app/src/main/java/com/adsh/app/ui/Drawer.kt:60 |
 | core.llm | ui | 1 | app/src/main/java/com/adsh/app/ui/SettingsModelsSection.kt:51 |
 | core.agent | ui.chat | 10 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatUiState.kt:191<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:6<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:906 |
-| core.data | ui.chat | 33 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatDecisions.kt:3<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatDecisions.kt:111<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatScreen.kt:136 |
+| core.data | ui.chat | 33 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatDecisions.kt:3<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatDecisions.kt:111<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatScreen.kt:137 |
 | core.jobs | ui.chat | 7 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:470<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:570<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:575 |
 | core.llm | ui.chat | 21 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatUiState.kt:5<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:8<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:14 |
 | core.session | ui.chat | 12 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatUiState.kt:67<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:979<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:1061 |
-| core.tools | ui.chat | 13 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatBars.kt:49<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatBars.kt:50<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatScreen.kt:51 |
+| core.tools | ui.chat | 13 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatBars.kt:49<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatBars.kt:50<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatScreen.kt:50 |
 | core.workspace | ui.chat | 5 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:17<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:288<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:1214 |
 
 事实：core.* 对外的出边只到 seam.exec、seam.llm、seam.model、seam.ptc、seam.tool（没有 runtime.* / ui.* / island.* 的边）。

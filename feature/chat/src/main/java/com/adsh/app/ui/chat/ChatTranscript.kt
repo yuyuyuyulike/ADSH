@@ -115,15 +115,14 @@ internal fun ChatTranscript(
      * 旧位置（新行在视口下沿被切 / 闪一下）再跳过去。
      *
      * 这里在绘制阶段给内容整体补一个位移：**这一帧就已经贴到底**，下一帧 KeepPinnedEffect 把
-     * ScrollState 拨到真值，位移随之归零 —— 两帧之间没有任何视觉变化。只有「跟随中、自动贴底还活着、
-     * 手指不在屏上、也没在惯性滚动」时才补（口径与 [pinAllowed] 相同）。自动贴底的生命周期见
-     * AutoScroll.kt ⑩：轮次结束之后不再做这个绘制补偿，否则画面仍是「粘在底部」的自动滚动。
+     * ScrollState 拨到真值，位移随之归零 —— 两帧之间没有任何视觉变化。只有「跟随中、手指不在屏上、
+     * 也没在惯性滚动」时才补（口径与 [pinAllowed] 相同）；读者翻过历史时一律不补。
      */
     fun bottomCorrectionNow(): Float {
         val maxValue = scrollState.maxValue
         val value = scrollState.value
         return if (viewportHeightPx <= 0 || contentHeightPx <= 0 || maxValue <= 0 ||
-            !scroll.following || !scroll.autoScroll || scroll.touching || scrollState.isScrollInProgress
+            !scroll.following || scroll.touching || scrollState.isScrollInProgress
         ) {
             0f
         } else {

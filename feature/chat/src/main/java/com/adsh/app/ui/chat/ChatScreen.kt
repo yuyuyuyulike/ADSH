@@ -30,7 +30,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -58,22 +57,24 @@ import com.adsh.app.ui.theme.LocalDshPalette
 /**
  * 跨页面存活的对话滚动状态（dsh 的 chatScroll 是模块级、按会话存档的）。
  *
- * 如果 ScrollState 建在 ChatScreen 里，去设置页 / 文件页再回来会重新建一个：
- * 位置丢失，只能先画一帧错的位置再滚 —— 就是「切回来闪一下」。
- * 这里实现成**单槽**（只记住最后一条会话的 state）：覆盖的是「去设置页 / 文件页再回来」这条
- * 最常见的路径，回来时位置原样还在、要贴底时同一帧就落到底。在多个会话之间来回切仍会重建，
- * 那一步的位置恢复没有实现（dsh 那边是模块级、真按会话存档的）。
+ * **位置与跟随意图要一起存活**：只存 ScrollState 的话，去设置页 / 文件页再回来会新建一份
+ * [ChatScrollState] —— 位置还在半途、跟随意图却被重置成「跟随」，回来的第一帧就被贴底保活
+ * 拉回底部（会话早就结束了，看起来就是「自动滚动又自己触发了」）。
+ * 这里实现成**单槽**（只记住最后一条会话）：覆盖「去设置页 / 文件页再回来」这条最常见的路径；
+ * 在多个会话之间来回切仍会重建（dsh 那边是真按会话存档的）。
  */
 private object ChatScrollStore {
     private var conversationId: Long? = null
-    private var state: ScrollState? = null
+    private var session: Session? = null
 
-    fun stateFor(conversationId: Long?, initial: Int): ScrollState {
-        val existing = state
+    class Session(val scroll: ScrollState, val chat: ChatScrollState)
+
+    fun sessionFor(conversationId: Long?, initial: Int, slopPx: Int): Session {
+        val existing = session
         if (existing != null && this.conversationId == conversationId) return existing
-        return ScrollState(initial.coerceAtLeast(0)).also {
+        return Session(ScrollState(initial.coerceAtLeast(0)), ChatScrollState(slopPx)).also {
             this.conversationId = conversationId
-            state = it
+            session = it
         }
     }
 }
@@ -251,14 +252,18 @@ fun ChatScreen(
     // 「内容 / 视口变了」触发；④ 请求在下面的 SideEffect 里发，落在本帧测量之前；⑤ 读者动作
     // 优先，一律先交出跟随；⑥ 自己发消息 / 点回到底部无条件恢复；⑦ 读者正在滚时一律不贴）
     // 连同**状态**都在 AutoScroll.kt（[ChatScrollState] / [KeepPinnedEffect]），这里只剩接线。
-    // 每条会话一份**跨页面存活**的滚动状态：初值给一个超大像素偏移，verticalScroll 首次测量会把它
-    // 夹到内容末端 —— **进会话就是底部**（dsh 打开会话也是直接贴底，不会先闪一下顶部）
-    val transcriptScroll = ChatScrollStore.stateFor(state.conversationId, Int.MAX_VALUE)
-    // 跟随意图 / 手指 / 两个触发指纹 = 一份 [ChatScrollState]
+    // 每条会话一份**跨页面存活**的滚动状态（位置 + 跟随意图一起存档，见 [ChatScrollStore]）：
+    // 初值给一个超大像素偏移，verticalScroll 首次测量会把它夹到内容末端 —— **进会话就是底部**
+    // （dsh 打开会话也是直接贴底，不会先闪一下顶部）
     val density = LocalDensity.current
-    val scroll = remember(state.conversationId) {
-        ChatScrollState(slopPx = with(density) { FOLLOW_THRESHOLD_DP.dp.toPx() }.toInt())
-    }
+    val scrollSession = ChatScrollStore.sessionFor(
+        conversationId = state.conversationId,
+        initial = Int.MAX_VALUE,
+        slopPx = with(density) { FOLLOW_THRESHOLD_DP.dp.toPx() }.toInt(),
+    )
+    val transcriptScroll = scrollSession.scroll
+    // 跟随意图 / 手指 / 两个触发指纹 = 一份 [ChatScrollState]（与 ScrollState 同生命周期）
+    val scroll = scrollSession.chat
     /** dsh 的 `followTail()`：把视口钉到内容末端（视觉上的「本帧就贴底」由 ChatTranscript 的
      * bottomCorrection 保证，这里只把 ScrollState 拨到真值）。
      *
@@ -336,9 +341,9 @@ fun ChatScreen(
     LaunchedEffect(transcriptScroll, scroll) {
         snapshotFlow { imeInsets.getBottom(imeDensity) }
             .collect {
-                // ⑩ 自动贴底生命周期结束了（这一轮已经收尾）就一动不动：键盘弹起 / 收起也算自动滚动，
-                // 不能因为它是「用户主动改视口」就例外 —— 用户口径是会话结束后停止。
-                if (!scroll.autoScroll || !scroll.following || scroll.touching || transcriptScroll.isScrollInProgress) return@collect
+                // ⑩ 键盘弹起 / 收起是「用户主动改视口」，跟着走的前提仍是**读者还在跟随**：
+                // 贴着底时消息跟着键盘一起上移；读者翻过历史（按钮可见）时视口一动不动。
+                if (!scroll.following || scroll.touching || transcriptScroll.isScrollInProgress) return@collect
                 pinScope.launch { transcriptScroll.scrollTo(transcriptScroll.maxValue) }
             }
     }
@@ -352,11 +357,6 @@ fun ChatScreen(
                 imeVisible = visible
             }
     }
-    /**
-     * 这一轮是否还在跑（流式中或收尾落库中）。自动贴底只在这段时间里活着，见 AutoScroll.kt ⑩：
-     * 结束的那一拍还允许一次收尾贴底（轮尾动作行 / 文件卡要落在屏幕里），随后关掉。
-     */
-    val turnAlive = state.sending || state.liveTurnId != null
     SideEffect {
         // ⑥ 用户自己发的一条消息刚落进会话：无条件恢复跟随（dsh 的 `ownInput` -> `followTail()`）
         if (scroll.ownInput(lastUserId)) scroll.resume()
@@ -365,23 +365,12 @@ fun ChatScreen(
         // 请求是「下一次测量用的位置」，本帧测量时它已经生效，所以新内容第一次被画出来就落在正确的
         // 位置，不存在「先画错、下一帧再补」的那一帧。
         // 视口指纹（IME 高度）不再参与：它那条由上面的观察者负责，内容变化走这里。
-        val ended = scroll.turnRunning(turnAlive)
+        // ⑩ 只有「读者还在跟随」才贴（reader 翻过历史时 pinRequest 内部就会挡住）。
         val pin = scroll.pinRequest(
             content = layoutKey,
             viewport = 0,
             scrolling = transcriptScroll.isScrollInProgress,
-            allowWhenStopped = ended,
         )
-        if (ended) {
-            // ⑩ 收尾这一拍：等这一帧的测量/布局落定（maxValue 这时才是新内容的高度）贴一次底，
-            // 然后关掉自动贴底 —— 之后图片解码 / 输入区高度变化都不再替读者滚。
-            pinScope.launch {
-                withFrameNanos { }
-                if (pin && total > 0) transcriptScroll.scrollTo(transcriptScroll.maxValue)
-                scroll.settleDone()
-            }
-            return@SideEffect
-        }
         if (!pin) return@SideEffect
         if (com.adsh.app.ui.chat.ChatDebug.enabled) {
             trace(

@@ -241,65 +241,42 @@ class AutoScrollTest {
         assertTrue(s.following)
     }
 
-    // ---------- ⑩ 自动贴底的生命周期：轮次结束即停 ----------
 
+    // ---------- ⑩ 键盘 / 视口变化：只在跟随中才把视口带到新末端 ----------
+
+    /** 贴着底时键盘弹起：视口变化要贴到新末端（消息跟着键盘一起上移）。 */
     @Test
-    fun autoScrollStopsAfterTheTurnEndsAndReopensOnTheNextOne() {
+    fun aViewportChangePinsWhileFollowing() {
         val s = ChatScrollState(slopPx = 25)
-        assertTrue(s.autoScroll)
-        // 新一轮开始：自动贴底打开
-        assertFalse(s.turnRunning(active = true))
-        assertTrue(s.autoScroll)
-        // 结束的那一拍：调用方做收尾贴底，贴完关掉
-        assertTrue(s.turnRunning(active = false))
-        assertTrue(s.autoScroll)
-        s.settleDone()
-        assertFalse(s.autoScroll)
-
-        // 结束之后：内容变了也不再自动贴底（跟随意图还在，只是不滚）
-        assertTrue(s.following)
-        assertFalse(s.pinRequest(content = Any(), viewport = 0, scrolling = false))
-
-        // 读者的上滑 / 回到底部：意图与自动贴底都重新打开
-        s.resume()
-        assertTrue(s.following)
-        assertTrue(s.autoScroll)
-
-        // 下一轮开始同样重新打开
-        s.settleDone()
-        assertFalse(s.autoScroll)
-        assertFalse(s.turnRunning(active = true))
-        assertTrue(s.autoScroll)
+        val items = Any()
+        assertTrue(s.pinRequest(content = items, viewport = 0, scrolling = false))
+        // 键盘弹起（视口指纹变了）：跟随中 ⇒ 贴
+        assertTrue(s.pinRequest(content = items, viewport = 480, scrolling = false))
     }
 
+    /** 读者翻过历史（「回到底部」按钮可见）时，键盘 / 内容 / 输入区高度怎么变都不许把视口拽回底部。 */
     @Test
-    fun theFinalSettleMayStillPinOnce() {
+    fun aReaderWhoScrolledUpIsNeverPulledBack() {
         val s = ChatScrollState(slopPx = 25)
-        s.turnRunning(active = true)
-        assertTrue(s.turnRunning(active = false))
-        // 收尾那一拍允许贴（轮尾动作行 / 文件卡要落在屏幕里）
-        assertTrue(s.pinRequest(content = Any(), viewport = 0, scrolling = false, allowWhenStopped = true))
-        s.settleDone()
-        // 贴完就关：下一拍（调用方不再传 allowWhenStopped）不再贴
-        assertFalse(s.pinRequest(content = Any(), viewport = 0, scrolling = false))
-    }
-
-    @Test
-    fun pinAllowedAlsoRequiresTheAutoScrollLifecycle() {
-        assertTrue(pinAllowed(following = true, touching = false, scrolling = false, autoScroll = true))
-        assertFalse(pinAllowed(following = true, touching = false, scrolling = false, autoScroll = false))
-    }
-
-    @Test
-    fun chromePinsAreAlsoOffAfterTheTurnEnds() {
-        val s = ChatScrollState(slopPx = 25)
+        val items = Any()
+        assertTrue(s.pinRequest(content = items, viewport = 0, scrolling = false))
+        s.pause()
+        assertFalse(s.following)
+        // 键盘弹起 / 内容长高 / 输入区变高：一律不贴
+        assertFalse(s.pinRequest(content = items, viewport = 480, scrolling = false))
+        assertFalse(s.pinRequest(content = Any(), viewport = 480, scrolling = false))
         assertFalse(s.chromeMeasured(height = 200, total = 10))
-        s.turnRunning(active = true)
-        s.turnRunning(active = false)
-        s.settleDone()
-        // 会话结束后输入区高度变化（待办 dock / 统计胶囊）不再把读者拽回底部
         assertFalse(s.chromeMeasured(height = 260, total = 10))
+    }
+
+    /** 点「回到底部」（[ChatScrollState.resume]）之后，键盘等视口变化照常贴。 */
+    @Test
+    fun returningToTheBottomResumesKeyboardPinning() {
+        val s = ChatScrollState(slopPx = 25)
+        s.pause()
+        assertFalse(s.pinRequest(content = Any(), viewport = 480, scrolling = false))
         s.resume()
-        assertTrue(s.chromeMeasured(height = 300, total = 10))
+        assertTrue(s.following)
+        assertTrue(s.pinRequest(content = Any(), viewport = 960, scrolling = false))
     }
 }
