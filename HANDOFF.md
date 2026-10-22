@@ -37,7 +37,7 @@ ADSH：把 deepseek harness（dsh）的 PTC 语义（模型写一段程序组合
 - **无工作区惰性输入框 / 删除当前会话回首页 / 置顶会话（未发版）**：没有绑定工作区（首页、删过工作区、删掉当前会话后）时输入卡片换成 dsh 的 `.cardWorkspaceTrigger`（1px 虚线描边、不可编辑、占位「选择一个工作区开始」、点整卡展开工作区 chip 详情卡；按下线色转 accent）；删当前会话按 dsh 的 archiveSession → clearMain 回空态首页、不再自动落到下一条；「新会话」无工作区可落时同样 clearMain。会话三点菜单加置顶（dsh slot 100，行尾 14dp 填充钉可点取消置顶），侧栏置顶行在分组内提前、组内按 updatedAt 倒序，Room v18 `conversations.pinned`。用例 `SidebarOrderTest` / `ClearedMainTest` / `ComposerWorkspaceTriggerUiTest`；门禁全绿（134 类 / 1079 例）。
 - **门禁**：核心是全模块 `testDebugUnitTest`（用例数直接数 `**/build/test-results/**/TEST-*.xml`，别信任务状态）与 `:app:assembleDebug` —— 后者不能省：变体匹配/打包类回归只有组装才看得见。
 - **仓库**：远端 `main` 由 `scripts/push-via-api.py <远端当前提交>` 维护（**github.com:443 连不通**，api.github.com / uploads / codeload 通），成功判据是「远端 tree == 本地 HEAD tree」。**本地 `origin/main` 是 2026-10-11 的旧 fetch 引用，别拿它当远端现状**；下次 push 前先 `git fetch`（需代理）。
-- **发布物**：最新 GitHub release 是 `v0.2.6-20261022`（0.2.6 / versionCode 25，R8 + shrinkResources，debug 签名，可覆盖 debug 包；旧 release 按用户口径不删）。`dist/` 里保留 0.2.4 的 release 与 debug、0.2.5 release 与 0.2.6 release；设备上装的是 0.2.6 release 包。
+- **发布物**：最新 GitHub release 是 `v0.2.6-20261022`（0.2.6 / versionCode 25，R8 + shrinkResources，debug 签名，可覆盖 debug 包；旧 release 按用户口径不删）。`dist/` 只保留最新的 0.2.6 release 与 debug 两个 APK；设备上装的是 0.2.6 release 包。
 - **装机冒烟**：release 不可调试（`run-as` 被拒），深度诊断装 debug 包；两者同包名同一把签名，`install -r` 可互相覆盖且不动数据。组件名是 `com.termux/com.adsh.app.MainActivity`（`namespace` 与包名不同，写 `.MainActivity` 会报 `Activity class does not exist`）；稳妥写法 `adb shell cmd package resolve-activity --brief com.termux` 取组件名再 `am start -n`，冒烟前先 `adb logcat -b crash -c`。
 - 删过代码之后跑 `python scripts/deadcode.py` 与 `python scripts/find-unused-imports.py`（后者管 import，前者不管）。
 - README 被用户在网页上改过 —— 压平 / 改写前先把工作区同步成他那一版，否则 orphan 提交会顶掉他的修改。
