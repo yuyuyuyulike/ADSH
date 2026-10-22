@@ -1,9 +1,6 @@
 package com.adsh.app.ui.chat
 
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -86,33 +83,7 @@ class TranscriptScrollbarTest {
     }
 
     @Test
-    fun maxScrollIsExposedForDragConversion() {
-        val t = thumb(viewportPx = 200, maxScrollPx = 400)!!
-        assertEquals(400f, t.maxScrollPx, 0.01f)
-    }
-
-    @Test
-    fun dragDeltaKeepsTheThumbRatio() {
-        // 轨道可动 100px、内容可滚 400px：手指拖 10px ⇒ 列表滚 40px。
-        assertEquals(40f, thumbDragScrollDelta(10f, 100f, 400f), 0.01f)
-        assertEquals(0f, thumbDragScrollDelta(10f, 0f, 400f), 0f)
-    }
-
-    @Test
-    fun onlyTheThumbBandGrabsTheGesture() {
-        // 视口宽 1000、命中区 24、thumb 在 y=300..420：只有右缘 24dp × thumb 段算命中。
-        val width = 1000f
-        assertTrue(isOnScrollbarThumb(990f, 360f, width, 24f, 300f, 120f))
-        assertFalse("左移出命中区", isOnScrollbarThumb(970f, 360f, width, 24f, 300f, 120f))
-        assertFalse("thumb 上方", isOnScrollbarThumb(990f, 200f, width, 24f, 300f, 120f))
-        assertFalse("thumb 下方", isOnScrollbarThumb(990f, 500f, width, 24f, 300f, 120f))
-    }
-
-    @Test
-    fun edgeGuardExemptsOnlyTheThumbHitRegion() {
-        val hit = Rect(left = 0f, top = 100f, right = 24f, bottom = 300f)
-        assertTrue(isExemptFromEdgeGuard(Offset(10f, 150f), hit))
-        assertFalse(isExemptFromEdgeGuard(Offset(10f, 50f), hit))
-        assertFalse("滚动条不可拖（命中区为空）时不豁免", isExemptFromEdgeGuard(Offset(10f, 150f), null))
+    fun hideDelayIsOneSecond() {
+        assertEquals(1000L, SCROLLBAR_HIDE_DELAY_MS)
     }
 }

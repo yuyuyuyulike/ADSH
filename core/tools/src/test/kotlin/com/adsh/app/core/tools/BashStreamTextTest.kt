@@ -46,6 +46,19 @@ class BashStreamTextTest {
         assertFalse("没有路径时不该编一个字段出来", without.containsKey("spillPath"))
     }
 
+    /** 字节对齐的尾巴可能从半行开始：丢掉半截首行；没有换行时原样保留 */
+    @Test
+    fun aTruncatedTailDropsItsPartialFirstLine() {
+        assertEquals("b\nc", dropPartialFirstLine("part\nb\nc"))
+        assertEquals("b\nc", dropPartialFirstLine("\nb\nc"))
+        assertEquals("single", dropPartialFirstLine("single"))
+        // 尾巴只有「一条被截断的长行 + 换行」：不能丢成空串，保留它（丢了多少字节由 omittedBytes 说明）
+        assertEquals("AAAA\n", dropPartialFirstLine("AAAA\n"))
+        assertEquals("", dropPartialFirstLine("\n"))
+        assertEquals("b", wholeLineTail("part\nb", true))
+        assertEquals("part\nb", wholeLineTail("part\nb", false))
+    }
+
     /** 正文渲染只认「有没有截断」，标记互斥那套不受影响 */
     @Test
     fun theStatusMarkersStillFollowTheTruncationNotice() {

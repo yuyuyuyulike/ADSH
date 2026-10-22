@@ -25,8 +25,30 @@ import com.adsh.app.seam.tool.UserQuestionChannel
  *    返回成功会让模型继续执行未经批准的计划，所以用失败收住。
  */
 object ExitPlanModeTool : Tool {
-    override val name = "exit_plan_mode"
-    override val description: String get() = ToolSdk.description(name)
+    override val spec = ToolSpec(
+        name = "exit_plan_mode",
+        // 计划模式在**运行时上下文**里是有信号的（开着时快照多一段 `plan:policy`，关掉时
+        // 那一段消失、抬头下补一句退出叙述）。把「怎么判断自己在不在计划模式」写进这句，
+        // 免得模型靠猜。**不能引用那段的开头原文**：系统提示词里出现 "You are in plan mode"
+        // 就违反了「动态事实不进稳定段」（PromptAssemblerTest 钉着）。
+        description = "Use only in plan mode: the runtime context carries a plan-mode section only while " +
+            "plan mode is on, and that section's own text states the rules. Present your plan for the " +
+            "user's review and, on approval, leave plan mode. Send the COMPLETE plan as markdown, " +
+            "starting with a # heading that names it. The user may approve (carry out the plan from " +
+            "your next step) or keep planning — their feedback comes back in the tool result; revise " +
+            "and present again.",
+        args = """
+            {
+                /** The complete plan, as markdown, starting with a # heading that names it. */
+                plan: string;
+              }
+        """.trimIndent(),
+        output = """
+            {
+                approved: true;
+              }
+        """.trimIndent(),
+    )
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         if (!ctx.planMode) return ToolResult.Error("exit_plan_mode is only available in plan mode")

@@ -125,7 +125,7 @@ fun todoDiffOf(current: List<Pair<String, String>>, baseline: String?): Pair<Str
     val previous = baseline?.let { todoItemsOf(it) }
     if (previous == null) {
         // dsh：基准不可用时只画当前清单，并挂一句「旧清单不可用」
-        return "" to TodoCard(current.map { TodoCardItem(it.first, it.second) }, emptyList(), "旧清单不可用")
+        return "" to TodoCard(current.map { TodoCardItem(it.first, it.second) }, emptyList(), "previous list unavailable")
     }
     // 标题 → 状态（保持上一次清单的顺序：移除项按原顺序排在后面，dsh 同）
     val previousByTitle = LinkedHashMap<String, String>()
@@ -220,8 +220,15 @@ fun RailTodoCard(card: TodoCard, modifier: Modifier = Modifier) {
                 color = palette.labelSecondary,
             )
         } else {
-            // dsh 的 .list：上限 320px + 卡内滚动
-            Column(Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+            // dsh 的 .list：上限 320px + 卡内滚动。卡是圆角 16 的裁切容器：竖条上下各内收 8dp，避开圆角
+            val scroll = rememberScrollState()
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp)
+                    .dshVerticalScrollbar(scroll, elevated = true, topInset = 8.dp, bottomInset = 8.dp)
+                    .verticalScroll(scroll),
+            ) {
                 card.items.forEachIndexed { index, item -> TodoItemRow(item, divider = index > 0) }
                 if (card.unchanged.isNotEmpty()) {
                     TodoUnchangedRow(card.unchanged.size, showUnchanged) { showUnchanged = !showUnchanged }

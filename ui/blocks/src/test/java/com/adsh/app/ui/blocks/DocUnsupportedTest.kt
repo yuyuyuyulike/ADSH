@@ -31,14 +31,14 @@ class DocUnsupportedTest {
             }
         }
         compose.waitForIdle()
-        compose.onAllNodesWithText("老式 Office 格式", substring = true).onFirst().assertExists()
-        compose.onAllNodesWithText("用其他应用打开").onFirst().assertExists()
+        compose.onAllNodesWithText("legacy Office format", substring = true).onFirst().assertExists()
+        compose.onAllNodesWithText("another app", substring = true).onFirst().assertExists()
     }
 
     @Test
     fun `不支持说明点明 doc-xls-ppt 与 Office 引擎`() {
         val note = unsupportedNoteOf("doc")
-        assertTrue(note, note != null && note.contains(".doc") && note.contains("Office 引擎"))
+        assertTrue(note, note != null && note.contains(".doc") && note.contains("Office engine"))
         assertTrue(unsupportedNoteOf("xls")!!.contains(".xls"))
         assertTrue(unsupportedNoteOf("ppt")!!.contains(".ppt"))
     }

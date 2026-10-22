@@ -30,14 +30,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -55,13 +54,13 @@ import com.adsh.app.ui.blocks.ImagePreviewState
 import com.adsh.app.ui.theme.LocalDshPalette
 
 /**
- * 跨页面存活的对话滚动状态（dsh 的 chatScroll 是模块级、按会话存档的）。
+ * 跨页面存活的对话滚动状态。
  *
- * **位置与跟随意图要一起存活**：只存 ScrollState 的话，去设置页 / 文件页再回来会新建一份
- * [ChatScrollState] —— 位置还在半途、跟随意图却被重置成「跟随」，回来的第一帧就被贴底保活
- * 拉回底部（会话早就结束了，看起来就是「自动滚动又自己触发了」）。
+ * **位置与 [ChatScrollState.following] 要一起存活**：只存 ScrollState 的话，去设置页 / 文件页
+ * 再回来会新建一份 [ChatScrollState] —— 位置还在半途、跟随状态却被重置成「跟随」，回来的第一帧
+ * 就被贴底保活拉回底部（会话早就结束了，看起来就是「自动滚动又自己触发了」）。
  * 这里实现成**单槽**（只记住最后一条会话）：覆盖「去设置页 / 文件页再回来」这条最常见的路径；
- * 在多个会话之间来回切仍会重建（dsh 那边是真按会话存档的）。
+ * 在多个会话之间来回切仍会重建。
  */
 private object ChatScrollStore {
     private var conversationId: Long? = null
@@ -69,10 +68,10 @@ private object ChatScrollStore {
 
     class Session(val scroll: ScrollState, val chat: ChatScrollState)
 
-    fun sessionFor(conversationId: Long?, initial: Int, slopPx: Int): Session {
+    fun sessionFor(conversationId: Long?, initial: Int): Session {
         val existing = session
         if (existing != null && this.conversationId == conversationId) return existing
-        return Session(ScrollState(initial.coerceAtLeast(0)), ChatScrollState(slopPx)).also {
+        return Session(ScrollState(initial.coerceAtLeast(0)), ChatScrollState()).also {
             this.conversationId = conversationId
             session = it
         }
@@ -102,6 +101,13 @@ internal fun transcriptBottomPaddingPx(footerHeightPx: Int, density: Density): I
 /** [transcriptBottomPaddingPx] 的 Dp 形态（会话流底部内边距用） */
 internal fun transcriptBottomPadding(footerHeightPx: Int, density: Density): Dp =
     with(density) { transcriptBottomPaddingPx(footerHeightPx, density).toDp() }
+
+/**
+ * SubcomposeLayout 的两个槽：footer 先量，会话流拿它的实测高度当底部内边距（同一帧完成，
+ * 见 ChatScreen 里那次两趟测量）。
+ */
+private object ChatFooterSlot
+private object ChatTranscriptSlot
 
 /**
  * footer（输入区整摞）的遮罩背景：顶部 [FOOTER_FADE_HEIGHT] 从透明淡到页面底色，往下实色 ——
@@ -150,6 +156,8 @@ fun ChatScreen(
     onTogglePlan: () -> Unit,
     onSetPlan: (Boolean) -> Unit,
     onCompact: () -> Unit,
+    /** dsh 的 `export` 指令（命令栏「下载日志」）：由会话宿主决定落盘到当前会话的工作区 */
+    onExportSession: () -> String?,
     question: UserQuestionChannel.Pending?,
     onAnswer: (List<Answer>) -> Unit,
     onSkipQuestion: () -> Unit,
@@ -166,11 +174,6 @@ fun ChatScreen(
     onOpenDeliverable: (String) -> Unit,
     /** 清空排队发送的消息（dsh 的 queue chip） */
     onClearQueued: () -> Unit,
-    /**
-     * 掉线重连条被点了一下：立刻重发（dsh 的 `connection.reconnect()` —— 退避序列归零、
-     * 马上重连，不等剩下的退避时间）。
-     */
-    onRetryConnection: () -> Unit,
 ) {
     val context = LocalContext.current
     val palette = LocalDshPalette.current
@@ -235,8 +238,14 @@ fun ChatScreen(
     )
     val total = items.size
     val hasConversation = items.isNotEmpty()
-    // 最后一轮的 key（只有它能从轮尾分叉）
-    val lastTurnKey = items.lastOrNull { it is ChatItem.TurnTail }?.let { (it as ChatItem.TurnTail).view.key } ?: -1L
+    /**
+     * 输入框的惰性态（dsh 的 .cardWorkspaceTrigger）：首页还没有绑定工作区时，卡片画虚线描边、
+     * 不能输入，整张卡是「选择工作区」的入口（点它展开左上角工作区 chip 的详情卡）。
+     *
+     * dsh 的判据是「没有会话」或「hero 阶段 chip 没有标题」；ADSH 启动时会自动挂上上次的工作区，
+     * 所以这里落到「首页 + 没有工作区归属」这一种（删掉当前会话后也在这里）。
+     */
+    val workspaceTrigger = !hasConversation && state.workspaceId == null
     /**
      * 任务横窗的清单**收到 ChatScreen 这一层**（不在 [TodoDock] 内部收集）：任务横窗出现 /
      * 变高 / 变矮时**这一层要在同一帧重组** —— 贴底请求在重组那一帧、测量之前发出。只在子 composable
@@ -248,24 +257,20 @@ fun ChatScreen(
     }.collectAsStateWithLifecycle()
 
     // ---------------------------------------------------------------- 自动滚动
-    // 整套口径（① 只有「跟随意图」一个状态；② 只有读者真的移动过才重算它；③ 贴底请求只由
-    // 「内容 / 视口变了」触发；④ 请求在下面的 SideEffect 里发，落在本帧测量之前；⑤ 读者动作
-    // 优先，一律先交出跟随；⑥ 自己发消息 / 点回到底部无条件恢复；⑦ 读者正在滚时一律不贴）
-    // 连同**状态**都在 AutoScroll.kt（[ChatScrollState] / [KeepPinnedEffect]），这里只剩接线。
-    // 每条会话一份**跨页面存活**的滚动状态（位置 + 跟随意图一起存档，见 [ChatScrollStore]）：
-    // 初值给一个超大像素偏移，verticalScroll 首次测量会把它夹到内容末端 —— **进会话就是底部**
-    // （dsh 打开会话也是直接贴底，不会先闪一下顶部）
-    val density = LocalDensity.current
+    // 手机端标准形态：读者在底部 → 新内容跟着走；读者上滑 → 立即停；滑回底部 / 点「回到底部」/
+    // 自己发消息 → 恢复。判定与状态都在 AutoScroll.kt（[ChatScrollState] / [KeepPinnedEffect]），
+    // 这里只剩接线。
+    // 每条会话一份**跨页面存活**的滚动状态（位置 + 跟随状态一起存档，见 [ChatScrollStore]）：
+    // 初值给一个超大像素偏移，verticalScroll 首次测量会把它夹到内容末端 —— 进会话就在底部。
     val scrollSession = ChatScrollStore.sessionFor(
         conversationId = state.conversationId,
         initial = Int.MAX_VALUE,
-        slopPx = with(density) { FOLLOW_THRESHOLD_DP.dp.toPx() }.toInt(),
     )
     val transcriptScroll = scrollSession.scroll
-    // 跟随意图 / 手指 / 两个触发指纹 = 一份 [ChatScrollState]（与 ScrollState 同生命周期）
+    // 跟随状态 / 手指 / 贴底指纹 = 一份 [ChatScrollState]（与 ScrollState 同生命周期）
     val scroll = scrollSession.chat
-    /** dsh 的 `followTail()`：把视口钉到内容末端（视觉上的「本帧就贴底」由 ChatTranscript 的
-     * bottomCorrection 保证，这里只把 ScrollState 拨到真值）。
+    /** 把视口钉到内容末端（视觉上的「本帧就贴底」由 ChatTranscript 的 bottomCorrection 保证，
+     * 这里只把 ScrollState 拨到真值）。
      *
      * **不经过计数状态**：那枚计数会在组合期被读到，自增又触发一次重组 —— 键盘动画期间每次
      * inset 变化都发一次请求，就成了「每帧两次重组」的环（真机 logcat 里是 8ms 一条的 pin req）。
@@ -283,21 +288,18 @@ fun ChatScreen(
         pinScope.launch { transcriptScroll.scrollTo(0) }
     }
     /**
-     * 读者动作（展开 / 收起会话里的任何一行、打开任务列表）：**先把跟随交出去**，见上面 ⑤。
-     * dsh 的对照是 `pauseFollowing()`（显式导航时释放底部跟随）。
+     * 读者动作（展开 / 收起会话里的任何一行、打开任务列表）：**先把跟随交出去** —— 展开向下长、
+     * 上面的行一动不动，不替读者滚。
      *
-     * **不要立粘住的 `readerHold`**（去挡松手时那两条「恢复跟随」的规则）：意图只由**读者的真实移动**
-     * 重算，展开这一下没有移动，所以它自己就会一直停到读者滑回底部为止。
+     * **不要立粘住的 `readerHold`**（去挡松手时那两条「恢复跟随」的规则）：跟随状态只由**读者的
+     * 真实移动**重算，展开这一下没有移动，所以它会一直停到读者滑回底部为止。
      */
     val readerAction: () -> Unit = remember(scroll) { { scroll.pause() } }
     /**
-     * 读者位置采样（dsh 的 `onScroll` / `flushSample`）：位置一变就按 25dp 阈值重算跟随意图
-     * —— 这一条就是 dsh 的 `sample(metrics, movedByReader)`。
-     *
-     * `isScrollInProgress` 一起采样：**读者自己往上滑的那一下（哪怕只有几个像素）立刻交出跟随**，
-     * 见 [ChatScrollState.sampled] 的 ⑨；只有程序位移（回夹 / 贴底）不算。
+     * 读者位置采样：位置一变就按「读者落点是不是在底部」更新跟随状态。
+     * 只有读者滚动（拖拽 / 惯性）才算，程序位移（贴底 / 回夹）不算。
      */
-    LaunchedEffect(transcriptScroll, scroll.slopPx) {
+    LaunchedEffect(transcriptScroll, scroll) {
         var previous = transcriptScroll.value
         snapshotFlow {
             Triple(transcriptScroll.value, transcriptScroll.maxValue, transcriptScroll.isScrollInProgress)
@@ -305,7 +307,7 @@ fun ChatScreen(
             val moved = scroll.sampled(
                 previous = previous,
                 current = value,
-                atBottom = maxValue - value <= scroll.slopPx,
+                atBottom = maxValue - value <= PIN_SLOP_PX,
                 readerScrolling = scrolling,
             )
             if (moved) previous = value
@@ -320,17 +322,11 @@ fun ChatScreen(
      */
     val lastUserId = remember(state.messages) { lastOwnUserId(state.messages) }
     /**
-     * footer（输入区整摞）的测量高度：它叠在列表上，**不占列表高度** —— 列表底部内边距 =
-     * 它 + [TRANSCRIPT_FOOTER_GAP]，所以 footer 一长高（输入框折行、出现状态行 / 待办 dock），
-     * 内容的静止位置也跟着上移。
+     * 贴底指纹 = 会话流的内容列表。footer 高度**不**参与指纹：它在同一次布局里先量好再交给
+     * 会话流（见下面的 SubcomposeLayout），footer 变化造成的 maxValue 变化由 [KeepPinnedEffect]
+     * 与 ChatTranscript 的同帧绘制补偿处理，不需要这里再补一次贴底。
      */
-    var footerHeightPx by remember { mutableIntStateOf(0) }
-    /**
-     * 贴底指纹 = 内容 + footer 高度。**footer 高度不变时实例不变**：静止的会话不会因为重组就贴一次底
-     * （⓪：贴底只由变化触发）。footer 高度变化 = 列表底部内边距变化 = 视口变化，与 dsh 的
-     * ResizeObserver(composer) → followTail() 同义。
-     */
-    val layoutKey = remember(items, footerHeightPx) { items to footerHeightPx }
+    val layoutKey = items
     // 键盘高度**不读进组合**：这一读会让整个会话页跟着 IME 动画的每一帧重组（全部行树），
     // 会话越长越卡 —— 用户报的「进入终端会话呼出键盘异常慢」就是它。视觉上的同帧贴底由
     // ChatTranscript 的 bottomCorrection 负责；ScrollState 由这条观察者补到真值（晚一帧，看不出来）。
@@ -341,8 +337,8 @@ fun ChatScreen(
     LaunchedEffect(transcriptScroll, scroll) {
         snapshotFlow { imeInsets.getBottom(imeDensity) }
             .collect {
-                // ⑩ 键盘弹起 / 收起是「用户主动改视口」，跟着走的前提仍是**读者还在跟随**：
-                // 贴着底时消息跟着键盘一起上移；读者翻过历史（按钮可见）时视口一动不动。
+                // 键盘弹起 / 收起是「用户主动改视口」：只在跟随中把底部带上来；
+                // 读者翻过历史时视口一动不动。
                 if (!scroll.following || scroll.touching || transcriptScroll.isScrollInProgress) return@collect
                 pinScope.launch { transcriptScroll.scrollTo(transcriptScroll.maxValue) }
             }
@@ -358,17 +354,14 @@ fun ChatScreen(
             }
     }
     SideEffect {
-        // ⑥ 用户自己发的一条消息刚落进会话：无条件恢复跟随（dsh 的 `ownInput` -> `followTail()`）
+        // 用户自己发的一条消息刚落进会话：无条件恢复跟随
         if (scroll.ownInput(lastUserId)) scroll.resume()
-        // ③ 内容 / 视口变了才发贴底请求；⑦ 读者正在滚（拖拽 / 惯性）时这一拍一律不贴 ——
-        // 两条判据都在 [ChatScrollState.pinRequest] 里（口径见 AutoScroll.kt 的文件注释）。
-        // 请求是「下一次测量用的位置」，本帧测量时它已经生效，所以新内容第一次被画出来就落在正确的
-        // 位置，不存在「先画错、下一帧再补」的那一帧。
-        // 视口指纹（IME 高度）不再参与：它那条由上面的观察者负责，内容变化走这里。
-        // ⑩ 只有「读者还在跟随」才贴（reader 翻过历史时 pinRequest 内部就会挡住）。
+        // 内容变了才发贴底请求；读者正在滚（拖拽 / 惯性）时这一拍不贴 —— 两条判据都在
+        // [ChatScrollState.pinRequest] 里。请求是「下一次测量用的位置」，本帧测量时它已经生效，
+        // 所以新内容第一次被画出来就落在正确位置，不存在「先画错、下一帧再补」的那一帧。
+        // 键盘那条视口变化由上面的观察者负责，内容变化走这里。
         val pin = scroll.pinRequest(
             content = layoutKey,
-            viewport = 0,
             scrolling = transcriptScroll.isScrollInProgress,
         )
         if (!pin) return@SideEffect
@@ -392,7 +385,7 @@ fun ChatScreen(
         onPlan = { writeDraft("/plan ") },
         onCompact = onCompact,
         onPermission = { requestPermission = true },
-        onExport = { toastPath(context, exportSessionZip(context, state)) },
+        onExport = { toastPath(context, onExportSession()) },
     )
 
     // ------------------------------------------------------------------ 触发菜单的可见性
@@ -415,6 +408,14 @@ fun ChatScreen(
     // 同层浮层：宿主铺在内容层上面（不占布局），在 insets 内层 —— 键盘弹起时随可视区一起缩短，
     // 定位的夹取边界与 dsh 的 window.innerHeight 同义。
     val overlayHost = remember { DshOverlayHostState() }
+    /**
+     * `@` 文件索引的失效计数：一轮结束后工作区可能被工具改过（dsh 在每次 tool/result 之后
+     * 让 file-reference 索引失效）；输入框只在真正打 `@` 时才按这个计数重建，空会话不遍历工作区。
+     */
+    var fileIndexRevision by remember { mutableIntStateOf(0) }
+    LaunchedEffect(state.sending) {
+        if (!state.sending) fileIndexRevision++
+    }
 
     Box(
         Modifier
@@ -443,43 +444,32 @@ fun ChatScreen(
         // 会话区 + 输入区，dsh 的 ConversationRoot .body：滚动体里 transcript 在下、composerSeat
         // sticky 在上。这里等价成「列表铺满整块、footer 叠上去」：内容可以滚到输入卡下面与圆角后面，
         // 由 footer 顶部的 36dp 渐变淡出，而不是在输入框上方被硬线截断。
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+        // **footer 先量、会话流后量，同一帧完成**：底部内边距 = footer 实测高度，不再写回 state
+        // 等下一帧重测 —— 那一步正是启动 / 切会话最后那一下「整页上滚」的根因。
+        val transcriptContent: @Composable (Int) -> Unit = { seatHeight ->
         // 会话流 + 读者手势 + 回到底部 / 右侧滚动条：整块在 ChatTranscript.kt
         ChatTranscript(
             state = state,
             items = items,
             scrollState = transcriptScroll,
             scroll = scroll,
-            lastTurnKey = lastTurnKey,
             foldOpen = foldOpen,
             reasoningOpen = reasoningOpen,
             readerAction = readerAction,
             pinToBottom = { pinToBottom() },
             onBranch = onBranch,
             onOpenDeliverable = onOpenDeliverable,
-            footerHeightPx = footerHeightPx,
+            footerHeightPx = seatHeight,
         )
+        }
 
-        // 输入框这一整摞叠在列表上（align Bottom），自己带 seat 的遮罩背景；它量出来的高度回灌给
-        // 列表的底部内边距（见 footerHeightPx）。**第二道保险**：内容 / 视口指纹之外，再补
-        // 「chrome 长高了但本屏没重组」那一种 —— 判据在 [ChatScrollState.chromeMeasured]。
+        // 输入框这一整摞叠在列表上，自己带 seat 的遮罩背景；实测高度在 SubcomposeLayout 里
+        // 先量出来再交给会话流（同一帧，见上）。
+        val footerContent: @Composable () -> Unit = {
         Column(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .footerSeatBackground()
-                .layout { measurable, constraints ->
-                    val placeable = measurable.measure(constraints)
-                    if (scroll.chromeMeasured(placeable.height, total)) {
-                        if (com.adsh.app.ui.chat.ChatDebug.enabled) {
-                            trace("pin chrome", "h=" + placeable.height + " items=" + total)
-                        }
-                        pinToBottom()
-                    }
-                    // footer 高度变化会改列表的底部内边距：写回 state，下一帧重组时生效（dsh 的 seat resize observer）
-                    if (placeable.height != footerHeightPx) footerHeightPx = placeable.height
-                    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
-                },
+                .footerSeatBackground(),
         ) {
         // 输入框上方那一摞（错误条 … 轮次状态行）整块在 ChatBars.kt
         ChatBottomBars(
@@ -516,8 +506,9 @@ fun ChatScreen(
                 onSelectEffort = onSelectEffort,
                 permission = state.permission,
                 onSelectPermission = onSelectPermission,
-                paletteCommands = paletteView.rows,
-                paletteVisible = paletteView.visible,
+                // 惰性态没有可编辑的输入框：触发菜单一律不出现（点卡片开的是工作区详情卡）
+                paletteCommands = if (workspaceTrigger) emptyList() else paletteView.rows,
+                paletteVisible = !workspaceTrigger && paletteView.visible,
                 onPaletteVisibleChange = { want ->
                     // dsh 的 toggleCommandMenu（ui-conversation/src/client/apply.ts:505-517）：
                     // 打开的是**全量菜单**（查询传空），关掉则记下 dismissed —— 按同一 token 同一查询
@@ -529,9 +520,6 @@ fun ChatScreen(
                 // 输入框只认自己那三个 id，别的 id 进来等于「三个都没开」。
                 menu = overlays.open,
                 onMenuChange = { value -> overlays = overlays.menuChanged(value, draft) },
-                // 掉线重连条：挂在输入框那一行的右侧
-                connection = state.connection,
-                onRetryConnection = onRetryConnection,
                 // 输入框下方那一排（dsh 的 composer dock）：会话统计 / Token 用量 / 上下文占用。
                 // **它自己决定画不画**（[ChatStatsDock] 一条都没有时整排不存在、不占高度）：新会话、
                 // 以及这一轮还没跑完时下方什么都没有，输入框停在原位、也不提前出现上下文图标。
@@ -541,11 +529,23 @@ fun ChatScreen(
                         context = state.context,
                         open = overlays.open,
                         onToggle = { id -> overlays = overlays.toggled(id) },
+                        // 入场动画只在「这条会话本来没有胶囊、后来跑出第一轮」时播；
+                        // 启动恢复 / 切会话那一帧必须瞬间出现（见 ChatUiState.dockEntranceArmed）。
+                        animateEntrance = state.dockEntranceArmed,
                     )
                 },
                 requestPermission = requestPermission,
                 onRequestHandled = { requestPermission = false },
                 showWorkspace = !hasConversation,
+                workspaceTrigger = workspaceTrigger,
+                workspaceRoot = state.workspacePath,
+                fileIndexRevision = fileIndexRevision,
+                // 点整张卡 = 展开左上角工作区 chip 的详情卡（dsh 的 onRequestWorkspace）。
+                // 一个工作区都没有时直接进目录选择 —— 与 chip 自己的行为一致（addIsTheOnlyEntry）。
+                onRequestWorkspace = {
+                    if (workspaces.isEmpty()) onAddWorkspace()
+                    else overlays = overlays.menuChanged(OPEN_WORKSPACE, draft)
+                },
                 workspaces = workspaces,
                 workspaceId = state.workspaceId,
                 onPickWorkspace = onPickWorkspace,
@@ -570,13 +570,28 @@ fun ChatScreen(
                         CommandIntent.Compact -> onCompact()
                         // dsh 的 matchEnter：精确命中的命令由目录解析后派发（/permission 是 popupSelect）
                         CommandIntent.Permission -> requestPermission = true
-                        CommandIntent.Export -> toastPath(context, exportSessionZip(context, state))
+                        CommandIntent.Export -> toastPath(context, onExportSession())
                         is CommandIntent.Send -> onSend(intent.text)
                     }
                 },
                 onCancel = onCancel,
         )
         }
+        }
+
+        SubcomposeLayout(Modifier.weight(1f).fillMaxWidth()) { constraints ->
+            // 第一趟：只量 footer（它不占会话流的布局高度）。
+            val footerPlaceable = subcompose(ChatFooterSlot) { footerContent() }
+                .first()
+                .measure(constraints.copy(minHeight = 0))
+            // 第二趟：把 footer 的实测高度作为会话流的底部内边距，再量会话流本身。
+            val transcriptPlaceable = subcompose(ChatTranscriptSlot) {
+                transcriptContent(footerPlaceable.height)
+            }.first().measure(constraints)
+            layout(constraints.maxWidth, constraints.maxHeight) {
+                transcriptPlaceable.place(0, 0)
+                footerPlaceable.place(0, constraints.maxHeight - footerPlaceable.height)
+            }
         }
         }
         }

@@ -44,11 +44,13 @@ fun DshWarnCard(
     val cardShape = RoundedCornerShape(16.dp)
     val stripShape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
     val maxBodyHeight = minOf(520, (configuration.screenHeightDp * 0.6f).toInt()).dp
+    val bodyScroll = rememberScrollState()
 
     Column(modifier.fillMaxWidth().padding(horizontal = DshSpacing.Xxl).padding(bottom = DshSpacing.Lg)) {
         Column(
             Modifier
                 .fillMaxWidth()
+                .lightCardShadow(cardShape)
                 .clip(cardShape)
                 .background(palette.inputMajor)
                 .border(1.dp, palette.warnLabel.copy(alpha = 0.45f), cardShape),
@@ -69,7 +71,8 @@ fun DshWarnCard(
                 bodyModifier
                     .fillMaxWidth()
                     .heightIn(max = maxBodyHeight)
-                    .verticalScroll(rememberScrollState()),
+                    .dshVerticalScrollbar(bodyScroll, elevated = true)
+                    .verticalScroll(bodyScroll),
                 verticalArrangement = Arrangement.spacedBy(DshSpacing.Lg),
                 content = body,
             )

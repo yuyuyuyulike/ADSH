@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -133,7 +134,7 @@ internal fun OfficePreview(path: String) {
 internal fun WordPreview(path: String) {
     val (doc, failure) = previewOf(path) { readWordDoc(File(path)) }
     when {
-        failure != null -> CenteredNote("无法读取这个文档：" + failure)
+        failure != null -> CenteredNote("cannot read this document: " + failure)
         doc == null -> CenteredNote("正在读取…")
         else -> WordBody(doc)
     }
@@ -156,11 +157,14 @@ private fun WordBody(doc: WordDocument) {
             val top = (doc.page.marginTopTw * DP_PER_TWIP * scale).dp
             val bottom = (doc.page.marginBottomTw * DP_PER_TWIP * scale).dp
             SelectionContainer {
+                val listState = rememberLazyListState()
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
                         .clip(RoundedCornerShape(2.dp))
-                        .background(Color.White),
+                        .background(Color.White)
+                        .dshVerticalScrollbar(listState),
+                    state = listState,
                     contentPadding = PaddingValues(start = left, end = right, top = top, bottom = bottom),
                 ) {
                     items(doc.blocks.size) { index ->
@@ -640,9 +644,9 @@ private fun WordImage(image: WordBlock.Image, scale: Float) {
 internal fun WorkbookPreview(path: String) {
     val (book, failure) = previewOf(path) { readWorkbook(File(path)) }
     when {
-        failure != null -> CenteredNote("无法读取这个工作簿：" + failure)
+        failure != null -> CenteredNote("cannot read this workbook: " + failure)
         book == null -> CenteredNote("正在读取…")
-        book.isEmpty() -> CenteredNote("这个工作簿里没有可预览的工作表")
+        book.isEmpty() -> CenteredNote("This workbook has no sheets to preview.")
         else -> SheetGrid(book)
     }
 }
@@ -655,7 +659,7 @@ internal fun DelimitedPreview(path: String, delimiter: Char) {
         listOf(SheetTable(name, parseDelimited(readTextPreview(path).first, delimiter)))
     }
     when {
-        failure != null -> CenteredNote("无法读取这个表格：" + failure)
+        failure != null -> CenteredNote("cannot read this table: " + failure)
         tables == null -> CenteredNote("正在读取…")
         else -> SheetGrid(tables)
     }
@@ -668,12 +672,14 @@ private fun SheetGrid(tables: List<SheetTable>) {
     var index by remember(tables) { mutableStateOf(0) }
     val table = tables.getOrNull(index) ?: return
     val horizontal = rememberScrollState()
+    val sheetTabs = rememberScrollState()
     Column(Modifier.fillMaxSize()) {
         if (tables.size > 1) {
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
+                    .dshHorizontalScrollbar(sheetTabs)
+                    .horizontalScroll(sheetTabs)
                     .padding(horizontal = DshSpacing.Xl, vertical = DshSpacing.Lg),
                 horizontalArrangement = Arrangement.spacedBy(DshSpacing.Xl),
             ) {
@@ -695,7 +701,15 @@ private fun SheetGrid(tables: List<SheetTable>) {
             }
         }
         SelectionContainer {
-            LazyColumn(Modifier.fillMaxSize()) {
+            val listState = rememberLazyListState()
+            // 各行共用一个横向滚动状态：横条只画在外层可视区，挂在每一行上会画出 N 条
+            LazyColumn(
+                Modifier
+                    .fillMaxSize()
+                    .dshVerticalScrollbar(listState)
+                    .dshHorizontalScrollbar(horizontal),
+                state = listState,
+            ) {
                 items(table.rows.size) { rowIndex ->
                     Row(
                         Modifier
@@ -738,11 +752,13 @@ internal fun SlidesPreview(path: String) {
     val palette = LocalDshPalette.current
     val (deck, failure) = previewOf(path) { readSlideDeck(File(path)) }
     when {
-        failure != null -> CenteredNote("无法读取这份演示文稿：" + failure)
+        failure != null -> CenteredNote("cannot read this presentation: " + failure)
         deck == null -> CenteredNote("正在读取…")
         else -> SelectionContainer {
+            val listState = rememberLazyListState()
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().dshVerticalScrollbar(listState),
+                state = listState,
                 contentPadding = PaddingValues(DshSpacing.Xxxl),
                 verticalArrangement = Arrangement.spacedBy(DshSpacing.Xxxl),
             ) {

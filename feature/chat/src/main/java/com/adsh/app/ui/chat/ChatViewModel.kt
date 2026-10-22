@@ -4,8 +4,9 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.adsh.app.core.agent.AgentLoop
+import com.adsh.app.core.agent.compaction.CompactionService
+import com.adsh.app.core.agent.compaction.CompactionTrigger
 import com.adsh.app.seam.model.describeAttachments
-import com.adsh.app.core.llm.collectText
 import com.adsh.app.core.data.generateSessionTitleIfNeeded
 import com.adsh.app.seam.model.encodeAttachments
 import com.adsh.app.core.data.ConversationRepository
@@ -21,8 +22,11 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -45,8 +49,10 @@ class ChatViewModel(
     private val runtime: TermuxRuntime,
     private val workspaces: WorkspaceManager,
     private val agent: AgentLoop,
-    /** `/compact` 单独用一条 LLM 通道（不经过 AgentLoop 的工具循环） */
+    /** 标题与小调用用的一条 LLM 通道（不经过 AgentLoop 的工具循环） */
     private val compactLlm: LlmClient,
+    /** 压缩服务：/compact 只调它（区间选择 / 摘要请求 / 历史替换全在 :core:agent） */
+    private val compactor: CompactionService,
     /** 工具上下文工厂：组合根实现（:app 的 ToolingHost），本类只给每轮才变的东西 */
     private val tooling: ToolContextFactory,
     /**
@@ -85,6 +91,30 @@ class ChatViewModel(
 
     private var searchJob: Job? = null
 
+    /**
+     * 侧栏动作失败的通知文案（界面层负责弹一条提示）。
+     *
+     * 置顶 / 取消置顶失败时侧栏没有任何别的动静，静默失败会读成「按钮坏了」—— dsh 同样用
+     * toast 说明（见 ui-workspace 的 toast.pinFailed / toast.unpinFailed）。
+     */
+    private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val notices: SharedFlow<String> = _notices.asSharedFlow()
+
+    /**
+     * 置顶 / 取消置顶（dsh 的 pinSession / unpinSession）：只改 pinned 列，**不刷新 updatedAt**
+     * —— 置顶不改变会话的「最近更新」时间。侧栏顺序由
+     * [ConversationRepository.sidebarConversations] 的置顶分区给出。
+     */
+    fun setPinned(id: Long, pinned: Boolean) {
+        viewModelScope.launch {
+            runCatching { repository.setPinned(id, pinned) }
+                .onSuccess { refreshConversations() }
+                .onFailure {
+                    _notices.emit(if (pinned) "Pin failed. Try again later." else "Unpin failed. Try again later.")
+                }
+        }
+    }
+
     /** 会话搜索：每次输入都重跑（在 IO 线程上查库），空查询直接清空结果 */
     fun searchSessions(query: String) {
         searchJob?.cancel()
@@ -110,7 +140,9 @@ class ChatViewModel(
     }
 
     private suspend fun refreshConversations() {
-        _conversations.value = repository.conversations()
+        // 抽屉的行序：置顶会话在所属分组内排最前（dsh 的 pinned 分区），组内仍按 updatedAt 倒序。
+        // 别处的「最近」语义用 repository.conversations()（updatedAt 倒序），两者别混。
+        _conversations.value = repository.sidebarConversations()
         // dsh 的 sessionVisible：一条消息都没有的空白会话只在「它就是当前会话」时出现在侧栏里，
         // 这样「新会话」不会在抽屉里堆成一串行，也不会凭空多出一个分组
         val blanks = repository.blankIds()
@@ -237,13 +269,19 @@ class ChatViewModel(
         val workspace = conversation?.workspaceId?.let { repository.workspace(it) }
         if (workspace != null) bindFolder(workspace.path)
         val messages = knownMessages ?: repository.messages(id)
-        // 统计随会话持久化：切回来能看到上次的用时/用量
+        // 统计随会话持久化：切回来能看到上次的用时/用量。
+        // 旧版本的分叉 / 分支没有聚合列（输入框下方的胶囊整排消失）：有逐轮用量、聚合却全零时
+        // 按正文重算一次 —— 与 dsh 一样，统计是日志的投影，不是另一份状态。
+        var stats = repository.statsOf(id)
+        if (stats.totalTokens == 0L && messages.any { it.usageJson != null }) {
+            stats = runCatching { repository.recomputeStats(id, messages) }.getOrDefault(stats)
+        }
         showConversationFrame(
             id = id,
             messages = messages,
             meta = ConversationFrame(
                 workspaceId = conversation?.workspaceId,
-                stats = repository.statsOf(id),
+                stats = stats,
                 planMode = conversation?.planMode == true,
             ),
         )
@@ -262,21 +300,27 @@ class ChatViewModel(
      * 把「现在看这条会话」这一帧摆上去 —— 切会话的两条路（缓存命中 / 读库）**只有这一处**写状态。
      * 顺序固定三步（见 LiveRunState.kt）：① 会话级字段；② 轮内字段整块复位；③ 把「正在跑的那一轮」
      * 盖回来 —— 复位不能抹掉在跑的那一轮，这是「切走再切回来不许停」。
+     *
+     * [meta] 必须是**完整**的一帧（统计也在内）：胶囊的可见性 / 入场动画由统计决定，晚一帧补
+     * 会让 footer 在抽屉收起动画里单跳一次（见 [switchConversation]）。
      */
-    private fun showConversationFrame(id: Long, messages: List<com.adsh.app.core.data.MessageEntity>, meta: ConversationFrame? = null) {
+    private fun showConversationFrame(
+        id: Long,
+        messages: List<com.adsh.app.core.data.MessageEntity>,
+        meta: ConversationFrame,
+    ) {
         _state.update { previous ->
-            val base = if (meta == null) {
-                previous.copy(conversationId = id, messages = messages)
-            } else {
-                previous.copy(
-                    conversationId = id,
-                    messages = messages,
-                    workspaceId = meta.workspaceId,
-                    stats = meta.stats,
-                    planMode = meta.planMode,
-                )
-            }
-            base.copy(pendingAttachments = emptyList(), queuedCount = queueOf(id).size)
+            previous.copy(
+                conversationId = id,
+                messages = messages,
+                workspaceId = meta.workspaceId,
+                stats = meta.stats,
+                planMode = meta.planMode,
+                // 载入时统计为空 = 这条会话还没跑出过胶囊，允许胶囊第一次出现时播一次入场；
+                // 载入时已有统计（启动恢复 / 切到旧会话）必须瞬间出现，否则 footer 高度动画
+                // 会经底部内边距把会话流顶一下（判据与 ChatStatsDock 共用 statsDockVisible）。
+                dockEntranceArmed = !statsDockVisible(meta.stats),
+            ).copy(pendingAttachments = emptyList(), queuedCount = queueOf(id).size)
                 .resetTurnFields(queueOf(id).size)
                 .withLiveRun(liveRuns[id])
         }
@@ -296,15 +340,33 @@ class ChatViewModel(
 
     /**
      * 新会话（dsh 侧栏的 startSession）：
-     * 目标工作区 = 当前会话所在的工作区 ?? 最近用过的工作区。
+     * 目标工作区 = 当前会话所在的工作区 ?? 最近更新过的那条会话的工作区 ?? 列表里第一个工作区。
+     *
+     * 一个都落不到时**不建**未分组的空白会话，而是 clearMain 停在首页（dsh 的 startSession
+     * 无目标分支就是 clearMain）—— 首页的输入框这时是「选择工作区」的惰性态。
      * connectWorkspace 会复用那个工作区里已有的空白会话，所以停在空白会话上再点一次是「没有反应」的
      * —— 这正是 dsh 的行为，不会堆出一串空会话。
      */
     fun newConversation() {
         val target = _state.value.workspaceId
-            ?: conversations.value.firstOrNull { it.workspaceId != null }?.workspaceId
+            ?: conversations.value.filter { it.workspaceId != null }.maxByOrNull { it.updatedAt }?.workspaceId
             ?: workspaceList.value.firstOrNull()?.id
+        if (target == null) {
+            viewModelScope.launch { clearMain() }
+            return
+        }
         newConversationIn(target)
+    }
+
+    /**
+     * 回到「没有会话」的首页（dsh 的 clearMain）：状态清空（见 [clearedMain]），抽屉列表刷新。
+     *
+     * 首页没有会话、也没有工作区归属 —— 输入框因此是「选择工作区」的惰性态，
+     * 必须先把工作区选好才能开始一条会话。
+     */
+    private suspend fun clearMain() {
+        _state.update { it.clearedMain() }
+        refreshConversations()
     }
 
     /**
@@ -342,26 +404,6 @@ class ChatViewModel(
         }
     }
 
-    /** 点工作区行：绑定它，并打开它最近的一条会话 */
-    fun openWorkspace(workspaceId: Long) {
-        viewModelScope.launch {
-            val workspace = repository.workspace(workspaceId) ?: return@launch
-            bindFolder(workspace.path)
-            val target = repository.conversations().firstOrNull { it.workspaceId == workspaceId }
-            if (target != null) openConversation(target.id) else newConversationIn(workspaceId)
-        }
-    }
-
-    /** dsh 的「重命名工作区」 */
-    fun renameWorkspace(id: Long, name: String) {
-        val trimmed = name.trim()
-        if (trimmed.isEmpty()) return
-        viewModelScope.launch {
-            repository.renameWorkspace(id, trimmed)
-            refreshWorkspaceList()
-        }
-    }
-
     /**
      * dsh 的「删除工作区」：只解除绑定 —— 文件夹与会话记录都保留，
      * 它的会话回到「未分组」（与 dsh 的 delete.desc 文案一致）
@@ -386,18 +428,34 @@ class ChatViewModel(
     }
 
     /**
-     * dsh 轮尾的「在新对话中分支」：把这轮之前的历史复制成一条新会话并切过去。
-     * dsh 是 forkAt(seq)（从某条消息分叉），这里等价地按消息 id 截断。
+     * dsh 轮尾的「在新对话中分支」：把截止到该轮收尾回答的历史复制成一条新会话并切过去。
+     *
+     * 每个**已结束**轮次的轮尾都挂这个入口（dsh 的 turn-tail 按轮独立判断，不要求是最新一轮、
+     * 也不要求会话空闲）；传进来的是该轮 closing 回答的行 id（[TurnView.branchMessageId]）。
+     * dsh 传的是 turn/end 事件的 seq——ADSH 没有事件日志，按消息行截断是等价物：enabled 时
+     * closing 行就是该轮最后一行，复制到它为止 = 切到「回答结尾」。
      */
     fun branchAt(messageId: Long) {
         val conversationId = _state.value.conversationId ?: return
-        if (_state.value.sending) return
         viewModelScope.launch {
             val copy = repository.forkAt(conversationId, messageId) ?: return@launch
             refreshConversations()
             openConversation(copy)
             refreshContext()
         }
+    }
+
+    /**
+     * dsh 的 `export` 指令（命令栏「下载日志」）：把当前会话导出成 ZIP。
+     *
+     * 落盘根取**这条会话自己的工作区** —— 与工具 / 附件落点是同一个函数
+     * （[conversationWorkspacePath]）；不能读 [ChatUiState.workspacePath]（那是启动时的兜底
+     * 工作区，绑定 / 切换工作区后不更新，会让导出落到应用私有目录或上一个工作区）。
+     * 没有会话时返回 null（界面 toast「export failed」）。
+     */
+    fun exportSession(): String? {
+        if (_state.value.conversationId == null) return null
+        return exportSessionZip(getApplication(), _state.value, conversationWorkspacePath())
     }
 
     /** dsh 的「重命名会话」 */
@@ -415,10 +473,11 @@ class ChatViewModel(
      * 收起动画期间不再有正文换入换出，这是「切会话掉帧」的第一号来源。
      *
      * 两条路：
-     *  - 缓存命中：正文**这一帧**就位，返回后抽屉立刻可以收；统计 / 上下文占用随后由协程补
-     *    （上下文占用要扫全部正文，按会话长度线性增长 —— 不能挡着收起）。
-     *  - - 未命中：**先等正文读出来**（正常 1~5ms）再返回 ——「先收起、读完再换」会让抽屉
-     *  - 滑进来的那几帧里正文整块换掉，用户看到的就是闪一下 / 卡一下。
+     *  - 缓存命中：正文**这一帧**就位，返回后抽屉立刻可以收；统计**也在这一帧**（两条小查询）——
+     *    胶囊的出现 / 消失必须跟正文一起落到抽屉还盖着的那一帧，拖到收起动画里再改 footer 高度
+     *    就会看到输入卡单独跳一下。只有上下文占用（要扫全部正文，按长度线性增长）延后补。
+     *  - 未命中：**先等正文读出来**（正常 1~5ms）再返回 ——「先收起、读完再换」会让抽屉
+     *    滑进来的那几帧里正文整块换掉，用户看到的就是闪一下 / 卡一下。
      */
     suspend fun switchConversation(id: Long) {
         // **不再看 sending**（用户口径，参照 dsh）：正在跑的那一轮在后台接着跑，切会话只是换一下
@@ -426,13 +485,9 @@ class ChatViewModel(
         if (_state.value.conversationId == id) return
         val cached = repository.cachedMessages(id)
         if (cached != null) {
-            // 命中缓存：正文与「那一条自己的实时状态」**在同一帧**换到位 —— 正在跑的那条切回来时
-            // sending / 流式尾巴 / 工具行 / 岛一起亮，中间不能有一帧是「空的」。
-            showConversationFrame(id, cached)
-            viewModelScope.launch {
-                openConversation(id, knownMessages = cached)
-                refreshContext()
-            }
+            // 命中缓存：正文、统计、计划、工作区在**同一帧**换到位（showConversationFrame 的唯一入口）。
+            openConversation(id, knownMessages = cached)
+            viewModelScope.launch { refreshContext() }
             return
         }
         val ready = withTimeoutOrNull(SWITCH_CONTENT_WAIT_MS) { openConversation(id) } != null
@@ -444,12 +499,11 @@ class ChatViewModel(
     /**
      * 删除会话（侧栏的「删除会话」）。
      *
-     * 对齐 dsh 的 archiveSession + clearArchivedCurrent + connectWorkspace：
+     * 对齐 dsh 的 archiveSession + clearArchivedCurrent：
      *  - 删的不是当前会话：只刷新列表，当前会话不动；
-     *  - 删的是当前会话：先落到**同一个工作区**里最近的一条会话；
-     *    那里没有别的会话了，就复用/建一条该工作区的空白会话（connectWorkspace），
-     *    这样输入框始终有会话可发 —— 不会出现「删完就打不了字」，
-     *    也不会凭空多出一个「未分组」分组（不往未分组建空白占位）。
+     *  - 删的是当前会话：clearMain 回到没有会话的首页（工作区归属也清掉）—— 首页的输入框
+     *    因此是「选择工作区」的惰性态，选好工作区才能开始下一条。**不自动落到别的会话**：
+     *    dsh 删掉当前会话后同样停在 clearMain 的首页。
      */
     fun deleteConversation(id: Long) {
         viewModelScope.launch {
@@ -471,15 +525,13 @@ class ChatViewModel(
             repository.delete(id)
             // 会话连同它的任务清单一并丢掉（清单是会话级的，见 TodoStore）
             com.adsh.app.core.tools.TodoStore.forget(id)
-            refreshConversations()
             if (wasCurrent) {
-                val blanks = repository.blankIds()
-                val next = repository.conversations()
-                    .firstOrNull { it.workspaceId == workspaceId && it.id != id && it.id !in blanks }
-                val target = next?.id ?: repository.openOrCreateBlank(workspaceId)
+                // 这条会话的实时登记表 / 排队消息随会话一起丢掉，免得后台残留的写入再把它们喂回来。
+                liveRuns.remove(id)
+                pendingSends.remove(id)
+                clearMain()
+            } else {
                 refreshConversations()
-                openConversation(target)
-                refreshContext()
             }
         }
     }
@@ -789,6 +841,8 @@ class ChatViewModel(
         // dsh 的 turn/start 会把 todos 这份 projection 清成 null：新一轮一开始，
         // 输入框上方那条任务横窗就收起来，等这一轮的 todo_write 再把它写出来
         com.adsh.app.core.tools.TodoStore.clear(conversationId)
+        // 新一轮 = 新的重试链：新失败要新开一行（上一轮的链在它自己的 Step / 收尾时已结束）
+        retryMessageIds.remove(conversationId)
 
         turnsInFlight.incrementAndGet()
         runningConversationId = conversationId
@@ -857,6 +911,14 @@ class ChatViewModel(
         // 附件在这里变成引用（sha256 / 图片尺寸 / MIME），随消息一起存
         if (persistUser) {
             val attachments = describeAttachments(attachmentPaths)
+            // 附件副本在发送前就消失（被外部清理 / 工作区被移动）：dsh 会以 FILE_NOT_STAGED 拒绝这条
+            // prompt；ADSH 不拦发送，但要可见地说出来 —— 静默丢掉会让用户以为模型看到了文件。
+            val missing = attachmentPaths.size - attachments.size
+            if (missing > 0) {
+                updateTurn(conversationId) {
+                    it.copy(error = missing.toString() + " attachment copy(ies) are no longer readable and were not sent")
+                }
+            }
             repository.addMessage(
                 conversationId = conversationId,
                 role = "user",
@@ -911,7 +973,7 @@ class ChatViewModel(
                 )
             }.onFailure {
                 // 这一路必须报出来：模型只回推理 / 被截断 / 提供方报错时，界面上不能只是「标题没变」。
-                android.util.Log.w("ADSH", "会话标题生成失败（退回兜底标题）", it)
+                android.util.Log.w("ADSH", "session title generation failed; keeping the fallback title", it)
             }
             // 写回库的那个标题（模型的或兜底的）要立刻可见：左上角与抽屉都读那份会话列表
             refreshConversations()
@@ -937,9 +999,10 @@ class ChatViewModel(
     /**
      * 收这一轮的事件流（原 startTurn 里 46 行的 collect 体）。
      *
-     * 三条分工别打乱：**掉线重连那两支归 [setConnection]**（它带「最短可见 800ms / 收尾 2s」两个
-     * 计时器）；**trace 留在 ViewModel**（[traceAppended] 走 android.util.Log，纯投影文件里放它，
-     * 单测会撞 "not mocked"）；其余分支全是 [turnProjected] 的纯投影。
+     * 三条分工别打乱：**模型请求重试的两支归 [persistRetry] / [markRetryStarted]**（重试行要
+     * 落库，才能像 dsh 的 model-retry 节点一样留在会话流里）；**trace 留在 ViewModel**
+     * （[traceAppended] 走 android.util.Log，纯投影文件里放它，单测会撞 "not mocked"）；
+     * 其余分支全是 [turnProjected] 的纯投影。
      *
      * Appended 那一支里两处 IO（读库、[refreshMessageTokens]）保持**顺序**调用 —— 改成 launch 会让
      * 状态乱序；而且读库必须发生在 trace 之后、与状态更新同一帧（见那一支的注释）。
@@ -952,21 +1015,28 @@ class ChatViewModel(
                 // 每步都会发一次这个事件，真正会发出去的只有「首条真人消息 + 标题还是新会话」的
                 // 会话一次（判据是 SessionTitleRunner 里的进程内集合），其余是一次集合查找。
                 is ChatEvent.RequestHeader -> generateTitle(conversationId)
-                // 掉线重连（dsh 的 ConnectionController + ConnectionIndicator）：状态与「最短可见 /
-                // 收尾」两个计时器都归 setConnection 管，纯投影里不碰
-                is ChatEvent.Reconnecting -> setConnection(
-                    conversationId,
-                    ConnectionState.Reconnecting(event.attempt, event.message),
-                )
-                // 断网挂起（dsh 的 disconnected）：不是「正在重连」，是在等网络
-                is ChatEvent.Disconnected -> setConnection(
-                    conversationId,
-                    ConnectionState.Disconnected(event.message),
-                )
-                is ChatEvent.Reconnected -> setConnection(
-                    conversationId,
-                    ConnectionState.Recovered(System.currentTimeMillis()),
-                )
+                // 模型请求重试（dsh 的 llm/retry）：在会话流里落一行「模型请求重试行」，
+                // 与 dsh 的 model-retry 节点同位置（失败的那一步之后）、同文案。
+                is ChatEvent.RetryScheduled -> {
+                    persistRetry(
+                        conversationId,
+                        RetryInfo(
+                            retry = event.retry,
+                            maximum = event.maximum,
+                            delayMs = event.delayMs,
+                            failure = event.failure,
+                            started = false,
+                        ),
+                    )
+                    val messages = repository.messages(conversationId)
+                    updateTurn(conversationId) { it.copy(messages = messages) }
+                }
+                // 退避结束、请求已重发（dsh 的 llm/retry-started）：同一行原地切成「已重试」
+                is ChatEvent.RetryStarted -> {
+                    markRetryStarted(conversationId)
+                    val messages = repository.messages(conversationId)
+                    updateTurn(conversationId) { it.copy(messages = messages) }
+                }
                 // 轮内事件只有这一种（会话日志追加了一条）：工具的开始 / 结算、子调用的开始 /
                 // 结算、一步 assistant 输出定稿，全都从这条通道来，界面形态由 fold 得出 ——
                 // 归属按 harnessId / 子调用 id 前缀，顺序就是 append 顺序（dsh 的 cell 模型）。
@@ -977,6 +1047,8 @@ class ChatViewModel(
                     // 一起发生，所以「同一段文字既在库行里、又当尾巴挂着」那一帧不存在；去重判据只有这一条。
                     val messages =
                         if (appended.body is com.adsh.app.core.session.SessionBody.Step) {
+                            // 这一步定稿 = 这一条重试链结束：下一步的失败要新开一行
+                            retryMessageIds.remove(conversationId)
                             repository.messages(conversationId)
                         } else {
                             null
@@ -993,6 +1065,16 @@ class ChatViewModel(
                 is ChatEvent.InboxClaimed -> {
                     val claimed = repository.messages(conversationId)
                     updateTurn(conversationId) { current -> turnProjected(current, event, claimed) { settings.modelLabel() } }
+                }
+                // 自动压缩开始（dsh 的 compaction/start）：把「压缩中」条亮起来。
+                // 只有 pressure / overflow 走这条通道；手动 /compact 由 [compact] 自己置状态。
+                is ChatEvent.CompactionStarted -> updateTurn(conversationId) { it.copy(compacting = true) }
+                // 自动压缩结束（dsh 的 compaction/end）：重读消息（历史可能被替换）+ 重算上下文占用。
+                // applied = false 表示这次什么都没改，重读是空操作但刷新了上下文占用。
+                is ChatEvent.CompactionFinished -> {
+                    val messages = repository.messages(conversationId)
+                    updateTurn(conversationId) { it.copy(compacting = false, messages = messages) }
+                    refreshContext()
                 }
                 // 其余分支（Delta / Reasoning / ToolCallDelta / Stats / StreamReset / Failed / Usage）
                 // 都是纯投影，见 [turnProjected]；Usage 由 AgentLoop 的 token 账本消费，这里不动状态
@@ -1016,15 +1098,14 @@ class ChatViewModel(
             // 轮/步由消息推导（每轮上报的 turns 是绝对值，累加会重复计数）；其余统计随会话落库。
             // 轮数与 AgentLoop 的口径一致：带 name 的 user 行（插话 / 权限切换通知）不算一轮。
             val stats = turnStatsOf(stateOf(conversationId).stats, messages)
-            updateTurn(conversationId) { turnFinished(it, messages, stats) }
+            // 收尾同时清掉「压缩中」：自动压缩跑在本轮里，本轮被取消时不会再收到 CompactionFinished，
+            // 不在这里复位的话压缩中条会一直亮着
+            updateTurn(conversationId) { turnFinished(it, messages, stats).copy(compacting = false) }
             runCatching { repository.setStats(conversationId, stats) }
             refreshConversations()
             refreshContext()
-            // 这一轮结束就不该再挂着「正在重连 / 断网」了（「已恢复」那条由它自己的
-            // 2 秒计时收尾，这里不动）
-            if (stateOf(conversationId).connection.isTransient()) {
-                applyConnection(conversationId, ConnectionState.Idle)
-            }
+            // 这一轮结束 = 不再有进行中的重试链（等待中的那一行会由 TurnView 推导成「已取消」）
+            retryMessageIds.remove(conversationId)
             if (stopped) {
                 // dsh 的 cancel：收件箱一起清掉（`inbox.clear()`）—— 没被认领的插话 /
                 // 通知随这一轮作废，不会在下一轮冒出来补跑一段没人要的对话
@@ -1123,12 +1204,6 @@ class ChatViewModel(
                         if (it.running) it.copy(running = false) else it
                     },
                 ),
-                // 正在重连 / 断网挂起时按停止：连接条也要收掉（否则它会一直挂在输入框上面）
-                connection = if (current.connection.isTransient()) {
-                    ConnectionState.Idle
-                } else {
-                    current.connection
-                },
             )
         }
         viewModelScope.launch {
@@ -1143,71 +1218,35 @@ class ChatViewModel(
         }
     }
 
-    // ------------------------------------------------------------------ 掉线重连的可见状态
+    // ------------------------------------------------------------------ 模型请求重试（会话流里的一行）
 
-    /** 「正在重连」是什么时候开始露的（dsh 的 `connectingShownAt`） */
-    private var connectingShownAt = 0L
-    /** 「已恢复」的收尾计时器 / 「正在重连」的最短可见期的收尾计时器 */
-    private var connectionJob: Job? = null
+    /** 当前重试链落在库里的消息行 id（会话 → 行 id）。新 attempt 原地更新同一行，不堆行。 */
+    private val retryMessageIds = HashMap<Long, Long>()
 
     /**
-     * 用户点了重连条：按 dsh 的 `connection.reconnect()` —— 退避序列归零、立刻重发
-     * （LlmClient 的退避等待会看到这个信号并马上返回）。
+     * dsh 的 `llm/retry`：先在库里落一行（role = "retry"，只给界面看、不进模型请求），
+     * 同一阶段内的后续 attempt 更新同一行 —— 界面上永远只有一行（dsh 的 model-retry 节点）。
      */
-    fun retryConnection() {
-        com.adsh.app.core.llm.ManualReconnect.request()
-    }
-
-    /**
-     * 状态迁移（dsh 的 SettingsRoot）：**「正在重连」至少可见 800ms**（
-     * [com.adsh.app.core.llm.ConnectionRecovery.CONNECTING_MIN_VISIBLE_MS]）——比这更短的
-     * 一次重连在屏幕上就是「闪一下」，用户会以为界面坏了。所以离开 reconnecting 时若还没露够，
-     * 就把目标状态压后到露够为止。
-     */
-    private fun setConnection(conversationId: Long, next: ConnectionState) {
-        val current = stateOf(conversationId).connection
-        if (current == next) return
-        if (current is ConnectionState.Reconnecting && next !is ConnectionState.Reconnecting) {
-            val remaining = com.adsh.app.core.llm.ConnectionRecovery.CONNECTING_MIN_VISIBLE_MS -
-                (System.currentTimeMillis() - connectingShownAt)
-            if (remaining > 0) {
-                connectionJob?.cancel()
-                connectionJob = viewModelScope.launch {
-                    kotlinx.coroutines.delay(remaining)
-                    applyConnection(conversationId, next)
-                }
-                return
-            }
-        }
-        applyConnection(conversationId, next)
-    }
-
-    private fun applyConnection(conversationId: Long, next: ConnectionState) {
-        val current = stateOf(conversationId).connection
-        connectionJob?.cancel()
-        connectionJob = null
-        // 一直是 reconnecting 时保留最初的时间戳（dsh 的 connectingShownAt 只在**进入**
-        // connecting 时记一次）：否则每次重试都把 800ms 重新计时，指示器永远不消失。
-        connectingShownAt = if (next is ConnectionState.Reconnecting) {
-            if (current is ConnectionState.Reconnecting && connectingShownAt > 0L) {
-                connectingShownAt
-            } else {
-                System.currentTimeMillis()
-            }
+    private suspend fun persistRetry(conversationId: Long, info: RetryInfo) {
+        val encoded = RetryInfoCodec.encode(info)
+        val existing = retryMessageIds[conversationId]
+        if (existing == null) {
+            retryMessageIds[conversationId] = repository.addMessage(
+                conversationId = conversationId,
+                role = "retry",
+                content = encoded,
+            )
         } else {
-            0L
+            repository.setMessageContent(existing, encoded)
         }
-        // 按会话路由：正在跑的 A 掉线重连时用户切到 B，重连条不许画到 B 上
-        updateTurn(conversationId) { it.copy(connection = next) }
-        if (next is ConnectionState.Recovered) {
-            // 「已恢复」停留 2 秒后自己消失（dsh 的 RECOVERY_CONFIRMATION_MS）
-            connectionJob = viewModelScope.launch {
-                kotlinx.coroutines.delay(com.adsh.app.core.llm.ConnectionRecovery.RECOVERY_CONFIRMATION_MS)
-                if (stateOf(conversationId).connection === next) {
-                    updateTurn(conversationId) { it.copy(connection = ConnectionState.Idle) }
-                }
-            }
-        }
+    }
+
+    /** dsh 的 `llm/retry-started`：同一行原地切成「已重试模型请求」（行保留到这一轮结束）。 */
+    private suspend fun markRetryStarted(conversationId: Long) {
+        val id = retryMessageIds[conversationId] ?: return
+        val row = repository.messages(conversationId).firstOrNull { it.id == id } ?: return
+        val info = RetryInfoCodec.decode(row.content) ?: return
+        repository.setMessageContent(id, RetryInfoCodec.encode(info.copy(started = true)))
     }
 
     data class WorkspaceInfo(
@@ -1243,7 +1282,7 @@ class ChatViewModel(
             workspaceRoot = conversationWorkspacePath()?.let { java.io.File(it) },
         )
 
-    fun refreshWorkspaceInfo() {
+    private fun refreshWorkspaceInfo() {
         val workspace = workspaces.current()
         _workspaceInfo.value = WorkspaceInfo(
             form = workspace.form,
@@ -1342,7 +1381,6 @@ class ChatViewModel(
                     com.adsh.app.core.agent.PromptAssembler.buildParts(
                         workspace = workspaces.current(),
                         extraSuffix = settings.systemPromptSuffix,
-                        previousWorkspacePath = settings.lastWorkspacePath,
                         filePolicy = filePolicyOf(settings.permission),
                         planMode = planMode,
                     ).system
@@ -1490,8 +1528,8 @@ class ChatViewModel(
     /**
      * dsh 的 /compact：把较早的对话压缩成一份检查点摘要，只保留最近几条原文。
      *
-     * 与 dsh 的 compaction-basic 一致：摘要作为一条 user 消息落在历史最前面，
-     * 用 <compacted-summary> 包起来，前面的原文被替换掉（不是删掉就算，而是换成摘要）。
+     * 业务全在 [CompactionService]（区间选择 / 摘要请求 / 历史替换）；这里只维护界面状态并重读会话。
+     * 失败文案保持原有两条（摘要为空 / 摘要请求失败），前缀一律 "compaction failed: "。
      */
     fun compact() {
         val conversationId = _state.value.conversationId ?: return
@@ -1499,140 +1537,23 @@ class ChatViewModel(
         viewModelScope.launch {
             _state.update { it.copy(compacting = true, error = null) }
             try {
-                val history = repository.messages(conversationId)
-                // dsh 的 selectCompactableRange：从后往前累计 token，保留约 16% 上下文窗口的尾巴，
-                // 并且不把工具结果和它前面的 assistant 调用切开
-                val range = compactableRange(history)
-                if (range == null) {
-                    return@launch
-                }
-                val (prefix, older, keep) = range
-                if (older.isEmpty()) {
-                    return@launch
-                }
-                val summary = summarize(renderTranscript(older))
-                if (summary.isBlank()) {
-                    _state.update { it.copy(error = "压缩失败：模型没有返回摘要，会话未改动") }
-                    return@launch
-                }
-                val checkpoint = CHECKPOINT_PREAMBLE + "\n\n<compacted-summary>\n" + summary.trim() + "\n</compacted-summary>"
-                repository.replaceHistory(conversationId, prefix, keep, checkpoint)
+                compactor.compact(
+                    conversationId = conversationId,
+                    window = settings.contextWindow,
+                    planMode = _state.value.planMode,
+                    trigger = CompactionTrigger.Manual,
+                )
                 val messages = repository.messages(conversationId)
-                _state.update {
-                    it.copy(
-                        messages = messages,
-                        // dsh 的 /compact 结果文案：Compacted N history items (~T tokens).
-                                            )
-                }
+                _state.update { it.copy(messages = messages) }
                 refreshContext()
             } catch (cancel: kotlinx.coroutines.CancellationException) {
                 throw cancel
             } catch (t: Throwable) {
-                _state.update { it.copy(error = "压缩失败：" + (t.message ?: t::class.java.simpleName)) }
+                _state.update { it.copy(error = "compaction failed: " + (t.message ?: t::class.java.simpleName)) }
             } finally {
                 _state.update { it.copy(compacting = false) }
             }
         }
-    }
-
-    /**
-     * dsh 的 selectCompactableRange（dsh-compaction-basic/lib/index.js）：
-     *
-     *  - 从末尾往前累计 token，累计到「上下文窗口 × DEFAULT_RETAIN_RATIO（0.16）」为止，
-     *    这一段原样保留（verbatim tail），前面的整段进摘要；
-     *  - 系统提示词 / 上下文注入节点永不在压缩范围里（dsh 的 systemHead 规则）；
-     *  - 不切开「assistant 的工具调用 + 它的工具结果」：保留段不能以 tool 行开头。
-     *
-     * @return (保留在前面的系统节点, 要压缩的历史, 要原样保留的尾巴)，没有可压缩的就返回 null
-     */
-    private fun compactableRange(
-        history: List<MessageEntity>,
-    ): Triple<List<MessageEntity>, List<MessageEntity>, List<MessageEntity>>? {
-        if (history.isEmpty()) return null
-        val window = _state.value.context.window.takeIf { it > 0 } ?: return null
-        val retainTokens = (window * 16 / 100).coerceAtLeast(1)
-        val floor = history.indexOfFirst { it.role != "sysprompt" && it.role != "context" }
-        if (floor < 0) return null
-
-        var accumulated = 0L
-        var keepFrom = history.size
-        for (index in history.indices.reversed()) {
-            if (index < floor) break
-            accumulated += estimateTokens(history[index].content)
-            keepFrom = index
-            if (accumulated >= retainTokens) break
-        }
-        // 不切开工具对：保留段不能以 tool 行开头
-        while (keepFrom < history.size && history[keepFrom].role == "tool") keepFrom++
-        if (keepFrom <= floor) return null
-
-        val prefix = history.subList(0, floor)
-        val older = history.subList(floor, keepFrom)
-        val keep = history.subList(keepFrom, history.size)
-        if (older.none { it.role == "user" || it.role == "assistant" }) return null
-        return Triple(prefix.toList(), older.toList(), keep.toList())
-    }
-
-    /** 把历史渲染成纯文本，交给模型做摘要（工具调用/结果只保留结论，避免噪音） */
-    private fun renderTranscript(messages: List<MessageEntity>): String = buildString {
-        messages.forEach { message ->
-            val role = when (message.role) {
-                "user" -> "USER"
-                "assistant" -> "ASSISTANT"
-                "tool" -> "TOOL RESULT (" + (message.name ?: "tool") + ")"
-                else -> message.role.uppercase()
-            }
-            if (message.content.isBlank()) return@forEach
-            appendLine("### " + role)
-            appendLine(message.content.take(MAX_TRANSCRIPT_CHARS_PER_MESSAGE))
-            appendLine()
-        }
-    }
-
-    /**
-     * 一次性摘要调用（不经过工具循环）。
-     *
-     * dsh 的 summarizer 复用会话自己的系统提示词，只把摘要指令作为**最后一条 user 消息**
-     * 跟在对话后面（这样这次调用是上一个请求的真前缀，能吃到 KV 缓存），
-     * 而不是另起一个「摘要引擎」人格。
-     */
-    private suspend fun summarize(transcript: String): String {
-        val config = settings.providerConfig()
-        // 同 refreshContext：装配系统提示词要读指令文件链，不能在主线程上做
-        val system = withContext(kotlinx.coroutines.Dispatchers.IO) {
-            runCatching {
-                com.adsh.app.core.agent.PromptAssembler.buildParts(
-                    workspace = workspaces.current(),
-                    extraSuffix = settings.systemPromptSuffix,
-                    previousWorkspacePath = settings.lastWorkspacePath,
-                    filePolicy = filePolicyOf(settings.permission),
-                    planMode = _state.value.planMode,
-                ).system
-            }.getOrDefault("")
-        }
-        val request = com.adsh.app.core.llm.ChatRequest(
-            model = config.model,
-            messages = buildList {
-                if (system.isNotBlank()) {
-                    add(
-                        com.adsh.app.core.llm.ChatMessage(
-                            role = "system",
-                            content = com.adsh.app.core.llm.textContent(system),
-                        ),
-                    )
-                }
-                add(
-                    com.adsh.app.core.llm.ChatMessage(
-                        role = "user",
-                        content = com.adsh.app.core.llm.textContent(transcript + "\n---\n\n" + COMPACTION_INSTRUCTION),
-                    ),
-                )
-            },
-            stream = true,
-        )
-        // 收文本的那三条口径（Delta / StreamReset 清空重来 / Failed 抛出）在 llm/collectText.kt，
-        // 与标题生成共用一份实现 —— 这里不再各抄一遍
-        return compactLlm.collectText(request)
     }
 
     /** 移除一个待发附件 */
@@ -1644,25 +1565,22 @@ class ChatViewModel(
      * 这个会话的 cwd（dsh 的 session workspace）：会话自己的工作区优先，
      * 没分组时回落到设置里绑定的那个。
      *
-     * 附件落盘必须和**工具**用同一个根：不能只看 _state.workspacePath（那是「兜底工作区」，
-     * 不含会话自己的归属）—— 会话自己的 workspace 与它不同时，附件会写进另一个目录，
-     * 模型拿到的路径在工具的工作区之外，read/workdir 一律「路径越界（不在工作区内）」，
-     * 等于附件白传。
+     * 它也决定 `read_image` 工具图片的落点（`.adsh/attachments/<会话 id>`）：必须和**工具**用同一个根，
+     * 不能只看 _state.workspacePath（那是「兜底工作区」，不含会话自己的归属）。
+     * 用户导入的附件**不在这里** —— 它们在应用私有的附件仓库里（内容寻址、只读），句柄带的是绝对路径。
      */
     private fun conversationWorkspacePath(): String? =
         _state.value.workspaceId
             ?.let { id -> _workspaceList.value.firstOrNull { it.id == id }?.path }
             ?: _state.value.workspacePath
 
-    /** 导入附件：复制到「工作区/.adsh/attachments/<会话 id>/」，随会话删除；成功后挂到待发附件 */
+    /**
+     * 导入附件：收进应用私有的附件仓库（[com.adsh.app.core.data.AttachmentStore]，内容寻址、只读），
+     * 成功后挂到待发附件。**首页（还没有会话）也能导入**：dsh 的 composer 在第一条消息前就有附件条，
+     * ADSH 的仓库不依赖会话，发送时由 [send] 把这一批显式带进新会话。
+     */
     fun importAttachments(uris: List<android.net.Uri>): ImportResult {
-        val conversationId = _state.value.conversationId ?: return ImportResult()
-        val result = importAttachments(
-            context = getApplication(),
-            workspacePath = conversationWorkspacePath(),
-            conversationId = conversationId,
-            uris = uris,
-        )
+        val result = importAttachments(context = getApplication(), uris = uris)
         if (result.paths.isNotEmpty()) {
             _state.update { it.copy(pendingAttachments = (it.pendingAttachments + result.paths).distinct()) }
         }
@@ -1716,59 +1634,6 @@ class ChatViewModel(
         /** 会话搜索最多列出多少条结果（超出时提示「仅显示前 N 条结果」） */
         const val SEARCH_LIMIT = 20
 
-        /** 单条消息进入摘要时最多取多少字符（避免超长工具输出把摘要请求撑爆） */
-        private const val MAX_TRANSCRIPT_CHARS_PER_MESSAGE = 6000
-
-        /** dsh compaction-basic 的检查点前言（逐字） */
-        private const val CHECKPOINT_PREAMBLE =
-            "This is an automatically generated checkpoint condensing an earlier span of the conversation " +
-                "to free up context. Treat the captured context as established background and build on it " +
-                "without restating it. Continue the task directly from the messages that follow, without " +
-                "acknowledging this checkpoint."
-
-        /** dsh compaction-basic 的摘要指令（逐字，含分节结构） */
-        private val COMPACTION_INSTRUCTION = listOf(
-            "You are now acting as a compaction engine for this AI coding assistant. Condense the conversation " +
-                "ABOVE into a structured checkpoint that lets another model resume the work with no loss of " +
-                "essential context.",
-            "",
-            "Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not " +
-                "prose paragraphs. Write \"(none)\" for an empty section — never drop a section.",
-            "",
-            "## Primary Request and Intent",
-            "- [the user's original and evolving goals; quote verbatim where the exact wording matters]",
-            "",
-            "## Key Technical Concepts",
-            "- [technologies, frameworks, patterns, and conventions in play]",
-            "",
-            "## Files and Code",
-            "- [exact path: why it matters, key changes or snippets]",
-            "",
-            "## Errors and Fixes",
-            "- [error: how it was resolved, plus any related user feedback]",
-            "",
-            "## Pending Jobs",
-            "- [explicitly requested work not yet completed]",
-            "",
-            "## Current Work",
-            "- [precisely what was in progress at this checkpoint]",
-            "",
-            "## Next Step",
-            "- [the single next action, directly in line with the most recent request, or \"(none)\"]",
-            "",
-            "## Critical Context",
-            "- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]",
-            "",
-            "Rules:",
-            "- Write concise engineering prose. Preserve exact file paths, commands, error strings, identifiers, " +
-                "numeric values, function signatures, and syntax fragments.",
-            "- Capture user feedback and explicit instructions faithfully, especially corrections.",
-            "- Do NOT mention this summarization request or that the context was compacted.",
-            "- Output only the checkpoint text: do not call any tool or take any other action.",
-            "- If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. " +
-                "Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer " +
-                "information into a single consolidated summary under the same structure.",
-        ).joinToString("\n")
 
     }
 

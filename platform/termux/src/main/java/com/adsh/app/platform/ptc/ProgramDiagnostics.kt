@@ -170,8 +170,8 @@ object ProgramDiagnostics {
                 "There is no encoding, crypto or measurement API in this runtime: do base64/hex with " +
                     "`tools.bash` (`base64`, `xxd`, `sha256sum`), and time things with `Date.now()`."
             in NODE_GLOBALS ->
-                "There are no Node.js built-ins in this runtime: the program has the ECMAScript language " +
-                    "and the `tools.*` bindings only, and shell work belongs in `tools.bash`."
+                "There are no Node.js built-ins in this runtime: the program has plain ECMAScript and " +
+                    "the `tools.*` bindings; shell work belongs in `tools.bash`."
             else -> return null
         }
         return "Note: `$name` does not exist in this runtime (QuickJS has no host APIs). $workaround"

@@ -33,14 +33,6 @@
    "reason": "测试口：同上（逐帧原始坐标）"
   },
   {
-   "category": "public-test-only",
-   "confidence": 55,
-   "file": "core/tools/src/main/kotlin/com/adsh/app/core/tools/ToolConcurrency.kt",
-   "kind": "fun",
-   "name": "resetForTest",
-   "reason": "测试口：用例之间把队列与计数复位；生产代码没有调用方"
-  },
-  {
    "category": "internal-test-only",
    "confidence": 65,
    "file": "feature/chat/src/main/java/com/adsh/app/ui/chat/ToolRowModel.kt",

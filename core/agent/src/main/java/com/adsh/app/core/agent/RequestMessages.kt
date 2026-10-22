@@ -30,7 +30,7 @@ internal class RequestMessages(
     private val store: TurnStore,
     private val json: Json,
     /** 系统提示词的**稳定段**：策略 / 计划模式走运行时上下文注入，不在这里。 */
-    private val systemPrompt: (previousPath: String?) -> String,
+    private val systemPrompt: () -> String,
 ) {
 
     /**
@@ -46,7 +46,6 @@ internal class RequestMessages(
      */
     suspend fun build(
         conversationId: Long,
-        previousPath: String? = null,
         imageCapable: Boolean = false,
         /**
          * 当前路由是不是 DeepSeek。是的话，带 tool_calls 的 assistant 消息即使没有存下
@@ -64,7 +63,7 @@ internal class RequestMessages(
             role = "system",
             // 这里只要**稳定段**：当前策略 / 计划模式走运行时上下文注入（recordContext 写下的
             // context 行），并且在下面按 form = snapshot 作为 user 消息发出去
-            content = textContent(systemPrompt(previousPath)),
+            content = textContent(systemPrompt()),
         )
 
         var index = 0
@@ -77,8 +76,8 @@ internal class RequestMessages(
                 "context" -> appendContextRow(messages, entity, index)
 
                 // 展示用的会话节点，不进请求（sysprompt 的内容在系统提示词那一条里；
-                // command = 用户敲的斜杠命令行）
-                "sysprompt", "command" -> index + 1
+                // command = 用户敲的斜杠命令行；retry = 模型请求重试行，log-only）
+                "sysprompt", "command", "retry" -> index + 1
 
                 "assistant" -> appendAssistantGroup(messages, history, index, echoReasoning, imageCapable)
 

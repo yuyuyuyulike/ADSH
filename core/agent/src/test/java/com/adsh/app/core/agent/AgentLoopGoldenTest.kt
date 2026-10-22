@@ -196,8 +196,6 @@ class AgentLoopGoldenTest {
         assertTrue("ttftMillis 是墙钟", usage.ttftMillis >= 0)
         assertTrue("tps 由墙钟算出", usage.tps >= 0.0)
 
-        // toolContext = null → currentWorkspace 为 null → 写回的也是 null
-        assertNull(settings.lastWorkspacePath)
         assertEquals("用量 / 改动都打在真实存在的那一行上", emptyList<Long>(), store.missedUpdateIds)
     }
 

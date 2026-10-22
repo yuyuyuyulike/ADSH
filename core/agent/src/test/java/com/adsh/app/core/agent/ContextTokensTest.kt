@@ -56,6 +56,13 @@ class ContextTokensTest {
     }
 
     @Test
+    fun `模型请求重试行是 log-only、不进上下文`() {
+        val retry = message("retry", """{"retry":1,"maximum":5,"delayMs":500,"failure":"boom","started":false}""")
+        assertFalse(countsTowardContext(retry))
+        assertEquals(0L, contextMessageTokens(listOf(retry)))
+    }
+
+    @Test
     fun `运行时快照与指令文件链进请求、展示行不进`() {
         assertTrue(countsTowardContext(message("context", "当前策略：可写", form = PromptAssembler.FORM_SNAPSHOT)))
         // 指令文件链也是**真的会发出去的 user 消息**（dsh 的 agent-instructions）

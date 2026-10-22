@@ -1,15 +1,19 @@
 package com.adsh.app.core.tools
 
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
-import java.util.LinkedHashMap
-import java.util.concurrent.atomic.AtomicInteger
 import com.adsh.app.seam.ptc.INTERRUPTED_CODE
 import com.adsh.app.seam.ptc.SubCall
 import com.adsh.app.seam.ptc.toolErrorWire
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonPrimitive
+import java.util.LinkedHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * PTC 程序的**工具侧**（宿主进程）：程序里每一次 `await tools.x(...)` 都落在这里执行。
@@ -21,9 +25,9 @@ import com.adsh.app.seam.ptc.toolErrorWire
  * `ToolContext`（工作区 / 沙箱 / 设置 / 会话）本来就在主进程，跨进程搬过去没有意义。
  *
  * 所以这个类就是那条 RPC 的服务端：`call` 是**一次工具调用的执行体**（没有
- * 「批调用」这个入口：JS 那边每次 `tools.x()` 各自发一帧、各自异步，谁与谁重叠由闸门决定），
- * 闸门（[com.adsh.app.core.tools.ToolConcurrency]）、用户中断探针、子调用轨迹（界面那几行 +
- * 落库）全在这里，和搬走之前一模一样。
+ * 「批调用」这个入口：JS 那边每次 `tools.x()` 各自发一帧、各自异步，谁与谁重叠由闸门决定）。
+ * 执行本身走 [ToolExecutor.runBinding]（与模型直调同一条流水线）；这里只保留 PTC 专有的
+ * 调度、取消看门狗、子调用轨迹与 wire 上限。
  */
 internal class PtcToolRunner(
     private val tools: List<Tool>,
@@ -31,10 +35,10 @@ internal class PtcToolRunner(
     private val cancel: () -> Boolean,
 ) {
 
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    /** 子调用与直调共用的一条流水线（unknown/args/异常/脱敏只有一处实现） */
+    private val executor = ToolExecutor(tools)
 
-
-    /** 子调用序号：`<execToken>:ptc:<n>`，n 在**提交那一刻**按程序顺序分配（见 [callAll]） */
+    /** 子调用序号：`<execToken>:ptc:<n>`，n 在**提交那一刻**按程序顺序分配 */
     private val subSeq = AtomicInteger(0)
 
     /** 已经结算的子调用（按结算顺序）：失败回执 completedDigest 读它 */
@@ -43,8 +47,12 @@ internal class PtcToolRunner(
     /**
      * 这一次 run_code 的工具调度器（dsh 的 per-run scheduler，见 [ToolConcurrency]）。
      * **每轮一份**：上一轮卡在非协作取消里的调用不会把下一轮的队列堵死。
+     * 分类来自各 `Tool.parallelSafe`，未声明 = exclusive。
      */
-    private val concurrency = ToolConcurrency(context.maxParallelSubCalls)
+    private val concurrency = ToolConcurrency(
+        context.maxParallelSubCalls,
+        tools.filter { it.parallelSafe }.map { it.name }.toSet(),
+    )
 
     /**
      * 已经报过「开始」、还没结算的子调用（按提交顺序）。**run_code 结束（超时 / worker 崩溃 /
@@ -78,7 +86,7 @@ internal class PtcToolRunner(
     }
 
     /**
-     * 结算一条子调用：界面（onSubCall）与这一轮的工具行落库（SubCallTrace）都读它。
+     * 结算一条子调用：界面（onSubCall）与这一轮的工具行（ToolResult.subCalls）都读它。
      *
      * **只结算一次**：已经按 abort 结算过的 id 不在这里、也不再写（超时之后才跑完的工具不能把
      * 失败行覆盖成成功）；同一次调用晚到的第二个结果也直接丢掉。
@@ -92,7 +100,6 @@ internal class PtcToolRunner(
     private fun settle(entry: SubCall) {
         settled += entry
         runCatching { context.onSubCall?.invoke(entry) }
-        SubCallTrace.record(listOf(entry))
     }
 
     /**
@@ -119,7 +126,7 @@ internal class PtcToolRunner(
      * 一次 `await tools.x()`：跑一个工具，返回给程序的 wire 信封。
      *
      * **suspend 的**：宿主把它 launch 在一个
-     * 单线程派发器上 —— 每个调用**先按到达顺序登记调度位**（[com.adsh.app.core.tools.ToolConcurrency]），
+     * 单线程派发器上 —— 每个调用**先按到达顺序登记调度位**（[ToolConcurrency]），
      * 然后**立刻让出那根线程**；真正跑工具的那段挪到 `Dispatchers.IO`。这样：
      *  - 读类调用各自在自己的 IO 线程上跑，真正重叠（不是「一次批量 RPC」才重叠）；
      *  - 写类调用仍然独占、顺序 = 提交顺序（调度位是按到达顺序登记的）；
@@ -129,18 +136,19 @@ internal class PtcToolRunner(
         val id = nextSubId()
         announce(name, rawArgs, id)
         val started = System.currentTimeMillis()
-        val outcome = try {
+        val executed = try {
             concurrency.configure(context.maxParallelSubCalls)
             watchCancel {
                 concurrency.withToolPermit(name) {
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        callToolSuspend(name, rawArgs)
+                    withContext(Dispatchers.IO) {
+                        executor.runBinding(name, rawArgs, context)
                     }
                 }
             }
-        } catch (cancelSignal: kotlinx.coroutines.CancellationException) {
-            interruptedOutcome(name, rawArgs)
+        } catch (cancelSignal: CancellationException) {
+            interruptedOutcome()
         }
+        val outcome = enforceWireCap(name, executed)
         record(
             SubCall(
                 name = name,
@@ -153,32 +161,46 @@ internal class PtcToolRunner(
                 deliverables = outcome.deliverables,
             ),
         )
-        return outcome.wire
+        return if (outcome.ok) {
+            // 程序拿到的是「结构化值」（dsh 的 output.schema）；执行器已为没声明 value 的工具
+            // 退化成正文的 JSON 字符串。
+            outcome.value?.toString() ?: JsonPrimitive(outcome.text).toString()
+        } else {
+            toolErrorWire(name, rawArgs, outcome.text, outcome.retryable, outcome.code)
+        }
     }
 
-
-
-    /** 一次工具调用的结果：wire 给程序、text 给轨迹与日志、images 给轨迹与模型 */
-    private data class CallOutcome(
-        val wire: String,
-        val text: String,
-        val ok: Boolean,
-        val images: List<com.adsh.app.seam.tool.ToolImage> = emptyList(),
-        val deliverables: List<com.adsh.app.seam.tool.PresentedFile> = emptyList(),
-    )
-
     /** 被用户中断的子调用：给程序一个「已停止」的失败信封（dsh 的 code = interrupted） */
-    private fun interruptedOutcome(name: String, rawArgs: String): CallOutcome = CallOutcome(
-        wire = toolErrorWire(
-            name,
-            rawArgs,
-            ABORTED_SUB_CALL_MESSAGE,
-            retryable = false,
-            code = INTERRUPTED_CODE,
-        ),
-        text = ABORTED_SUB_CALL_MESSAGE,
+    private fun interruptedOutcome(): ToolOutcome = ToolOutcome(
         ok = false,
+        text = ABORTED_SUB_CALL_MESSAGE,
+        value = null,
+        code = INTERRUPTED_CODE,
     )
+
+    /**
+     * **设备侧上限**（有意偏离 dsh）：值要跨进程交给 `:ptc` 里的程序，而它前后会在主进程里
+     * 留好几份（value 树 / toString / 帧 JSON / 帧字节）。手机主进程的 Java 堆是 256MB ——
+     * 真机实测：一个 5MB 单行文件的 grep 值就把堆顶到 growth limit、app 闪退（同一份程序在
+     * dsh 桌面端跑得动，V8 的堆大得多）。dsh 对等的上限是控制帧 128MiB（maxMessageBytes），
+     * 这里按 read 的整文件上限取同量级。写类工具（write / edit）已经把回显截到
+     * MAX_ECHO_BYTES，撞不到这条；还剩 read / grep / glob 这些只读工具 —— 它们没有写副作用，
+     * 同样的调用缩小范围后重试是安全的。
+     */
+    private fun enforceWireCap(name: String, outcome: ToolOutcome): ToolOutcome {
+        if (!outcome.ok) return outcome
+        val wire = outcome.value?.toString() ?: return outcome
+        val bytes = wire.toByteArray(Charsets.UTF_8).size
+        if (bytes <= PTC_MAX_VALUE_BYTES) return outcome
+        return outcome.copy(
+            ok = false,
+            value = null,
+            text = "tool result for " + name + " is " + bytes +
+                " bytes, over the " + PTC_MAX_VALUE_BYTES +
+                "-byte cap this device can hand to a PTC program; narrow the request " +
+                "(read with offset/limit, or grep a smaller path) or process the file with bash",
+        )
+    }
 
     /**
      * 中断看门狗：探针命中就把这一段协程作用域取消掉。
@@ -189,7 +211,7 @@ internal class PtcToolRunner(
      * 会看到自己的 job 已经取消，各自按可中断路径收尾。
      */
     private suspend fun <T> watchCancel(block: suspend () -> T): T = coroutineScope {
-        val scopeJob = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+        val scopeJob = currentCoroutineContext()[Job]
         val watchdog = launch {
             while (true) {
                 delay(CANCEL_PROBE_MS)
@@ -203,60 +225,6 @@ internal class PtcToolRunner(
             block()
         } finally {
             watchdog.cancel()
-        }
-    }
-
-    private suspend fun callToolSuspend(name: String, rawArgs: String): CallOutcome {
-        fun failure(rawMessage: String, retryable: Boolean = false, code: String? = null): CallOutcome {
-            // 子调用的正文（界面、轨迹、落库）同样过一遍脱敏；wire 保持原样给程序用
-            val message = com.adsh.app.core.tools.SecretRedaction.redact(rawMessage)
-            return CallOutcome(
-                wire = toolErrorWire(name, rawArgs, rawMessage, retryable, code),
-                text = message,
-                ok = false,
-            )
-        }
-        val tool = tools.firstOrNull { it.name == name } ?: return failure("未知工具：" + name)
-        val args = runCatching { json.parseToJsonElement(rawArgs).jsonObject }
-            .getOrElse { return failure("参数不是 JSON 对象：" + rawArgs.take(200)) }
-        val result = runCatching { tool.execute(args, context) }
-            .getOrElse {
-                // 取消（用户中断 / 看门狗）不能被吞成一条「工具失败」：那样程序会以为自己
-                // 只是调用失败、接着往下跑，而外层已经不要结果了
-                if (it is kotlinx.coroutines.CancellationException) throw it
-                // 工具内部异常在这里留一份堆栈：模型只看到一行 message，真机上要定位只能靠它
-                android.util.Log.w("ADSH", "工具 " + name + " 抛出异常", it)
-                return failure(it.message ?: (it::class.java.simpleName + "（工具内部异常）"))
-            }
-        return when (result) {
-            // 程序拿到的是「结构化值」（dsh 的 output.schema）；没给 value 的工具退化成 JSON 字符串
-            is ToolResult.Ok -> {
-                val wire = result.value?.toString()
-                    ?: kotlinx.serialization.json.JsonPrimitive(result.text).toString()
-                // **设备侧上限**（有意偏离 dsh，理由写在下面）：这个值要跨进程交给 :ptc 里的程序，
-                // 而它前后会在主进程里留好几份（value 树 / toString / 帧 JSON / 帧字节）。
-                // 手机主进程的 Java 堆是 256MB —— 真机实测：一个 5MB 单行文件的 grep
-                // 值就把堆顶到 growth limit、app 闪退（同一份程序在 dsh 桌面端跑得动，V8 的堆大得多）。
-                // dsh 对等的上限是控制帧 128MiB（maxMessageBytes），这里按 read 的整文件上限取同量级。
-                // 写类工具（write / edit）已经把回显截到 MAX_ECHO_BYTES，撞不到这条；还剩 read /
-                // grep / glob 这些只读工具 —— 它们没有写副作用，同样的调用缩小范围后重试是安全的。
-                if (wire.toByteArray(Charsets.UTF_8).size > PTC_MAX_VALUE_BYTES) {
-                    return failure(
-                        "tool result for " + name + " is " + wire.toByteArray(Charsets.UTF_8).size +
-                            " bytes, over the " + PTC_MAX_VALUE_BYTES +
-                            "-byte cap this device can hand to a PTC program; narrow the request " +
-                            "(read with offset/limit, or grep a smaller path) or process the file with bash",
-                    )
-                }
-                CallOutcome(
-                    wire = wire,
-                    text = com.adsh.app.core.tools.SecretRedaction.redact(result.text),
-                    ok = true,
-                    images = result.images,
-                    deliverables = result.deliverables,
-                )
-            }
-            is ToolResult.Error -> failure(result.message, result.retryable, result.code)
         }
     }
 
@@ -274,8 +242,11 @@ internal class PtcToolRunner(
     }
 }
 
-/** dsh 的 toolAbortedResult 正文：取消 / 超时导致子调用结算时，界面摘要取这一行原文 */
-internal const val ABORTED_SUB_CALL_MESSAGE = "tool call aborted"
+/**
+ * dsh 的 toolAbortedResult 正文（content 首行）：取消 / 超时导致子调用结算时，界面摘要取这一行原文。
+ * dsh 的 error.message 是 `tool call aborted`，模型可见的正文是 `Error: tool call aborted`。
+ */
+internal const val ABORTED_SUB_CALL_MESSAGE = "Error: tool call aborted"
 
 /** 一次「按 abort 结算」的子调用：结束态、失败、没有结果正文（纯函数，单测直接打） */
 internal fun abortedSubCall(start: SubCall, startedAt: Long, now: Long): SubCall = start.copy(

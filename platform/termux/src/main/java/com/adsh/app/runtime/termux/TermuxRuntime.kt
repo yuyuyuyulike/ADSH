@@ -1,23 +1,14 @@
 package com.adsh.app.runtime.termux
 
 import com.adsh.app.seam.exec.ExecResult
-import com.adsh.app.seam.exec.OutputCap
 import com.adsh.app.seam.exec.Shell
 
 import android.content.Context
-import android.system.Os
 import com.adsh.app.seam.exec.Spill
 import android.system.OsConstants
 import java.io.File
 import java.io.InputStream
 import java.util.concurrent.TimeUnit
-
-/** 一条流的收尾（dsh 的 `OutputCollector.finalize()`）：内存尾部 + 是否丢过字节 + 全文路径 */
-data class Collected(
-    val text: String,
-    val truncated: Boolean,
-    val spillPath: String? = null,
-)
 
 /**
  * 一次 shell 会话的启动描述：可执行文件 + 参数 + 环境。
@@ -50,10 +41,15 @@ class TermuxRuntime(private val context: Context) : Shell {
 
     /**
      * 首次使用前的准备（解压 + 建链接；升级后只重链接），外加每次启动都幂等重做一遍的
-     * App 侧准备（见 [prepareHome]）。
+     * App 侧准备（见 [HomePrep.prepare]）。
      */
     fun ensureReady(log: (String) -> Unit = {}): File =
-        installer.ensureInstalled(log).also { prepareHome() }
+        installer.ensureInstalled(log).also {
+            HomePrep.prepare(homeDir(), prefix)
+            // 回收上次会话留下的 spill 目录 / pid 标记（超过保留时长的）：一次性、可失败，
+            // 必须在后台线程上跑 —— 调用点（ChatViewModel.warmUpRuntime）已经在 Dispatchers.IO。
+            runCatching { Spill.sweepStale(tmpDir()) }
+        }
 
     /**
      * bash 入口：$PREFIX/bin/bash → nativeLibraryDir（内核解析符号链接后落在可执行的真实文件上）。
@@ -105,50 +101,14 @@ class TermuxRuntime(private val context: Context) : Shell {
         File(legacyDataDirOf(context.packageName) + "/cache"),
     ).filter { it.isDirectory }.distinctBy { it.absolutePath }
 
-    /** 每次启动都跑一遍的 App 侧准备（都是幂等的小操作） */
-    private fun prepareHome() {
-        runCatching { scratchDir() }
-        runCatching { ensureGitSafeDirectory() }
-        // 环境自检命令：终端里敲 `adsh-env-check` 就能把「exec 模式 / SELinux 域 /
-        // 预载库 / 存储 / 浏览器」一次打出来 —— 内嵌 Termux 与官方基准的差异全在这里，出问题先看它。
-        runCatching { EnvSelfCheck.installScript(prefix) }
-        // 网页渲染 / 截图助手：自己解析浏览器、本地路径转 file://，
-        // 第三方工具还能用 `adsh-shot --which` 拿到浏览器路径（省掉写死的 /usr/bin/chrome）。
-        runCatching { AdshShot.installScript(prefix) }
-    }
-
     /**
-     * 让 git 认工作区。
-     *
-     * 工作区里的文件属主是 u0_a221(media_rw)，而我们的进程是 u0_a388：git 2.35+ 会直接拒绝
-     * 一切操作（fatal: detected dubious ownership in repository）。官方 Termux 的 git 也有同样
-     * 的坑，标准解法就是 safe.directory。
-     *
-     * 写的是 $HOME/.gitconfig（git 的全局配置），只追加、不覆盖用户自己写的内容；已经有一条
-     * 同样的声明就直接返回（幂等）。用 `*` 而不是逐个工作区路径：工作区可以由用户随时更换，
-     * App 每次启动都在这里，逐个维护成本更高还容易漏（设备本身是用户自己的）。
-     */
-    private fun ensureGitSafeDirectory() {
-        val config = File(homeDir(), ".gitconfig")
-        val existing = runCatching { if (config.isFile) config.readText() else "" }.getOrDefault("")
-        if (existing.contains(GIT_SAFE_LINE)) return
-        val append = buildString {
-            if (existing.isNotEmpty() && !existing.endsWith("\n")) appendLine()
-            appendLine("# 由 ADSH 追加：工作区在外部存储上，属主与 App 不同")
-            appendLine("[safe]")
-            appendLine("\t" + GIT_SAFE_LINE)
-        }
-        config.appendText(append)
-    }
-
-    /**
-     * 子进程环境。cwd 由工作区决定，注入 PWD 便于脚本自省。
+     * 子进程环境。cwd 由调用点决定（一次性命令 = 工作区，终端会话 = 家目录），PWD 与它一致。
      *
      * 每一项的来历、以及为什么必须是那个值，全在 [shellEnvironment] 里；这里只把启动期读到的
      * 事实收成一个快照。前缀 / 家目录一律用**官方路径文本**（/data/data/com.termux/…）：
      * bootstrap 里的 ELF 与脚本里编译进去的就是它，环境变量必须逐字一致（见 [BootstrapInstaller.prefix]）。
      */
-    fun environment(workspaceRoot: File?): Array<String> = shellEnvironment(
+    fun environment(workspaceRoot: File?, interactive: Boolean = false): Array<String> = shellEnvironment(
         ShellFacts(
             prefix = prefix.absolutePath,
             home = homeDir().absolutePath,
@@ -160,17 +120,18 @@ class TermuxRuntime(private val context: Context) : Shell {
             // 这两个是**两个不同的东西**：TERMUX_VERSION 是 Termux 语义的版本号（termux-tools
             // 拿它判断走不走旧 App 的兼容分支），TERMUX_APP__VERSION_CODE 才是本 App 的 versionCode
             termuxVersion = TERMUX_VERSION,
-            appVersionCode = versionCode(),
+            appVersionCode = appVersionCode(context),
             targetSdk = context.applicationInfo.targetSdkVersion,
             sdkInt = android.os.Build.VERSION.SDK_INT,
             apkRelease = APK_RELEASE,
-            debuggable = debuggableFlag(),
+            debuggable = appDebuggable(context),
             preload = preloadValue(),
             scratch = scratchDir().absolutePath,
             // 基线：完全权限。这里什么都不给就是 bug：shim 挂着却没有模式，
             // 于是按「workspace-write + 空白名单」跑，什么目录都写不了
             fenceMode = com.adsh.app.seam.exec.Escalation.FULL_ACCESS,
             workspaceRoot = workspaceRoot?.absolutePath,
+            interactive = interactive,
         )
     ).toTypedArray()
 
@@ -260,7 +221,9 @@ class TermuxRuntime(private val context: Context) : Shell {
         // -i：交互但**不是** login shell（不 source /etc/profile，理由见 preloadValue 的注释）。
         // PS1 由终端页通过环境变量给，不依赖 profile。
         args = listOf("-i"),
-        env = environment(workspaceRoot).toList(),
+        // interactive = true：PWD 是家目录（进程 cwd），TERM/颜色按真人终端给；
+        // 工作区只经 ADSH_WORKSPACE 暴露（见 shellEnvironment）。
+        env = environment(workspaceRoot, interactive = true).toList(),
         cwd = homeDir().absolutePath,
     )
 
@@ -379,6 +342,11 @@ class TermuxRuntime(private val context: Context) : Shell {
             .redirectErrorStream(!separateStreams)
             .redirectInput(ProcessBuilder.Redirect.from(File("/dev/null")))
         envInto(pb, environment(workspaceRoot))
+        // 围栏生效时把内部 pid 标记文件告诉 shim（fence.c 的 g_pid_marker）：read-only 白名单为空，
+        // 不单独放行的话这个内部写会被判成越权，命令 stderr 里会多出一段与用户命令无关的拒绝。
+        if (extraEnv != null && extraEnv.isNotEmpty()) {
+            envInto(pb, arrayOf("ADSH_PID_MARKER=" + marker.absolutePath))
+        }
         if (extraEnv != null) envInto(pb, extraEnv)
         if (workspaceRoot != null && workspaceRoot.isDirectory) pb.directory(workspaceRoot)
         val process = try {
@@ -444,8 +412,8 @@ class TermuxRuntime(private val context: Context) : Shell {
             // 就是 process.kill(-pid, signal)）。杀树那一套与后台任务的取消**同一份实现**。
             shell.terminateBlocking()
         }
-        collector.join(1000)
-        errCollector?.join(1000)
+        drain(collector, shell.stdout)
+        if (errCollector != null) drain(errCollector, shell.stderr)
         shell.dispose()
         val exit = if (finished) shell.exitValue() else -1
         val out = collector.finalize()
@@ -463,50 +431,23 @@ class TermuxRuntime(private val context: Context) : Shell {
             stderrSpillPath = err?.spillPath,
             timeoutMs = timeoutMs,
             cancelled = cancelled,
+            outputBytes = collector.totalBytes,
+            stderrBytes = errCollector?.totalBytes ?: 0,
         )
     }
 
     /**
-     * 给整棵进程树发信号（dsh 的 signalChildGroup）。
+     * 收尾一条输出流：最多等 [DRAIN_GRACE_MS]；超时就**关掉读端**让读线程退出。
      *
-     * 安卓上没有 dsh 那条路：Node 用 `detached: true` 让子进程自成进程组，再 `kill(-pid)`；
-     * 而 ProcessBuilder 起的子进程和 App 同组，对组发信号会把自己也杀掉。
-     * 所以从 /proc 读出父子关系，按「先叶子、后根」逐个 kill。
+     * 孙进程继承了 stdout/stderr 的写端时，管道永远不 EOF —— 不关读端就会留下一个永久阻塞的
+     * 读线程，而且随后 [OutputCollector.finalize] 还会跟它在同一个环形缓冲上赛跑
+     * （撕裂/重复的尾部）。dsh 在同样的位置也是「等一截、然后强制关掉收集器」。
      */
-    private fun signalTree(rootPid: Int, signal: Int) {
-        // 叶子在前（顺序与理由见 killOrder）：父进程先死的话，子进程会被 init 收养、再也找不回来
-        for (pid in killOrder(rootPid, readProcessTable())) {
-            runCatching { Os.kill(pid, signal) }
-        }
+    private fun drain(collector: OutputCollector, stream: InputStream) {
+        if (collector.join(DRAIN_GRACE_MS)) return
+        runCatching { stream.close() }
+        collector.join(DRAIN_AFTER_CLOSE_MS)
     }
-
-
-    /**
-     * 读一份 ppid → 子进程 的表。
-     * /proc/<pid>/stat 的格式是 `pid (comm) state ppid …`，comm 里可能有空格和括号，
-     * 所以要从**最后一个 ')'** 之后开始切。
-     */
-    private fun readProcessTable(): Map<Int, List<Int>> {
-        val table = HashMap<Int, MutableList<Int>>()
-        val entries = runCatching { File("/proc").list() }.getOrNull() ?: return table
-        for (name in entries) {
-            name.toIntOrNull() ?: continue
-            val stat = runCatching { File("/proc/" + name + "/stat").readText() }.getOrNull() ?: continue
-            val ppid = ppidFromStat(stat) ?: continue
-            table.getOrPut(ppid) { ArrayList() }.add(name.toInt())
-        }
-        return table
-    }
-
-    /** 本 App 的 versionCode（对齐 Termux 的 TERMUX_APP__VERSION_CODE） */
-    private fun versionCode(): Long = runCatching {
-        val info = context.packageManager.getPackageInfo(context.packageName, 0)
-        if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode else @Suppress("DEPRECATION") info.versionCode.toLong()
-    }.getOrDefault(0L)
-
-    /** 可调试标记（对齐 Termux 的 TERMUX_APP__IS_DEBUGGABLE_BUILD，装配时写成 1 / 0） */
-    private fun debuggableFlag(): Boolean =
-        (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     private fun envInto(pb: ProcessBuilder, entries: Array<String>) {
         val env = pb.environment()
@@ -520,6 +461,10 @@ class TermuxRuntime(private val context: Context) : Shell {
         /** SIGTERM 之后等多久发 SIGKILL（dsh-bash-local 的 graceMs，默认 3000） */
         private const val GRACE_MS = 3_000L
 
+        /** 进程结束后排空输出流的宽限：之后强制关读端（见 drain） */
+        private const val DRAIN_GRACE_MS = 1_000L
+        private const val DRAIN_AFTER_CLOSE_MS = 200L
+
         /** 杀树之前等子 shell 写出 pid 标记的上限与轮询粒度（正常几毫秒；见 awaitChildPid） */
         private const val MARKER_WAIT_MS = 250L
         private const val MARKER_POLL_MS = 10L
@@ -529,9 +474,6 @@ class TermuxRuntime(private val context: Context) : Shell {
          * 这是「按停止到真的杀掉命令」之间的最大延迟（读取一次探针本身是内存操作）。
          */
         private const val CANCEL_POLL_MS = 50L
-
-        /** $HOME/.gitconfig 里那条 safe.directory（见 ensureGitSafeDirectory） */
-        private const val GIT_SAFE_LINE = "directory = *"
 
         /**
          * Termux 版本号（TERMUX_VERSION）。
@@ -545,129 +487,4 @@ class TermuxRuntime(private val context: Context) : Shell {
         /** 安装来源，对齐 Termux 的 TERMUX_APP__APK_RELEASE（GITHUB / F_DROID / GOOGLE_PLAY） */
         const val APK_RELEASE = "GITHUB"
     }
-}
-
-/**
- * 读取子进程输出并限流 —— dsh `dsh-subprocess-local/lib/output.js` 的 `OutputCollector`。
- *
- * dsh 的口径：
- *  - **内存里只留尾部**（Collect mode keeps the last `maxBytes` of a stream in memory）——
- *    理由写在 dsh 的类注释里：errors and final results cluster at the end of command output；
- *  - 越过内存上限就开一个 **spill 文件把完整流写进去**（the spill file covers the head），
- *    于是「开头那段错误」不再丢，而是换了个地方等模型来读；
- *  - 正文只在真的丢过字节时才补一行 dsh 原文的提示（见 BashRender 的调用点）：
- *    `[output truncated; full output: <路径>]`。
- *
- * 只留尾部的前提是 spill：不落盘就只能两头都留一点（头 + 尾），那只是权宜。
- */
-internal class OutputCollector(
-    stream: InputStream,
-    maxBytes: Int,
-    /** 全文落盘（null = 只留内存尾部）；见 [com.adsh.app.seam.exec.Spill] */
-    private val spill: Spill? = null,
-) {
-    /** 内存尾部上限（至少 1 字节，避免配置成 0 时在 append 里算出负长度） */
-    private val limit = maxBytes.coerceAtLeast(1)
-
-    /** 尾部用环形缓冲：窗口满了之后，最老的字节被新字节覆盖（dsh 的 chunks 滑动窗口） */
-    private val tail = ByteArray(limit)
-    private var tailLength = 0
-    private var tailWrite = 0
-
-    /** 从流里读到的总字节数 */
-    private var total = 0L
-
-    @Volatile var truncated = false
-        private set
-
-    private val thread = Thread {
-        try {
-            val chunk = ByteArray(8192)
-            while (true) {
-                val n = stream.read(chunk)
-                if (n < 0) break
-                if (n == 0) continue
-                synchronized(this) { append(chunk, n) }
-            }
-        } catch (_: Throwable) {
-        }
-    }.apply { isDaemon = true; start() }
-
-    /**
-     * dsh 的 `OutputCollector.push`，顺序逐条对齐：
-     *  ① 先累计总字节（spill 判据用的是**含本块**的总数）；
-     *  ② 越过内存上限（或已经在写盘）就把这一块交给 spill —— 第一次会把已经收在内存里的块补上；
-     *  ③ 再进内存尾部，超了就从最老的字节开始丢。
-     */
-    private fun append(chunk: ByteArray, n: Int) {
-        val next = total + n
-        val overflows = tailLength + n > limit
-        val sink = spill
-        if (sink != null && (overflows || sink.active)) {
-            sink.spill(next, retained(), chunk.copyOf(n))
-        }
-        total = next
-        writeTail(chunk, 0, n)
-        if (overflows) truncated = true
-    }
-
-    /** 此刻内存尾部里的字节（按最老到最新） */
-    private fun retained(): List<ByteArray> {
-        val bytes = linearTail()
-        return if (bytes.isEmpty()) emptyList() else listOf(bytes)
-    }
-
-    private fun writeTail(chunk: ByteArray, offset: Int, count: Int) {
-        if (count >= limit) {
-            // 一个块就比内存上限还大：只留它自己的尾巴
-            System.arraycopy(chunk, offset + count - limit, tail, 0, limit)
-            tailLength = limit
-            tailWrite = 0
-            return
-        }
-        var src = offset
-        var remaining = count
-        while (remaining > 0) {
-            val space = limit - tailWrite
-            val take = minOf(space, remaining)
-            System.arraycopy(chunk, src, tail, tailWrite, take)
-            tailWrite = (tailWrite + take) % limit
-            tailLength = minOf(limit, tailLength + take)
-            src += take
-            remaining -= take
-        }
-    }
-
-    fun join(millis: Long) = thread.join(millis)
-
-    /**
-     * 收尾（dsh 的 `finalize()`）：封住 spill 文件，交出**内存尾部的文本**、是否丢过字节、
-     * 以及全文的落盘路径。文本开头若落在某个多字节字符中间就跳过续字节（10xxxxxx），
-     * 免得模型看到一个半个汉字。
-     */
-    fun finalize(): Collected {
-        spill?.seal()
-        val bytes = linearTail()
-        val start = OutputCap.safeTailStart(bytes)
-        return Collected(
-            text = String(bytes, start, bytes.size - start, Charsets.UTF_8),
-            truncated = truncated,
-            spillPath = spill?.path,
-        )
-    }
-
-    /** 环形缓冲拉直成「从最老到最新」的字节数组 */
-    private fun linearTail(): ByteArray {
-        if (tailLength == 0) return ByteArray(0)
-        val out = ByteArray(tailLength)
-        if (tailLength < limit) {
-            System.arraycopy(tail, 0, out, 0, tailLength)
-            return out
-        }
-        val first = limit - tailWrite
-        System.arraycopy(tail, tailWrite, out, 0, first)
-        System.arraycopy(tail, 0, out, first, tailWrite)
-        return out
-    }
-
 }

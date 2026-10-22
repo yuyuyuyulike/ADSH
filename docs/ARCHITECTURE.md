@@ -88,13 +88,13 @@
 
 1. `targetSdk = 28`、包名 `com.termux` —— 内嵌 Termux 能直接 exec 自己数据目录里文件的唯一前提；release 的 R8 `minify`+`shrinkResources` 保持 true；lint 的 `ExpiredTargetSdkVersion` 保持关闭。
 2. 写围栏、`/tmp` 映射、脚本 shebang 自愈都在 LD_PRELOAD shim（`fence.c`）；**read-only 也要挂围栏**。改完跑 `scripts/fence-selftest.sh`。
-3. 内嵌环境排障用 `adsh-env-check`（**别用 `run-as` 测 exec**）；改 `$PREFIX/bin` 脚本后跑 `python3 scripts/check-env-scripts.py`。
+3. 内嵌环境排障用 `adsh-env-check`（**别用 `run-as` 测 exec**）；改 `$PREFIX/bin` 脚本后跑 `python3 scripts/check-env-scripts.py`。全量安装（`INSTALLER_VERSION` 变）遇到已存在的前缀必须**合并**，不许 `removeTree` —— 用户 `apt` 装的包与 dpkg 数据库在里面。
 
 提示词（模型直接可见）：
 
 4. 系统提示词必须**静态**：`PromptAssembler.STATIC_SYSTEM_PROMPT` 里不许出现模型名、工作区路径、策略、计划；`ToolSdk.section()` 与 `WORKING_RULES` 保持无参数。
-5. 动态只允许三块：`sandbox:policy`、`env:android-termux`、`plan:policy`（仅计划模式开着时），走 `context` 行且内容一变**追加**新快照；`form = snapshot` 的 `context` 行要作为 **user 消息**发出。决策留在 `ContextLedger`（纯函数），别挪回 `AgentLoop`。
-6. 提示词**不许重复**（`PromptAssemblerTest` 盯着）；工具说明只在 `ToolSdk.specs` 写一次；`PTC_ONLY` 两句都要在；**只有 `run_code` 能被模型直接调用**。
+5. 动态只允许三块：`sandbox:policy`、`环境细则`、`plan:policy`（仅计划模式开着时），走 `context` 行且内容一变**追加**新快照（上一条按 form 找；快照只放段正文，叙述走独立 user 消息）；快照行的**显示名只写 `环境细则`**，计划模式开着时追加 `·plan`（`sandbox:policy` 不进名字）。`form = snapshot` 的 `context` 行要作为 **user 消息**发出。决策留在 `ContextLedger`（纯函数），别挪回 `AgentLoop`。
+6. 提示词**不许重复**（`PromptAssemblerTest` 盯着）；工具说明只在各 `Tool.spec` 写一次（registry 投影出 ToolSdk）；`PTC_ONLY` 两句都要在；**只有 `run_code` 能被模型直接调用**。
 7. `run_code` 失败必须带「已跑成的子调用回执」（`RunCodeTool.completedDigest`）；SDK 段那句「失败后只补发剩下的步骤」与它是一对，改一处要改另一处。
 8. 提示词里只写「App 本体就有」的东西；设备上额外装的、某台机器量出来的例子、诊断脚本都不进提示词。
 9. **开发备注一个字都不许拼进提示词串** —— 模型与用户都会直接看到。
@@ -109,7 +109,7 @@
 
 界面：
 
-15. 自动滚动只有一个「跟随意图」（`AutoScroll.kt` 的 `ScrollFollow`）；**25dp 迟滞是 dsh 口径，别动**（它只判「读者还在不在底部」——读者往上滑哪怕几个像素也立刻交出跟随，不受迟滞保护）；贴底只由「变化」触发，不许回到「每重组一次贴一次底」。**自动贴底有生命周期**（`ChatScrollState.autoScroll`）：只在这一轮进行期间 + 结束那一拍的收尾贴底内生效，会话结束即停（图片解码 / 输入区高度变化不再把读者拽回底部）。
+15. 自动滚动按手机端标准：只有一个状态「读者是否在底部」（`AutoScroll.kt` 的 `ChatScrollState.following`），判据是滚动容器已无剩余可滚距离（1px 取整容差 `PIN_SLOP_PX`），**不是 dp 迟滞**；读者上滑立即交出跟随，滑回末端 / 点「回到底部」/ 自己发消息恢复。内容、视口、footer 高度变化只在跟随中贴底，静止会话不发请求；贴底只由「变化」触发，不许回到「每重组一次贴一次底」。读者动作（展开行、打开任务面板）与手指在屏上时不替读者滚。footer 高度是滚动容器的**布局输入**（底部内边距 = 实测 footer 高度 + 间距）：**胶囊行出现之后禁止再做高度动画**（数字 / 内容变化只许改宽度），入场动画只在会话载入时统计为空（新会话首轮）武装，启动恢复与切会话必须瞬间出现（`ChatUiState.dockEntranceArmed`）—— 否则 150ms 的高度动画会经贴底把整页顶一下。**footer 高度与会话流底部内边距必须同帧测量**（`ChatScreen` 的 SubcomposeLayout：先量 footer、再把实测高度交给会话流），禁止「量完写回 state、下一帧再补」—— 那是启动 / 切会话最后一下「整页上滚」的根因；启动恢复还要等 `WindowInsets` 就绪再画会话页（首帧 insets=0，下一帧补内边距会让视口矮 200+px、贴底上滚）。
 16. 抽屉收起必须等「内容换完」（`settleDrawer` 先 `withFrameNanos` 等两帧，且必须在同一个 job 里）；`switchConversation` 是 `suspend` 的，等内容就位再收起。
 17. 排版不许吃 Material3 默认字距：`ui/theme/Theme.kt` 的 `AdshTypography` **别删**，别在调用点逐个补 `letterSpacing`。
 18. 长回答必须切块（`answerChunks`）：切点只落在「上下都是普通段落」的空行，**前缀稳定**；短回答仍走 `TurnEntry` 一行。
@@ -140,8 +140,10 @@
 30. **工具调度器一轮一份**：`ToolConcurrency` 由 `PtcToolRunner` 每轮新建（dsh 的 per-run scheduler），**不是**全进程单例 —— 超时 / 崩溃时在途调用可能卡在非协作取消里，共用一个实例会让下一次 `run_code` 的每条调用都排在它后面（真机事故：一次 edit 卡死之后连参数校验都进不去）。
 31. **`edit` 按 dsh 归一化行尾**：内容、`old_string`、`new_string` 都先 CRLF→LF 再匹配，写回时恢复原文件的行尾风格；匹配用单趟 `countOccurrences` + `String.replace`，**不许用 `Regex` 物化匹配列表**（5 MB 单行 + 百万次匹配会 OOM，进而挂死工具网关）。`write`/`edit` 的正文字节必须能严格 UTF-8 编码（孤立代理项直接拒绝，不许静默写成 `?`）。
 
-32. **会话流的每帧开销不随历史行数增长**：行级剔除只读一个派生窗口（`CULL_STEP_PX` 台阶化的滚动位置 + 取整视口 + 贴底补偿），滚动 / 键盘动画的中间帧不再逐行读 `ScrollState`（旧实现每帧把 N 行全部标脏）；滚动条只在**绘制阶段**读滚动状态，thumb 几何在按下那一刻现算。抽屉的 1.5dp 景深用主内容图层的 `RenderEffect`（API 31+；旧系统退化成轻暗化），**不许**换回 haze 覆面层 —— 实时模糊覆层每帧要重渲主内容，是抽屉动画掉帧的根因。
+32. **会话流的每帧开销不随历史行数增长**：行级剔除只读一个派生窗口（`CULL_STEP_PX` 台阶化的滚动位置 + 取整视口 + 贴底补偿），滚动 / 键盘动画的中间帧不再逐行读 `ScrollState`（旧实现每帧把 N 行全部标脏）；滚动条只做位置指示、不吃手势，且只在**绘制阶段**读滚动状态。抽屉的 1.5dp 景深用主内容图层的 `RenderEffect`（API 31+；旧系统退化成轻暗化），**不许**换回 haze 覆面层 —— 实时模糊覆层每帧要重渲主内容，是抽屉动画掉帧的根因。
+
+33. **随包 glibc 运行时**：`$PREFIX/glibc`（termux-pacman glibc 2.44 的精选子集：加载器 / libc 族 / C.utf8 / 少量排障工具）与 `$PREFIX/bin/grun` 由 `scripts/fetch-glibc.sh` 在构建期并进 `usr.zip`。外部 glibc 动态二进制**必须经 `grun`** 起（PT_INTERP 指向 Android 上不存在的 `/lib/ld-linux-aarch64.so.1`；随包 `$PREFIX/glibc/bin` 下的二进制 PT_INTERP 已指向前缀内加载器，可直接执行）。glibc 进程不加载 bionic shim，**写围栏与 `/tmp` 映射对它不生效**（环境细则已如实写明，别在文档里承诺围栏）；升级 glibc 只许按资产清单覆盖，**不许 `removeTree($PREFIX/glibc)`** —— 用户 `apt` / `pkg` 装的 glibc 包也在里面。
 
 ## 七、构建输入（不要删）
 
-`app/src/main/assets/bootstrap/usr.zip`（32 MB）、`app/src/main/execLibs/arm64-v8a/`（287 个 ELF，**必须原样复制**——它们从 nativeLibraryDir 执行，改文本会把前缀改成不存在的路径）、`platform/termux/src/main/cpp/`（围栏 / PTY 原生库，产出 `libadshfence.so` / `libadshpty.so`）、`assets-src/`、`local.properties`、`keystore.properties`、`keystore/adsh-side.jks`、`gradle/`。
+`app/src/main/assets/bootstrap/usr.zip`（32 MB）、`app/src/main/execLibs/arm64-v8a/`（287 个 ELF，**必须原样复制**——它们从 nativeLibraryDir 执行，改文本会把前缀改成不存在的路径）、`platform/termux/src/main/cpp/`（围栏 / PTY 原生库，产出 `libadshfence.so` / `libadshpty.so`）、`scripts/fetch-glibc.sh`（从 termux-pacman deb 精选 glibc 并进 `usr.zip`）、`assets-src/`、`local.properties`、`keystore.properties`、`keystore/adsh-side.jks`、`gradle/`。

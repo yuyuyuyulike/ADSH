@@ -35,7 +35,8 @@ package com.adsh.app.runtime.termux
  * @param scratch `ADSH_SCRATCH`（f2fs 上的构建目录）
  * @param fenceMode `ADSH_FENCE_MODE` 的**基线值**（完全权限）；需要围栏的调用由
  *   [TermuxRuntime.fenceEnv] 用真实模式 + 白名单覆盖它
- * @param workspaceRoot 工作区；null = 不给 PWD / ADSH_WORKSPACE（终端页与探针调用就是这样）
+ * @param workspaceRoot 工作区；null = 不给 PWD / ADSH_WORKSPACE（探针调用就是这样）
+ * @param interactive 交互式终端会话的形态（见字段注释）
  */
 internal data class ShellFacts(
     val prefix: String,
@@ -55,6 +56,11 @@ internal data class ShellFacts(
     val scratch: String,
     val fenceMode: String,
     val workspaceRoot: String?,
+    /**
+     * true = 交互式终端会话（[TermuxRuntime.shellLaunch]）：PWD 取家目录、保留 xterm 与颜色；
+     * false = 一次性命令 / 探针（bash 工具的默认形态）：TERM=dumb、NO_COLOR、分页器直通。
+     */
+    val interactive: Boolean = false,
 )
 
 /**
@@ -87,8 +93,11 @@ internal fun shellEnvironment(f: ShellFacts): List<String> {
         // 想真正操控手机（拉起 app / 点屏幕）不能走这里，得由 ADSH 自己用前台身份做。
         "PATH=" + p + "/bin:/system/bin",
         "LD_LIBRARY_PATH=" + p + "/lib",
-        "TERM=xterm-256color",
-        "COLORTERM=truecolor",
+        // 交互与一次性命令的终端口径分开（dsh 的 bash-local 对模型跑的命令就是
+        // NO_COLOR / TERM=dumb / PAGER=cat）：模型拿到的正文里不该有 ANSI 与分页器控制符；
+        // 终端页是真人看的，保留 xterm-256color 与颜色。
+        if (f.interactive) "TERM=xterm-256color" else "TERM=dumb",
+        if (f.interactive) "COLORTERM=truecolor" else "NO_COLOR=1",
         "LANG=C.UTF-8",
         "TMPDIR=" + tmp,
         // TMP / TEMP 一起给：安卓没有可写的 /tmp（/tmp 属主是 shell、0711），第三方工具
@@ -158,13 +167,32 @@ internal fun shellEnvironment(f: ShellFacts): List<String> {
     // postinst 再调 dpkg 的包就会挂。方案 A 下 apt/dpkg 的编译期 instdir 就是 `/`，与官方
     // 完全一致，不需要任何 apt.conf.d 覆盖（见 BootstrapInstaller.ensureAptCache）。
     list += "DPKG_ADMINDIR=" + p + "/var/lib/dpkg"
+    if (!f.interactive) {
+        // 一次性命令不接分页器：stdin 是 /dev/null，less 会立刻退出、正文只剩半页；
+        // dsh 的 bash-local 也是这么压平的（模型要的是可读文本，不是终端回放）。
+        list += "PAGER=cat"
+        list += "GIT_PAGER=cat"
+    }
     if (f.workspaceRoot != null) {
-        list += "PWD=" + f.workspaceRoot
+        // PWD 必须与**实际 cwd** 一致：终端会话的 cwd 是 $HOME（见 TermuxRuntime.shellLaunch），
+        // 一次性命令的 cwd 是工作区。bash 启动后一般会自己纠正，但在 bash 之前读环境的东西
+        // （wrapper 脚本、exec 前的 shim）看到的不该是另一个目录。
+        list += "PWD=" + if (f.interactive) home else f.workspaceRoot
         // 供脚本/模型自省：当前工作区（素材入口 + 成品出口）的真实路径
         list += "ADSH_WORKSPACE=" + f.workspaceRoot
     }
     return list
 }
+
+/** 本 App 的 versionCode（TERMUX_APP__VERSION_CODE）；读不到按 0 处理 */
+internal fun appVersionCode(context: android.content.Context): Long = runCatching {
+    val info = context.packageManager.getPackageInfo(context.packageName, 0)
+    if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode else @Suppress("DEPRECATION") info.versionCode.toLong()
+}.getOrDefault(0L)
+
+/** 可调试构建标记（TERMUX_APP__IS_DEBUGGABLE_BUILD 的 1 / 0） */
+internal fun appDebuggable(context: android.content.Context): Boolean =
+    (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
 /**
  * 旧形态的 data dir（`/data/data/<pkg>`）。**必须与 dataDir 分开给** —— 这就是上面那段注释里

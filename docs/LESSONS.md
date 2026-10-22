@@ -73,14 +73,14 @@
 **必须做**
 
 - 一步一提交，提交信息写清「改了什么 + 判据 + 验收」；文档与代码同提交。
-- 改 `fence.c` 之后跑 `scripts/fence-selftest.sh`（host 侧 40 项）。
+- 改 `fence.c` 之后跑 `scripts/fence-selftest.sh`（host 侧 64 项；K 组目录项删除/重命名按父目录判决、M 组软链 + `..` 必须先解析软链再回退、N 组 `utime/utimes/futimes` 时间戳写入）。没有 Linux 主机时可以在装了 clang 的 Termux 设备上跑同一套（`CC=clang`，用 `adb shell run-as` 把源码与脚本放进 `files/usr/tmp`）：H1 需要 glibc ELF，非桌面系统自动跳过，其余全部可跑。
 - 关键判定提纯后**先织网再拆**（先补可测性端口与黄金用例，再动那个大函数）。
 - 每一步都跑门禁：`:app:testDebugUnitTest :app:assembleDebug`；发版前再 `:app:assembleRelease`。
 
 **绝对不能做**
 
 - 不能为了「看起来整齐」改数值或格式：提示词基线、间距刻度、系统提示词的格式位都不能顺手动。
-- 不能重复写同一份东西：提示词不许重复（有测试盯着）、工具说明只在 `ToolSdk.specs` 写一次、
+- 不能重复写同一份东西：提示词不许重复（有测试盯着）、工具说明只在各 `Tool.spec` 写一次、
   同一个值写两遍的地方要收成一个来源。
 - 不能动：`targetSdk = 28`、包名 `com.termux`、release 的 R8 两个开关、read-only 也挂围栏这条语义。
 - 不能把没验过的写成「已验证」：真机没走到的分支要在提交信息里写清楚「没走到」。
@@ -220,7 +220,7 @@ python scripts/verify-padding.py <旧目录> app/src/main/java   # 逐实参比�
   行内动画仍只动绘制相位、收起态定高；两轮之间 dsh **没有分割元素**（`margin-top` 变量 + 零高度占位），别再造分割线。
 - **掉帧先看「视口里那一行有多大」，不是会话多长**：可见性剔除是行粒度的，展开的思考正文曾是**一整行** `MarkdownBody` —— 只要露出一像素就整段参与绘制；Compose 没有浏览器的合成器滚动（滚动每帧重画可见内容），所以大段思考展开后滚动 / 键盘 / 抽屉必掉帧，折叠或移出视口就不掉。修法是切块（`reasoningChunks`）：一块一个会话流行，每帧只画视口里的几块，流式也只让最后一块重解析。**dsh 不切**是因为浏览器滚动不重绘 + 宿主分页（`loadOlder/hasMore`），别拿它当「不需要切」的依据。
 - 自己发明的方案会被否（「放弃线程」的看门狗）→ dsh 是**进程隔离 + 到点杀进程** → 行为分歧先读 dsh 现文：`gh api repos/deepseek-ai/deepseek-harness/contents/<path> -H "Accept: application/vnd.github.raw"` 或本机 `D:\tmpdsh-work`（0.2.1-rc.1 全量树）。**整体刷新**：`curl -L https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/<tag>` 再解包覆盖（Windows 无权限建符号链接时按内容展开）—— 不要 `git clone`，`github.com:443` 连不通，codeload / api 通。
-- 展示细节不确定时照抄 dsh 客户端的常量 / 规格（100ms 花名册窗口、25dp 迟滞、`letter-spacing: normal`）；`scripts/dsh-extract.py` 从 `app.asar` 取原实现。
+- 展示细节不确定时照抄 dsh 客户端的常量 / 规格（100ms 花名册窗口、`letter-spacing: normal`）；`scripts/dsh-extract.py` 从 `app.asar` 取原实现。
 - 在 dsh 里搜不到某个常量名 → 那是 ADSH 自己的（如 `JOB_NOTICE`）→ 按 KDoc 语义钉行为，并在提交信息里说明没有原实现可对。
 - **`run_code` 的 preparing 行：摘要跟着流式参数长，但这一行不可展开**（dsh `toolRowModel` + `argumentSummary` + `PartialArguments.text`）：只有工具名时行上只有标题；参数里 `description` 写出来几个字，右侧摘要就长几个字；文件类工具要 `file_path` **完整**才显示；`expandable = state !== 'preparing'`，子调用到 `tool/call` 派发后才出现。别做成「等派发才整段蹦出来」（用户点名要与 dsh 一致）。
 - **UI 令牌的取法**（第 206 轮）：`scripts/dsh-extract.py --list ".module.css"` 能列出 ui-primitives 里**原样的 CSS 模块**
@@ -318,3 +318,12 @@ python scripts/verify-padding.py <旧目录> app/src/main/java   # 逐实参比�
 - **合成的 `adb shell input swipe` 复现不了用户手指的那一下**：release 包上 80 次往返只到 99 分位 14~29ms，
   真机手指那一次是 113ms / 7 个慢 UI 帧。合成手势能验证「不回归」，**验收仍要用户的手指**。
 
+
+## 七、2026-10 最近几轮的坑（0.2.5–0.2.6）
+
+- **测试报告先按 dsh 源码核实再修**：同一份 15 条报告里 7 条是 dsh 既有行为（read 单行 2000 字符内联标记 / 无 truncated、grep 的 rg stderr、BOM 由 TextDecoder 吞掉、job_output 消费式读取…）——「看起来不对」≠「偏离 dsh」。
+- **围栏的内部写也要放行**：read-only 下内部 pid 标记文件被空白名单拒，会让每条用户命令的 stderr 多一段 `[sandbox:]` 假拒绝；判据是「用户命令的 stderr 应为空」。修法：`ADSH_PID_MARKER` 单文件放行，绝不扩目录。
+- **`run_code` 完成值必须无损 JSON**（dsh 的 `snapshotPtcJsonValue`）：Map/Set/NaN/undefined 字段经 `JSON.stringify` 会静默改值；`__adsh_isLossless` 失败 → `invalid-output`，日志与已完成子调用保留。
+- **沙箱升级先判「重复当前模式」**：dsh 直接放行、不弹审批；静态提示词只写判据，策略动作（重试 / 审批）住 runtime-context，否则 danger-full-access 下自相矛盾。
+- **事件叙述不进「当前事实」快照**：工作区变化通知的来源是全局 `lastWorkspacePath`，跨会话 / 重启会造假叙述；旧快照的 supersedes 抬头已经表达「旧的作废」。
+- **删公开 API 前先看 R8**：`ChatViewModel.renameWorkspace` 这类「同名不同类」的调用会让词法扫描误判存活；`usage.txt` 里整类删除大多是内联常量 / 测试口，别当死代码删。

@@ -51,6 +51,7 @@
 #include <sys/time.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include <utime.h>
 
 extern char **environ;
 
@@ -76,6 +77,15 @@ static char g_mode[64] = "workspace-write";
 static bool g_mode_given;
 /** 见过的路径：用于 App 侧确认 preload 真的生效（写一次就够） */
 static char g_mark[PATH_MAX];
+/**
+ * 内部 pid 标记文件（ADSH_PID_MARKER）：App 的 spawn 包装把它交给子 shell，子 shell 一启动就
+ * 用 `printf $$ > file` 写它 —— 没有它，kill 一棵进程树时拿不到根 pid（安卓没有 Process.pid()）。
+ *
+ * read-only 的白名单是空的，这个文件必须单独放行：否则每条命令的 stderr 都会多出一段与用户
+ * 命令无关的 [sandbox:] 拒绝，模型会把它当成自己的写被拒、去做一次没有意义的提权。只放这一个
+ * 文件（每次 spawn 用新临时文件），不是给目录开口子。
+ */
+static char g_pid_marker[PATH_MAX];
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_reports;
 
@@ -179,11 +189,15 @@ static bool absolute(const char *path, char *out, size_t size) {
  * 把路径化成「真实路径」：解析符号链接，但允许路径的最后几级还不存在
  * （mkdir -p / 新建文件的情况）。做法是从最深的**已存在**祖先开始 realpath，
  * 再把剩下的部分原样接回去。
+ *
+ * **不能先做词法归一化**：`link/../x` 里的 `..` 必须按内核语义在解析 link 之后回退。
+ * 先折叠会把 `link/..` 折成 link 所在目录，写判决因此放行到链接目标的父目录
+ * （真机报告：工作区里 `u -> $PREFIX` 时 `u/../esc.txt` 能写到 $HOME 上级）。
+ * realpath 对带 `..` 的已存在前缀按真实路径回退，剩下的不存在尾巴接回去即可。
  */
 static bool canonical(const char *path, char *out, size_t size) {
     char work[PATH_MAX];
     if (!absolute(path, work, sizeof(work))) return false;
-    normalize(work);
 
     char suffix[PATH_MAX];
     suffix[0] = '\0';
@@ -273,6 +287,7 @@ static void init_env(void) {
     const char *tmp = env_or_null("ADSH_TMP_REDIRECT");
     const char *roots = env_or_null("ADSH_FENCE_ROOTS");
     const char *mark = env_or_null("ADSH_FENCE_MARK");
+    const char *pid_marker = env_or_null("ADSH_PID_MARKER");
     const char *no_link = env_or_null("ADSH_LINK_EMULATE");
     const char *shebang_force = env_or_null("ADSH_SHEBANG_FORCE");
     const char *bionic_linker = env_or_null("ADSH_BIONIC_LINKER");
@@ -284,6 +299,8 @@ static void init_env(void) {
     }
 
     if (tmp != NULL) snprintf(g_tmp, sizeof(g_tmp), "%s", tmp);
+
+    if (pid_marker != NULL) snprintf(g_pid_marker, sizeof(g_pid_marker), "%s", pid_marker);
 
     /* 记下 LD_PRELOAD 原样清单与自己的绝对路径：exec 时要给 bionic 子进程补回去。
        清单要在这里（environ 刚可读时）抄，用户的命令之后怎么 unset 都不影响这一份。 */
@@ -525,6 +542,8 @@ static bool allowed(const char *path) {
     if (canonical(path, real, sizeof(real))) {
         /* 设备与 procfs 放行：/dev/null、/dev/tty、/proc/self/… 是命令的正常组成部分 */
         ok = under(real, "/dev") || under(real, "/proc");
+        /* 内部 pid 标记单文件放行（见 g_pid_marker）：与可写根无关，read-only 下也要能写 */
+        if (!ok && g_pid_marker[0] != '\0' && strcmp(real, g_pid_marker) == 0) ok = true;
         for (size_t i = 0; !ok && i < g_root_count; i++) ok = under(real, g_roots[i]);
     } else {
         ok = true; /* 解析不出来就当读处理，交给内核去拒绝 */
@@ -553,6 +572,65 @@ static bool allowed_at(int dirfd, const char *path) {
     char joined[PATH_MAX * 2];
     snprintf(joined, sizeof(joined), "%s/%s", base, path);
     return allowed(joined);
+}
+
+/**
+ * 目录项的父目录（词法，不解析符号链接）："a" → "."、"a/b" → "a"、"/a" → "/"。
+ * 返回 false 表示没有父目录可判（根本身），调用方交给内核。
+ */
+static bool parent_dir(const char *path, char *out, size_t size) {
+    if (path == NULL || *path == '\0') return false;
+    size_t n = strlen(path);
+    while (n > 1 && path[n - 1] == '/') n--;
+    size_t end = n;
+    while (end > 0 && path[end - 1] != '/') end--;
+    if (end == 0) {
+        snprintf(out, size, ".");
+        return true;
+    }
+    if (end == 1) {
+        snprintf(out, size, "/");
+        return true;
+    }
+    size_t len = end - 1;
+    if (len >= size) return false;
+    memcpy(out, path, len);
+    out[len] = '\0';
+    return true;
+}
+
+/**
+ * 删除 / 重命名一个**目录项**时的判决：写的是父目录里的 entry，不是 entry 指向的内容。
+ *
+ * 按 canonical(目录项)（会解析最后一级符号链接）判会把「工作区内指向只读根的软链」变成
+ * 永久删不掉的残留：删软链本身不碰目标，却因为目标不在可写根里被拒；rm -rf 父目录也跟着
+ * 失败。路径**中间**的软链仍由 [parent_dir] + canonical 解析，穿链写照样被拒。
+ */
+static bool allowed_entry(const char *path) {
+    ensure_init();
+    if (!g_enabled || path == NULL || *path == '\0') return true;
+    if (g_busy) return true;
+    char parent[PATH_MAX];
+    if (!parent_dir(path, parent, sizeof(parent))) return true;
+    return allowed(parent);
+}
+
+/** [allowed_entry] 的 dirfd 变体：先展开 /proc/self/fd，再走同一套父目录判决 */
+static bool allowed_entry_at(int dirfd, const char *path) {
+    ensure_init();
+    if (!g_enabled || path == NULL || *path == '\0') return true;
+    if (path[0] == '/' || dirfd == AT_FDCWD) return allowed_entry(path);
+    g_busy = 1;
+    char link[64];
+    snprintf(link, sizeof(link), "/proc/self/fd/%d", dirfd);
+    char base[PATH_MAX];
+    ssize_t n = readlink(link, base, sizeof(base) - 1);
+    g_busy = 0;
+    if (n <= 0) return true;
+    base[n] = '\0';
+    char joined[PATH_MAX * 2];
+    snprintf(joined, sizeof(joined), "%s/%s", base, path);
+    return allowed_entry(joined);
 }
 
 /**
@@ -862,25 +940,25 @@ int mkdirat(int dirfd, const char *path, mode_t mode) {
 
 int unlink(const char *path) {
     REDIRECT(path)
-    if (!allowed(path)) return -1;
+    if (!allowed_entry(path)) return -1;
     return g_unlink != NULL ? g_unlink(path) : (int)syscall(SYS_unlinkat, AT_FDCWD, path, 0);
 }
 
 int unlinkat(int dirfd, const char *path, int flags) {
     REDIRECT_AT(dirfd, path)
-    if (!allowed_at(dirfd, path)) return -1;
+    if (!allowed_entry_at(dirfd, path)) return -1;
     return g_unlinkat != NULL ? g_unlinkat(dirfd, path, flags) : (int)syscall(SYS_unlinkat, dirfd, path, flags);
 }
 
 int rmdir(const char *path) {
     REDIRECT(path)
-    if (!allowed(path)) return -1;
+    if (!allowed_entry(path)) return -1;
     return g_rmdir != NULL ? g_rmdir(path) : (int)syscall(SYS_unlinkat, AT_FDCWD, path, AT_REMOVEDIR);
 }
 
 int remove(const char *path) {
     REDIRECT(path)
-    if (!allowed(path)) return -1;
+    if (!allowed_entry(path)) return -1;
     if (g_remove != NULL) return g_remove(path);
     if (syscall(SYS_unlinkat, AT_FDCWD, path, 0) == 0) return 0;
     return (int)syscall(SYS_unlinkat, AT_FDCWD, path, AT_REMOVEDIR);
@@ -889,7 +967,7 @@ int remove(const char *path) {
 int rename(const char *old_path, const char *new_path) {
     REDIRECT(old_path)
     REDIRECT(new_path)
-    if (!allowed(old_path) || !allowed(new_path)) return -1;
+    if (!allowed_entry(old_path) || !allowed_entry(new_path)) return -1;
     return g_rename != NULL ? g_rename(old_path, new_path)
                                : (int)syscall(SYS_renameat, AT_FDCWD, old_path, AT_FDCWD, new_path);
 }
@@ -897,7 +975,7 @@ int rename(const char *old_path, const char *new_path) {
 int renameat(int old_dirfd, const char *old_path, int new_dirfd, const char *new_path) {
     REDIRECT_AT(old_dirfd, old_path)
     REDIRECT_AT(new_dirfd, new_path)
-    if (!allowed_at(old_dirfd, old_path) || !allowed_at(new_dirfd, new_path)) return -1;
+    if (!allowed_entry_at(old_dirfd, old_path) || !allowed_entry_at(new_dirfd, new_path)) return -1;
     return g_renameat != NULL ? g_renameat(old_dirfd, old_path, new_dirfd, new_path)
                                  : (int)syscall(SYS_renameat, old_dirfd, old_path, new_dirfd, new_path);
 }
@@ -935,7 +1013,7 @@ long syscall(long number, ...) {
         const char *new_path = (const char *)a4;
         const char *mapped_old = redirect(old_path, buf_old, sizeof(buf_old));
         const char *mapped_new = redirect(new_path, buf_new, sizeof(buf_new));
-        if (!allowed_at((int)a1, mapped_old) || !allowed_at((int)a3, mapped_new)) return -1;
+        if (!allowed_entry_at((int)a1, mapped_old) || !allowed_entry_at((int)a3, mapped_new)) return -1;
         if (g_syscall == NULL) {
             errno = ENOSYS;
             return -1;
@@ -953,7 +1031,7 @@ long syscall(long number, ...) {
 int renameat2(int old_dirfd, const char *old_path, int new_dirfd, const char *new_path, unsigned int flags) {
     REDIRECT_AT(old_dirfd, old_path)
     REDIRECT_AT(new_dirfd, new_path)
-    if (!allowed_at(old_dirfd, old_path) || !allowed_at(new_dirfd, new_path)) return -1;
+    if (!allowed_entry_at(old_dirfd, old_path) || !allowed_entry_at(new_dirfd, new_path)) return -1;
     if (g_renameat2 != NULL) return g_renameat2(old_dirfd, old_path, new_dirfd, new_path, flags);
     return (int)syscall(SYS_renameat2, old_dirfd, old_path, new_dirfd, new_path, flags);
 }
@@ -1364,6 +1442,84 @@ int truncate64(const char *path, off64_t length) {
 }
 
 
+/* ---------------------------------------------------- 时间戳写入（元数据也是写）
+
+   touch 走 utimensat（上面已拦），但 utime / utimes / futimes / lutimes / futimesat 是独立
+   符号：漏掉任何一条都等于「改文件元数据不受围栏管辖」。判决与其它写入口完全一致，
+   拒绝时 errno = EACCES —— 与 dsh 的内核沙箱语义相同，只是这里在 libc 层。
+
+   真实符号拿不到时的兜底全部转到 utimensat（bionic 的这几个函数本来就是它的薄包装）。 */
+static void tv_to_ts(struct timespec ts[2], const struct timeval tv[2]) {
+    for (int i = 0; i < 2; i++) {
+        ts[i].tv_sec = tv[i].tv_sec;
+        ts[i].tv_nsec = (long)tv[i].tv_usec * 1000L;
+    }
+}
+
+int utime(const char *path, const struct utimbuf *times) {
+    REDIRECT(path)
+    if (!allowed(path)) return -1;
+    static int (*real)(const char *, const struct utimbuf *);
+    if (real == NULL) real = (int (*)(const char *, const struct utimbuf *))resolve("utime");
+    if (real != NULL) return real(path, times);
+    if (times == NULL) return (int)syscall(SYS_utimensat, AT_FDCWD, path, NULL, 0);
+    struct timespec ts[2];
+    ts[0].tv_sec = times->actime;
+    ts[0].tv_nsec = 0;
+    ts[1].tv_sec = times->modtime;
+    ts[1].tv_nsec = 0;
+    return (int)syscall(SYS_utimensat, AT_FDCWD, path, ts, 0);
+}
+
+int utimes(const char *path, const struct timeval times[2]) {
+    REDIRECT(path)
+    if (!allowed(path)) return -1;
+    static int (*real)(const char *, const struct timeval[2]);
+    if (real == NULL) real = (int (*)(const char *, const struct timeval[2]))resolve("utimes");
+    if (real != NULL) return real(path, times);
+    if (times == NULL) return (int)syscall(SYS_utimensat, AT_FDCWD, path, NULL, 0);
+    struct timespec ts[2];
+    tv_to_ts(ts, times);
+    return (int)syscall(SYS_utimensat, AT_FDCWD, path, ts, 0);
+}
+
+int lutimes(const char *path, const struct timeval times[2]) {
+    REDIRECT(path)
+    if (!allowed(path)) return -1;
+    static int (*real)(const char *, const struct timeval[2]);
+    if (real == NULL) real = (int (*)(const char *, const struct timeval[2]))resolve("lutimes");
+    if (real != NULL) return real(path, times);
+    if (times == NULL) {
+        return (int)syscall(SYS_utimensat, AT_FDCWD, path, NULL, AT_SYMLINK_NOFOLLOW);
+    }
+    struct timespec ts[2];
+    tv_to_ts(ts, times);
+    return (int)syscall(SYS_utimensat, AT_FDCWD, path, ts, AT_SYMLINK_NOFOLLOW);
+}
+
+int futimes(int fd, const struct timeval times[2]) {
+    if (!allowed_fd(fd)) return -1;
+    static int (*real)(int, const struct timeval[2]);
+    if (real == NULL) real = (int (*)(int, const struct timeval[2]))resolve("futimes");
+    if (real != NULL) return real(fd, times);
+    if (times == NULL) return (int)syscall(SYS_utimensat, fd, NULL, NULL, 0);
+    struct timespec ts[2];
+    tv_to_ts(ts, times);
+    return (int)syscall(SYS_utimensat, fd, NULL, ts, 0);
+}
+
+int futimesat(int dirfd, const char *path, const struct timeval times[2]) {
+    REDIRECT_AT(dirfd, path)
+    if (!allowed_at(dirfd, path)) return -1;
+    static int (*real)(int, const char *, const struct timeval[2]);
+    if (real == NULL) real = (int (*)(int, const char *, const struct timeval[2]))resolve("futimesat");
+    if (real != NULL) return real(dirfd, path, times);
+    if (times == NULL) return (int)syscall(SYS_utimensat, dirfd, path, NULL, 0);
+    struct timespec ts[2];
+    tv_to_ts(ts, times);
+    return (int)syscall(SYS_utimensat, dirfd, path, ts, 0);
+}
+
 /* ---------------------------------------------------- exec 的目标判定与环境修补 */
 
 /** 路径里有没有 /glibc/ 这个组件（Termux glibc 前缀的约定） */
@@ -1643,7 +1799,7 @@ static char **fixup_exec_env(const char *path, char *const envp[], bool *foreign
     static char s_mode[96], s_roots[PATH_MAX * 2 + 32], s_tmp[PATH_MAX + 32], s_mark[PATH_MAX + 32];
     /** 只在本进程**真的被围栏管**时才往子进程传：完全权限下 shim 照样加载，
         但那不是「围栏生效」。语义与来源都见 init_env 里那段 ADSH_FENCE_ACTIVE 的注释。 */
-    static const char *const s_active = "ADSH_FENCE_ACTIVE=1";
+    static char s_active[] = "ADSH_FENCE_ACTIVE=1";
     /* 注意：s_preload 里存的是**值**，写进环境时要带 "LD_PRELOAD=" 前缀 —— 第一版
        漏了这个前缀，子进程环境里多了一条没有 key 的垃圾项、真 preload 反而没了（真机实测：
        child-lp 为空、maps 里没有 shim，围栏对一切子进程失效）。 */
@@ -1698,13 +1854,13 @@ static char **fixup_exec_env(const char *path, char *const envp[], bool *foreign
 
 /* ---------------------------------------------------- shebang 自愈
 
-   背景（真机报告 + 实机核对）：App 的 targetSdk 是 37，安卓 10 起「targetSdk ≥ 29 的应用不能
-   exec 自己 home 目录里的文件」（AOSP sepolicy 的 execve 限制，落在 SELinux 的
-   app_data_file:execute 上）。termux-exec 的 `/system/bin/linker64 <path>` 改写只救得了 ELF：
-   内核处理 `#!` 的第一步是 exec **脚本自己**，脚本在 app 私有目录里就直接 EACCES，解释器根本
-   轮不上。于是**后来装出来**的脚本全军覆没：npm / npx、pip 的 console script、
-   node_modules/.bin、./configure、dpkg 的 postinst/prerm —— 而 bootstrap 自带的那 79 个脚本
-   没事，因为它们在 nativeLibraryDir（apk_data_file，可执行）里、由符号链接农场指过去。
+   背景：AOSP 从安卓 10 起禁止 targetSdk ≥ 29 的应用 exec 自己 home 目录里的文件（sepolicy 的
+   app_data_file:execute）。ADSH 的 targetSdk 钉在 28、进程落在 untrusted_app_27，所以这段自愈
+   在标准设备上**不会触发**；它保留给厂商策略仍然拒绝的机器、以及将来提高 targetSdk 的退路，
+   `ADSH_SHEBANG_FORCE=1` 能在自测里复现那次拒绝。
+   termux-exec 的 `/system/bin/linker64 <path>` 改写只救得了 ELF：内核处理 `#!` 的第一步是
+   exec **脚本自己**，脚本被拒时解释器根本轮不上。于是若真被拒，后来装出来的脚本（npm / pip
+   的 console script、node_modules/.bin、./configure、dpkg 的 postinst）会全军覆没。
 
    自愈做法与内核语义一致、且**只在被拒绝时**才走：脚本 exec 返回 EACCES/EPERM 时，自己解析
    shebang 并按内核的 argv 规则直接 exec 解释器：
@@ -1854,7 +2010,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
     char **fixed = fixup_exec_env(path, envp, &foreign);
     char *const *use = fixed != NULL ? (char *const *)fixed : envp;
     if (g_shebang_force) {
-        /* 自测：只对脚本假装内核拒绝了这次 exec（真机上就是 app 私有目录 + targetSdk 37 的
+        /* 自测：只对脚本假装内核拒绝了这次 exec（真机上就是 targetSdk ≥ 29 + app 私有目录的那种
            EACCES）。ELF 目标不受影响，否则旋钮会把它下面整条 exec 链一起掐死。 */
         char i0[PATH_MAX], a0[PATH_MAX];
         if (!emulated_target(AT_FDCWD, path) && parse_shebang(path, i0, sizeof(i0), a0, sizeof(a0))) {

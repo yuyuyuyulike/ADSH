@@ -29,8 +29,6 @@ internal fun turnOpened(current: ChatUiState, now: Long): ChatUiState = current.
     liveTurn = LiveTurn(),
     pendingAttachments = emptyList(),
     runStartedAt = now,
-    // 新的一轮：重连条从零开始（上一轮的「已恢复」不该挂到这一轮上）
-    connection = ConnectionState.Idle,
 )
 
 /** 这一轮的身份：**用户消息落库之后**才算（所以它单独一次 update）。 */
@@ -74,8 +72,8 @@ internal fun turnFinished(
 )
 
 /**
- * 事件 → 状态：一轮里除「掉线重连」（归 setConnection 的计时器）与「读库」（调用方传 [messages]）
- * 之外的全部判定。
+ * 事件 → 状态：一轮里除「模型请求重试」（要落库，归 ChatViewModel 的 persistRetry）与
+ * 「读库」（调用方传 [messages]）之外的全部判定。
  *
  * [messages] 只有两类事件用得上：Appended(Step) 与 InboxClaimed —— 调用方读库后传进来，其余传 null。
  * [modelLabel] 故意是惰性的：除 Failed 之外的分支一次都不会读它（Delta 是每 token 一次的事件，
@@ -122,7 +120,7 @@ internal fun turnProjected(
         pendingCalls = emptyList(),
     )
     is ChatEvent.Failed -> current.copy(error = event.message + imageRouteHint(current, modelLabel()))
-    // Reconnecting / Reconnected 归 setConnection；Usage 归 AgentLoop 的 token 账本
+    // RetryScheduled / RetryStarted 已由调用方处理（重试行落库）；Usage 归 AgentLoop 的 token 账本
     else -> current
 }
 

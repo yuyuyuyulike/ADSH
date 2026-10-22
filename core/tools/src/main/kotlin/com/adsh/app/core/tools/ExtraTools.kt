@@ -12,6 +12,30 @@ import com.adsh.app.seam.tool.Question
 import com.adsh.app.seam.tool.QuestionOption
 import com.adsh.app.seam.tool.UserQuestionChannel
 
+/** dsh-tool-todo 的 DESCRIPTION_HEAD / DESCRIPTION_PARALLEL / DESCRIPTION_SINGLE / DESCRIPTION_TAIL */
+private const val TODO_HEAD =
+    "Record and update a structured task list for the current work. Send the ENTIRE list every call — it " +
+        "REPLACES the previous list (there are no partial updates, no per-item edits). Use it to plan " +
+        "multi-step work and show progress: add one todo per concrete step before you start. "
+
+/**
+ * 并行策略那一段（合并）：**不能按 agent-loop.maxParallelToolCalls 分叉成并行版 / 串行版** ——
+ * 改一下设置，系统提示词的字节就整个变了。只说一句对两种配置都成立的话：能不能并行由运行时的
+ * 闸门管（`ToolConcurrency`），提示词不需要知道档位。
+ */
+private const val TODO_PARALLEL =
+    "Mark every todo being actively worked on `in_progress` — several at once only when work " +
+        "genuinely runs in parallel (independent calls inside one program), one for sequential " +
+        "work; while work remains, at least one task should be `in_progress`. "
+
+private const val TODO_TAIL =
+    "Mark a todo `completed` the moment it is done (do not batch completions), and allow no " +
+        "`in_progress` item only once all work is complete. Skip the list for trivial single-step " +
+        "tasks."
+
+/** dsh 的 todo 说明（并行策略那一段只有一份，见 [TODO_PARALLEL]） */
+private val TODO_DESCRIPTION: String = TODO_HEAD + TODO_PARALLEL + TODO_TAIL
+
 /**
  * todo_write：结构化任务列表。
  *
@@ -23,8 +47,34 @@ import com.adsh.app.seam.tool.UserQuestionChannel
  *    没有会话可写的调用方直接拒绝）。
  */
 object TodoTool : Tool {
-    override val name = "todo_write"
-    override val description: String get() = ToolSdk.TODO_DESCRIPTION
+    override val spec = ToolSpec(
+        name = "todo_write",
+        description = TODO_DESCRIPTION,
+        args = """
+            {
+                /** The COMPLETE task list, replacing any previous list. */
+                todos: {
+                  /** What the task is — a short imperative line. */
+                  content: string;
+                  status: TodoStatus;
+                }[];
+              }
+        """.trimIndent(),
+        output = """
+            {
+                todos: {
+                  content: string;
+                  status: TodoStatus;
+                }[];
+                counts: {
+                  pending: number;
+                  inProgress: number;
+                  completed: number;
+                };
+              }
+        """.trimIndent(),
+    )
+    override val parallelSafe = true
 
     private val statuses = listOf("pending", "in_progress", "completed")
 
@@ -85,6 +135,21 @@ object TodoTool : Tool {
 }
 
 /**
+ * present 的 schema.description：dsh 原句更短，这里按本项目调整 —— 术语统一为 workspace；
+ * 明说「就地修既有文件不算交付物」；「新建还是改写」的灰区写成可判定规则。
+ * 这三处是有意偏离 dsh，别按原句还原。
+ *
+ * 说明必须与返回值一致：返回值固定是 {turn, files:[{path, description?}]}，不承诺别的字段。
+ */
+private const val PRESENT_DESCRIPTION: String =
+    "Declare existing files as final deliverables for the user. Present every file the user asked to " +
+        "receive — whether you created it or rewrote it — after writing it and before your final " +
+        "response, including files created through Bash or code execution; present it again in a later " +
+        "step if you change it afterwards. Mentioning its path in your reply does not replace this " +
+        "call. The files must already exist. Usually 1-2 most important; at most 8 per call. The user " +
+        "opens the current files; their contents are not copied or preserved."
+
+/**
  * present：声明最终交付物。
  *
  * 参数与输出逐字对齐 dsh-tool-present：files: [{ path, description? }]，1..maxFiles 个
@@ -98,8 +163,30 @@ object TodoTool : Tool {
  *    点一张卡片进文件预览 —— dsh 的 PresentedFileCard 也是点开进 Sidebar 预览。
  */
 object PresentTool : Tool {
-    override val name = "present"
-    override val description: String get() = ToolSdk.PRESENT_DESCRIPTION
+    override val spec = ToolSpec(
+        name = "present",
+        description = PRESENT_DESCRIPTION,
+        args = """
+            {
+                files: {
+                  /** Path of an existing regular file. Inside the workspace is expected; a path outside it is accepted and the absolute path is echoed, so moving the file into the workspace is your job. */
+                  path: string;
+                  /** Brief description for the user. */
+                  description?: string;
+                }[];
+              }
+        """.trimIndent(),
+        output = """
+            {
+                turn: number;
+                files: {
+                  path: string;
+                  description?: string;
+                }[];
+              }
+        """.trimIndent(),
+    )
+    override val parallelSafe = true
 
     /** dsh 的 config.maxFiles 默认值 */
     private const val MAX_FILES = 8
@@ -274,8 +361,42 @@ private fun readOptions(obj: JsonObject, path: String, violations: MutableList<S
  * 正文是这个值的 JSON。
  */
 object AskUserTool : Tool {
-    override val name = "ask_user_question"
-    override val description: String get() = ToolSdk.description("ask_user_question")
+    override val spec = ToolSpec(
+        name = "ask_user_question",
+        // dsh 原句更短（只说 confirmation / choice / missing information）；这里扩写了确认条件
+        // 与「可一次问多个问题、每个问题一个稳定 id」—— 有意偏离，别按 dsh 原句还原。
+        description = "Ask the user a concise question when you need a choice, missing information, or " +
+            "a decision only the user can make. Do not ask for permission to use a tool: the sandbox " +
+            "approval prompt handles that. Send one or more questions, each with a stable id that will " +
+            "be echoed in the answer.",
+        args = """
+            {
+                /** Questions to ask the user before continuing. */
+                questions: ({
+                  /** Stable id for this question; echoed in the answer. */
+                  id: string;
+                  /** The specific question to ask the user. */
+                  question: string;
+                  /** Optional short heading for the question, such as "Confirm" or "Choose Mode". */
+                  header?: string;
+                  /** Optional choices to show the user. If you recommend one, put it first and append "(Recommended)" to that label. */
+                  options?: ({ label: string; description?: string } & Record<string, JsonValue>)[];
+                  /** Whether the user may select more than one option. Defaults to false. */
+                  multi_select?: boolean;
+                } & Record<string, JsonValue>)[];
+              }
+        """.trimIndent(),
+        output = """
+            {
+                answers: {
+                  id: string;
+                  selected: string[];
+                  custom?: string;
+                }[];
+              }
+        """.trimIndent(),
+    )
+    override val parallelSafe = true
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         val questions = when (val parsed = parseAskUserArgs(args)) {

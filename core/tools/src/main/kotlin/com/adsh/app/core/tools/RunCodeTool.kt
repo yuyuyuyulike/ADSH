@@ -1,5 +1,6 @@
 package com.adsh.app.core.tools
 
+import com.adsh.app.seam.ptc.CodeRunResult
 import com.adsh.app.seam.ptc.SubCall
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -11,6 +12,21 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
+ * run_code 自己的 schema。
+ *
+ * 机制留在提示词里、schema 不单独下发，唯一例外是**语言约束**：dsh 跑可擦除 TypeScript，
+ * 本运行时是 QuickJS，同一个类型标注是**语法错误**，整个程序一行都不跑 —— 这是模型最容易
+ * 踩的一条，必须出现在它最先读到的 schema 里。
+ * 输出规则、调用写法、description 规范仍然只在提示词里说一次（PromptAssemblerTest 钉着）。
+ */
+private const val RUN_CODE_DESCRIPTION: String =
+    "Execute a JavaScript program against the tools declared in the system prompt. Takes two required " +
+        "arguments: `code`, the BODY of an async function (plain JavaScript — TypeScript syntax such as " +
+        "type annotations, `interface`, `enum` or `namespace` is a syntax error in this runtime), and " +
+        "`description`. The runtime, the two arguments and the output rules are described there under " +
+        "Writing code for run_code."
+
+/**
  * PTC 的唯一入口：模型写一段程序，程序内用 `await tools.<name>(args)` 组合调用其它工具。
  * 对齐 dsh：ptc 模式下只有 run_code 可以被模型直接调用（其余工具只在系统提示词的
  * `tools:sdk` 段里声明）。
@@ -20,8 +36,16 @@ import kotlinx.serialization.json.put
  *  - 输出 = logs 逐行拼接 + 结果值，两者都空时是 `(run_code completed with no output)`。
  */
 object RunCodeTool : Tool {
-    override val name = "run_code"
-    override val description = ToolSdk.RUN_CODE_DESCRIPTION
+    /**
+     * run_code 是唯一可被模型直调的工具，schema 走 [wireSchema] 单独下发 —— 它不在
+     * tools:sdk 段里，所以 args/output 两段字面量为空（SDK 段只投影 [ToolRegistry.bindings]）。
+     */
+    override val spec = ToolSpec(
+        name = "run_code",
+        description = RUN_CODE_DESCRIPTION,
+        args = "",
+        output = "",
+    )
 
     /**
      * wire 上唯一暴露的工具 schema（dsh-tools 的 wireSchemas）：code + description，两个都必填。
@@ -33,7 +57,7 @@ object RunCodeTool : Tool {
             "function",
             buildJsonObject {
                 put("name", "run_code")
-                put("description", ToolSdk.RUN_CODE_DESCRIPTION)
+                put("description", spec.description)
                 put(
                     "parameters",
                     buildJsonObject {
@@ -97,17 +121,17 @@ object RunCodeTool : Tool {
         // （bash / write / edit 各自带 sandbox_permissions 升级，dsh 也是按工具调用围栏的）。
         // **不要整条拒绝 run_code**：那会让 read_only 下连 glob / grep 这种只读子调用都跑不了。
         if (ctx.workspace.shellRoot == null) {
-            return ToolResult.Error("当前工作区为 SAF 引用形态，run_code 不可用（工具链需要真实路径）")
+            return ToolResult.Error("run_code is unavailable with a SAF-reference workspace (the toolchain needs a real path)")
         }
         // 中断探针：用户按「停止」时，正在跑的子调用要立刻收手，宿主也会**杀掉 :ptc 进程**
         // （没有它的话「停止」要等程序自己跑完 —— 程序里一个 120s 的 bash 就是两分钟）
         val job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
         val cancelProbe = { job?.isActive == false }
         val appContext = ctx.appContext
-            ?: return ToolResult.Error("run_code 需要应用上下文才能把程序放进独立进程（ToolContext.appContext 为空）")
+            ?: return ToolResult.Error("run_code requires an application context to run the program in a separate process (ToolContext.appContext is null)")
         // PTC 运行时由组合根注入（[com.adsh.app.seam.ptc.PtcRunner] 端口）：工具层不认识 QuickJS 那一侧
         val ptc = ctx.ptcRunner
-            ?: return ToolResult.Error("run_code 需要 PTC 运行时（ToolContext.ptcRunner 未注入）")
+            ?: return ToolResult.Error("run_code requires a PTC runtime (ToolContext.ptcRunner was not injected)")
         // 工具在**主进程**执行（ToolContext 只在这里有效），程序在 :ptc 进程跑 —— 两边靠 LocalSocket
         // 上的「4 字节长度 + JSON」帧做同步 RPC，与 dsh 的「子进程 ↔ 父进程」同形（见 platform/ptc/PtcChannel）
         val runner = PtcToolRunner(ToolRegistry.bindings, ctx, cancelProbe)
@@ -132,9 +156,18 @@ object RunCodeTool : Tool {
             // 父工具行的 tool/result 之后才写进日志 —— 界面不会留下永远在转的子行，晚到的完成也会被丢弃。
             runner.abortOpenCalls()
         }
+        return programOutcome(result, runner)
+    }
+
+    /**
+     * 把一次运行结果折成工具结果（纯映射，单测直接打）。
+     *
+     * 成功与失败**都**带上已结算的子调用与程序步数：失败路径也不能丢轨迹；
+     * 顶层调用另计的 1 步由 [ToolExecutor] 补上。
+     */
+    internal fun programOutcome(result: CodeRunResult, runner: PtcToolRunner): ToolResult {
         // 被中断：把取消原样抛出去（不要变成一条「程序失败」的工具结果 —— 那会接着跑下一轮）
         if (result.aborted) throw kotlinx.coroutines.CancellationException("run_code interrupted by the user")
-        ToolStepCounter.bump(result.toolCalls)
         val logs = result.logs.joinToString("\n")
         if (result.error != null) {
             // dsh 的 CodeRunFailedError：code run failed (<kind>): <message>，
@@ -146,9 +179,15 @@ object RunCodeTool : Tool {
             val digest = completedDigest(runner.subCalls())?.let { "\n" + it } ?: ""
             return ToolResult.Error(
                 "code run failed (" + kind + "): " + result.error + captured + digest,
+                subCalls = runner.subCalls(),
+                steps = result.toolCalls,
             )
         }
-        return ToolResult.Ok(renderRunCodeOutput(logs, result.valueJson))
+        return ToolResult.Ok(
+            renderRunCodeOutput(logs, result.valueJson),
+            subCalls = runner.subCalls(),
+            steps = result.toolCalls,
+        )
     }
 
     /**
@@ -207,7 +246,7 @@ object RunCodeTool : Tool {
      * 失败消息里的**子调用回执**：唯一的生产者是 PtcToolRunner，模型据此只补发没跑到的步骤。
      *
      * 抛错语义照 dsh 不动（子调用失败同样中止程序、不重放）；回执把**已经跑成的子调用 + 结果
-     * 摘要**写进失败消息，每条标 `read-only` / `mutating`（判据取 [ToolConcurrency.isSafe]，与
+     * 摘要**写进失败消息，每条标 `read-only` / `mutating`（判据取 [ToolRegistry.parallelSafeNames]，与
      * 并发调度器、tools:sdk 的 safe 清单同一来源）并带**退出状态**（[bashStatusMarker]）。
      * 条数 [MAX_DIGEST_CALLS]、单条 [MAX_DIGEST_CHARS] 封顶：一条错误消息不能把上下文吃掉。
      */
@@ -223,7 +262,7 @@ object RunCodeTool : Tool {
                 "died with the program, so re-run the ones whose values you still need:")
             shown.forEach { call ->
                 append("\n  - ").append(call.name)
-                append(if (ToolConcurrency.isSafe(call.name)) " (read-only)" else " (mutating)")
+                append(if (call.name in ToolRegistry.parallelSafeNames) " (read-only)" else " (mutating)")
                 val digest = digestOf(call)
                 if (digest.isNotEmpty()) append(" — ").append(digest)
             }

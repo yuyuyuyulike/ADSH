@@ -145,6 +145,9 @@ internal fun startPtyPump(
         } catch (_: Throwable) {
         } finally {
             if (dirty) push(force = true)
+            // EOF 只说明 slave 侧没有写端了，子进程本身还要 waitpid 才算收掉 —— 以前没人回收，
+            // 每关一次终端就留一个僵尸。close() 幂等，终端页 onDispose 那条路径也会调它。
+            runCatching { session.close() }
             onExited()
         }
     }.apply { isDaemon = true }.start()

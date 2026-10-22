@@ -80,8 +80,10 @@ object PtcProcess : PtcRunner {
         val session = Session(appContext.applicationContext, call, toolNames)
         try {
             session.bind()
+            // 通道建不起来 / 系统拒绝绑定：bind() 已经把原因记进 endKind，不必再等满 5 秒
+            if (session.bindFailed) return@run session.exit("the PTC worker did not start")
             if (!session.ready.await(BIND_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                return@run session.exit("PTC 进程没起来（绑定超时）")
+                return@run session.exit("the PTC worker did not start (bind timed out)")
             }
             session.start(program, timeoutMs)
             return@run when (awaitPtcWorker(
@@ -105,13 +107,13 @@ object PtcProcess : PtcRunner {
                 PtcWaitOutcome.Cancelled -> CodeRunResult(
                     valueJson = null,
                     logs = session.streamedLogs(),
-                    error = "已停止",
+                    error = "aborted",
                     durationMs = System.currentTimeMillis() - started,
                     failureKind = "abort",
                     aborted = true,
                 )
                 // 通道断了（worker 崩了 / 被杀 / 帧不合法）：dsh 也走 worker-exit 与 protocol 这两支
-                PtcWaitOutcome.WorkerExit -> session.exit("PTC 进程退出了（崩溃或被系统回收）")
+                PtcWaitOutcome.WorkerExit -> session.exit("the PTC worker exited (crashed or was reclaimed)")
             }
         } finally {
             // 每次调用一个新进程（dsh 的 fresh process）：跑完就杀 + 解绑，下次 bind 会重新 fork。
@@ -186,12 +188,18 @@ object PtcProcess : PtcRunner {
         @Volatile private var client: LocalSocket? = null
         @Volatile private var channel: PtcChannel? = null
 
+        /** bind 阶段就失败（通道建不起来 / bindService 返回 false）：run 不必再等满绑定超时 */
+        val bindFailed: Boolean get() = endKind != null
+
         /** 通道断在哪一步：dsh 把「帧不合法」记 protocol，把「流断了」记 worker-exit */
         @Volatile private var endKind: String? = null
         @Volatile private var endMessage: String? = null
 
         /** 帧里的调用序号必须严格递增（dsh 的 raw.id !== nextId 判据）；只有收帧线程碰它 */
         private var expectedId = 0
+
+        /** 在途调用的预算（dsh 的 maxPendingCalls / maxMessageBytes，见 [PendingCalls]） */
+        private val pendingCalls = PendingCalls()
 
         private val connection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) = Unit
@@ -209,7 +217,7 @@ object PtcProcess : PtcRunner {
             val listening = try {
                 LocalServerSocket(channelName)
             } catch (t: Throwable) {
-                end("worker-exit", "PTC 控制通道建不起来：" + (t.message ?: t::class.java.simpleName))
+                end("worker-exit", "cannot establish the PTC control channel: " + (t.message ?: t::class.java.simpleName))
                 return
             }
             server = listening
@@ -226,7 +234,7 @@ object PtcProcess : PtcRunner {
             if (!bound) {
                 // bindService 直接 false = 系统连「安排拉起」都没接受（服务不存在 / 管家拒绝）。
                 // 不记下来就只能等满 BIND_TIMEOUT_MS 再报「没起来（绑定超时）」，把原因丢给超时。
-                end("worker-exit", "PTC 服务绑定被系统拒绝（bindService 返回 false）")
+                end("worker-exit", "the system rejected binding the PTC service (bindService returned false)")
                 alive.set(false)
             }
         }
@@ -299,6 +307,9 @@ object PtcProcess : PtcRunner {
             if (toolNames.none { it == name }) {
                 throw PtcProtocolException("program requested an undeclared binding")
             }
+            // dsh 的 maxPendingCalls：在途调用超限是**整次运行的 protocol 失败**，不是排队
+            val cost = args.toByteArray(Charsets.UTF_8).size.toLong()
+            pendingCalls.tryAcquire(cost)?.let { throw PtcProtocolException(it) }
             // 每次调用各自一个协程：闸门（ToolConcurrency）决定谁与谁重叠，
             // 单线程派发器保证「谁先到谁先登记」= dsh 的 submission order
             scope.launch {
@@ -307,6 +318,8 @@ object PtcProcess : PtcRunner {
                 } catch (t: Throwable) {
                     // 工具侧的异常不能把主进程带走（旧的 Binder 路径上它是 FATAL）
                     toolErrorWire(name, args, t.message ?: t::class.java.simpleName)
+                } finally {
+                    pendingCalls.release(cost)
                 }
                 // 与宿主侧的子调用计数同一口径：call 结算之后 +1
                 toolCalls.incrementAndGet()
@@ -344,7 +357,7 @@ object PtcProcess : PtcRunner {
         }
 
         /** 阻塞到结果：调用方（[awaitPtcWorker]）已经确认它回来了，这里只是取出来 */
-        fun result(): CodeRunResult = resultRef.get() ?: exit("PTC 结果没回来")
+        fun result(): CodeRunResult = resultRef.get() ?: exit("the PTC worker returned no result")
 
         /** 已经打印出来的那些行（dsh 的 captured output：失败信封里也带上） */
         fun streamedLogs(): List<String> = synchronized(liveLogs) { liveLogs.toList() }

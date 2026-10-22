@@ -112,6 +112,9 @@ object Jobs {
         val result: String?,
         val job: View,
         val droppedChannels: Set<Channel?> = emptySet(),
+        /** 每一路**累计追加**过的字节数（截断元数据：omittedBytes = 这个数 - 保留文本字节数） */
+        val stdoutTotalBytes: Int = 0,
+        val stderrTotalBytes: Int = 0,
     )
 
     /** dsh 的 JobOutputRead：观察者读到的一段 + 续读偏移（next 永远是块边界） */
@@ -307,12 +310,25 @@ object Jobs {
         synchronized(lock) {
             val (chunks, lossy) = job.ring.readFrom(job.modelCursor)
             job.modelCursor = job.ring.total
+            // **dropped 必须在结算裁剪之前算**：这份 Read 的 chunks 是上面 readFrom 拿到的，
+            // 结算裁剪（trim(SETTLED_RETAIN_BYTES)）只是给后续读 / 界面留的保留窗口。
+            // 拿裁剪后的 retained 判 dropped，会把「这次已经完整读到了」的输出误标成丢过字节 ——
+            // 20 KB 的输出（2000 行）因此 truncated:true、行对齐再砍掉首行，而 spill 根本没开
+            // （真机 agent 复测的三个新问题都是这一个根因）。
+            val dropped = listOf(Channel.STDOUT, Channel.STDERR)
+                .filterTo(LinkedHashSet()) { job.ring.droppedOf(it) }
             val result = if (job.status.terminal && !job.resultDelivered) job.result else null
             if (result != null) job.resultDelivered = true
             if (job.status.terminal) job.ring.trim(SETTLED_RETAIN_BYTES)
-            val dropped = listOf(Channel.STDOUT, Channel.STDERR)
-                .filterTo(LinkedHashSet()) { job.ring.droppedOf(it) }
-            return Read(chunks, lossy, result, view(job), dropped)
+            return Read(
+                chunks = chunks,
+                lossy = lossy,
+                result = result,
+                job = view(job),
+                droppedChannels = dropped,
+                stdoutTotalBytes = job.ring.totalOf(Channel.STDOUT),
+                stderrTotalBytes = job.ring.totalOf(Channel.STDERR),
+            )
         }
     }
 

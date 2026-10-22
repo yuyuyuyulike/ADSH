@@ -83,7 +83,7 @@ object PromptAssembler {
 
     /** 三条 runtime-context 的 section 名（dsh 的 getContextOrder 名，逐字） */
     const val LABEL_SANDBOX_POLICY = "sandbox:policy"
-    const val LABEL_ENV = "env:android-termux"
+    const val LABEL_ENV = "环境细则"
     const val LABEL_PLAN_POLICY = "plan:policy"
 
     /**
@@ -164,12 +164,12 @@ object PromptAssembler {
     const val PLAN_MODE_MARKER = "You are in plan mode."
 
     /**
-     * 计划模式**退出**时的叙述（dsh-plan-mode 的 narration()，逐字）。
+     * 计划模式**退出**时的叙述（dsh plan-mode 的 narration()，逐字）。
      *
-     * dsh 在「上一次请求头描述的是另一种模式」时把这一条塞进下一步的请求；ADSH 把计划模式做成
-     * 快照的一段，退出时它整段消失，模型要一句明确的话才知道是「取消」而不是
-     * 「没提」——所以这句作为新快照抬头下的**一句说明**写进去（[snapshotText] 的 notes，
-     * 与策略切换那句同一个位置）。
+     * dsh 把它作为**一条独立的 user 消息**注入（source kind = plan-mode、form = notice、
+     * summary = 正文）；ADSH 的 plan 段住在快照里，退出时那段消失，模型需要一句明确的话才知道
+     * 是「取消」而不是「没提」——所以由 AgentLoop 追加一条 name = plan-mode 的 user 消息，
+     * **不进快照正文**（快照只放各 section 正文，与 dsh 的 joinContextSections 一致）。
      *
      * 进入计划模式不需要叙述：dsh 那句 "The user switched this session to plan mode." 是为了
      * 解释一次**静默的**系统提示词变化；ADSH 的 plan 段本身就是快照里的一段
@@ -194,15 +194,14 @@ object PromptAssembler {
      * 工具自身的说明只在 ToolSdk.specs 里写一次。
      *
      * **一个字都不随会话变**：工作区绑没绑、绑在哪，都只在 runtime-context 的
-     * `env:android-termux` 快照里说；这里只说明「路径怎么解析」这条不变的规则。
+     * `环境细则` 快照里说；这里只说明「路径怎么解析」这条不变的规则。
      */
     val WORKING_RULES: String = buildString {
         appendLine("## Working rules")
         appendLine()
         appendLine("- Paths: the workspace, if one is bound, is named in the runtime context. Relative path " +
-            "arguments resolve against it; absolute paths are used as written, and reads outside the " +
-            "workspace are allowed — only writes are fenced by the file policy. With no workspace bound, " +
-            "use absolute paths and assume no working directory.")
+            "arguments resolve against it; absolute paths are used as written. Reads are not fenced by the " +
+            "file policy; writes follow the standing policy named in the runtime context.")
         appendLine("- Read text files with `tools.read`, not `cat`; use `offset`/`limit` to page through " +
             "a large file. For binary or non-UTF-8 files, do not fight the reader: run a command through " +
             "`tools.bash` (`file`, `xxd`, or a small script of your own) and print only what matters.")
@@ -215,25 +214,19 @@ object PromptAssembler {
             "`tools.bash` and a quoted heredoc (`<<'EOF'`) — and either way read it back or run " +
             "`bash -n` to confirm what landed.")
         appendLine("- Find paths with `tools.glob` and search contents with `tools.grep` — not shell `find`, " +
-            "`grep`, or `rg`. Both cap what they return (100 paths / 250 matches) and both say so **in the " +
-            "value**: `truncated` is true and `totalPaths` / `totalMatches` carry the real count, so a cut-off " +
-            "result is visible inside the program — narrow the pattern, path or include instead of assuming " +
-            "you saw everything. Do not point either at a whole dependency or build tree (`node_modules`, " +
-            "package caches, `build/` output). Reading one file you already know the path of is normal work.")
+            "`grep`, or `rg`. Both report a cut-off result in the value (`truncated` plus the true total), so " +
+            "narrow the pattern, path or include instead of assuming you saw everything.")
         appendLine("- A `tools.bash` result is fields, not prose: read `exitCode`, `timedOut`, `stdout` and " +
             "`stderr`. A non-zero exit is not a tool error. The exit code reports what the command " +
             "decided, not what the filesystem did — confirm an effect that matters with `ls -l` or a " +
-            "read-back rather than with the exit code. Investigate a failure before moving on, and have " +
-            "long output written to a file and read that instead of dumping it through a command.")
+            "read-back rather than with the exit code. Investigate a failure before moving on.")
         appendLine("- Failures are told apart by **what the tool returned**, not by the exit code alone." +
             "\n  - POLICY DENIAL: the sandbox notice `[sandbox: file access denied under <mode> mode]` on " +
             "the denied operation, or `write` / `edit` rejecting with that same notice. A plain " +
             "`ToolCallError` (missing path, not a text file, invalid argument) is an ordinary failure — " +
             "do not escalate it. Wrap a call you expect to fail in `try/catch` when the program should " +
-            "continue. Retry the denied call once with `sandbox_permissions` (the narrowest wider mode " +
-            "that suffices) and a one-sentence `justification` — the approval prompt it raises is how the " +
-            "user consents, and the grant covers that single call. If it is refused, stop and report what " +
-            "was blocked." +
+            "continue. Under a policy that fences writes, the runtime context's file-policy section says " +
+            "how to retry a denial once." +
             "\n  - FILESYSTEM LIMIT: an `[fs: ...]` line on stderr. It marks what this platform " +
             "will not do — `chmod` the emulated storage refuses to apply (the call then fails " +
             "with EPERM), a hard link that had to be made as a copy or could not be made at all, a " +
@@ -279,17 +272,16 @@ object PromptAssembler {
      * 逐条对齐 dsh：
      *  - `sandbox:policy`：dsh-sandbox-policy 的 renderPolicyContext，逐字（只做了品牌名替换与
      *    第三处有意收紧，见 [sandboxPolicyText]）；
-     *  - `env:android-termux`：ADSH 新增（dsh 跑在桌面上没有这一节）；
+     *  - `环境细则`：ADSH 新增（dsh 跑在桌面上没有这一节），界面与快照里的段名；
      *  - `plan:policy`：只在计划模式开着时出现，正文就是 dsh 的 plan-mode section。
      *
      * @param workspacePath 绑定的工作区绝对路径；null = 没绑定（SAF 引用形态 / 无 toolContext）
-     * @param previousWorkspacePath 本会话上一次用的工作区路径（换过就补一句「从 X 到 Y」）
+     * @param workspaceForm 工作区形态（PRIVATE = f2fs，REAL_PATH = FUSE，SAF_REFERENCE = 无 shell 路径）
      */
     fun runtimeContextInjections(
         filePolicy: String,
         workspacePath: String?,
         workspaceForm: WorkspaceForm? = null,
-        previousWorkspacePath: String? = null,
         planMode: Boolean,
         bashTimeoutMs: Long? = null,
         bashMaxTimeoutMs: Long? = null,
@@ -309,7 +301,6 @@ object PromptAssembler {
                 text = androidEnvText(
                     workspacePath = workspacePath,
                     workspaceForm = workspaceForm,
-                    previousWorkspacePath = previousWorkspacePath,
                     filePolicy = filePolicy,
                     bashTimeoutMs = bashTimeoutMs,
                     bashMaxTimeoutMs = bashMaxTimeoutMs,
@@ -330,25 +321,13 @@ object PromptAssembler {
     }
 
     /**
-     * 快照消息的正文 = dsh 的前言 + 可选说明 + 各 section 正文（dsh 的 joinContextSections 同形状：
-     * 抬头一次、section 之间空行）。
+     * 快照消息的正文 = dsh 的 `joinContextSections`：前言一次、各 section 正文用空行相连。
+     * **不含任何说明 / 叙述**：dsh 的运行时快照只有 section 正文，模式切换那类「发生了什么」
+     * 是另一条独立的 user 消息（ADSH 由 AgentLoop 追加 `plan-mode` 通知行），别并回快照。
      *
      * @param section 各段正文用 `\n\n` 拼好的整段（一段时就是那一段自己）
-     * @param notes 可选的一句句「为什么变了」，按顺序排在前言之后、正文之前 —— 策略切换时是 dsh 的
-     *   "The DSH file policy changed from \"x\" to \"y\" (changed by the user)."，计划模式退出时是
-     *   [PLAN_OFF_NARRATION]（把「通知一行 + 快照一行」并成一条，说的是同一件事）。
      */
-    fun snapshotText(section: String, notes: List<String> = emptyList()): String = buildString {
-        append(RUNTIME_CONTEXT_PREAMBLE)
-        append("\n\n")
-        notes.forEach { note ->
-            if (note.isNotBlank()) {
-                append(note.trim())
-                append("\n\n")
-            }
-        }
-        append(section)
-    }
+    fun snapshotText(section: String): String = RUNTIME_CONTEXT_PREAMBLE + "\n\n" + section
 
 
     /**
@@ -357,7 +336,7 @@ object PromptAssembler {
      * **三个动态来源都不许进来**：身份句里的模型名、结尾的「Your working directory is <cwd>」、
      * 以及按「有没有工作区」和「并行上限」分叉的两段文字。规矩：
      * - 模型名整句去掉（用户点名：不要动态变化的模型名）；
-     * - 工作区绑没绑、绑在哪，只在 runtime-context 的 `env:android-termux` 快照里说一句；
+     * - 工作区绑没绑、绑在哪，只在 runtime-context 的 `环境细则` 快照里说一句；
      * - `## Working rules` 与 SDK 段都只有一个版本（并发上限的差异收进一句不变的话）。
      *
      * 剩下唯一的**外来内容**是用户自定义后缀（拼在这后面）—— 它本来就是用户写的，
@@ -383,7 +362,6 @@ object PromptAssembler {
      * 装配系统提示词 + 运行时上下文注入。
      *
      * @param workspace 绑定的工作区；null = SAF 引用形态（没有 cwd，也就没有指令文件链）
-     * @param previousWorkspacePath 本会话上一次用的工作区路径（换过就补一句「从 X 到 Y」）
      * @param bashTimeoutMs / bashMaxTimeoutMs 终端设置里的当前超时口径：
      *   只有 AgentLoop 那条真实路径会传；摘要 / 估算只取系统提示词，用不到这两个数
      */
@@ -392,7 +370,6 @@ object PromptAssembler {
         extraSuffix: String,
         filePolicy: String,
         planMode: Boolean,
-        previousWorkspacePath: String? = null,
         bashTimeoutMs: Long? = null,
         bashMaxTimeoutMs: Long? = null,
     ): Parts {
@@ -427,7 +404,6 @@ object PromptAssembler {
             filePolicy = filePolicy,
             workspacePath = workspacePath,
             workspaceForm = workspace?.form,
-            previousWorkspacePath = previousWorkspacePath,
             planMode = planMode,
             bashTimeoutMs = bashTimeoutMs,
             bashMaxTimeoutMs = bashMaxTimeoutMs,
@@ -454,26 +430,21 @@ object PromptAssembler {
      * 每一条都只描述**本客户端自己就有**的事实：用户自己装的浏览器 / 诊断脚本不进提示词
      * （见方法结尾那段注释）。
      *
-     * @param workspacePath 绑定的工作区绝对路径；null = 没绑定（只留 prefix / scratch / tmp）
-     * @param previousWorkspacePath 上一次的工作区路径（不同就补一句「从 X 到 Y」）
+     * @param workspacePath 绑定的工作区绝对路径；null = 没绑定（只留 scratch / tmp 说明）
      * @param filePolicy 当前文件策略：可写根与装包那句话由它决定（快照本来每次都可能换，
      *   所以这不是「动态事实写进静态段」）
      */
     fun androidEnvText(
         workspacePath: String?,
         workspaceForm: WorkspaceForm? = null,
-        previousWorkspacePath: String? = null,
         filePolicy: String = FILE_POLICY,
         bashTimeoutMs: Long? = null,
         bashMaxTimeoutMs: Long? = null,
     ): String = buildString {
         val hasWorkspace = !workspacePath.isNullOrBlank()
         val form = workspaceForm ?: WorkspaceForm.REAL_PATH
-        appendLine("## Android / Termux environment")
+        appendLine("## Environment")
         appendLine()
-        appendLine("- The shell runs inside an app-private Termux prefix on real f2fs: \$PREFIX = " +
-            "/data/data/com.termux/files/usr, \$HOME = /data/data/com.termux/files/home. Compilers and " +
-            "ordinary Unix tooling are installed there and run normally.")
         if (!hasWorkspace) {
             appendLine("- No workspace is bound: use absolute paths, and assume no working directory.")
         } else if (form == WorkspaceForm.SAF_REFERENCE) {
@@ -484,13 +455,10 @@ object PromptAssembler {
             appendLine("- The bound workspace is " + workspacePath + " (an app-private directory on f2fs, " +
                 "exported as \$ADSH_WORKSPACE to commands that run in it). It is not visible in the " +
                 "system file manager; the app's file preview shows it.")
-            appendLine("- That workspace is a real filesystem: symlinks, executable bits and `chmod` work, " +
-                "and generated files can be executed. Keep dependencies and build caches under " +
-                "\$ADSH_SCRATCH (a f2fs directory, \$HOME/scratch, exported to every command; it " +
-                "persists across turns) rather than inside the workspace.")
         } else {
-            appendLine("- The bound workspace is " + workspacePath + " (exported as \$ADSH_WORKSPACE to " +
-                "commands that run in the workspace; a `workdir` override is exported instead).")
+            appendLine("- The bound workspace is " + workspacePath + ". \$ADSH_WORKSPACE is the working " +
+                "directory of each `tools.bash` command: the workspace by default, its `workdir` override " +
+                "when one is set.")
             appendLine("- That workspace is Android's emulated storage (FUSE): plain reads and writes of " +
                 "ordinary files only — no symlinks, no executable bit, `chmod` is refused with EPERM (the " +
                 "mode does not change), and a file there cannot be executed **directly** (`./x.sh` is " +
@@ -498,22 +466,13 @@ object PromptAssembler {
                 "`source x.sh`. Tools that need symlinks, an exec bit, or the ability to execute what " +
                 "they just produced fail with EACCES or silently lose the permission.")
             if (filePolicy != "read-only") {
-                appendLine("- Treat the workspace as the material inbox and the artifact outbox: work that " +
-                    "needs a real filesystem — installing dependencies, builds, git, anything that " +
-                    "symlinks or executes generated files — goes under \$ADSH_SCRATCH (a f2fs directory, " +
-                    "\$HOME/scratch, exported to every command; it persists across turns), and the " +
-                    "finished deliverables are copied back into the workspace **before you present " +
-                    "them**: `present` does not reject a path outside the workspace, so copying the " +
-                    "file into the workspace is your job, not the tool's.")
-                appendLine("- Copying a deliverable back into the workspace is lossy: symlinks are " +
-                    "materialized and executable bits are dropped, silently — a shell script or a " +
-                    "symlinked tree shipped that way arrives broken, so deliver an archive or state the " +
-                    "chmod instead.")
+                appendLine("- Work that needs a real filesystem — installing dependencies, builds, git, " +
+                    "anything that symlinks or executes generated files — belongs under \$ADSH_SCRATCH " +
+                    "(f2fs, \$HOME/scratch, exported to every command, persists across turns); copy finished " +
+                    "deliverables back into the workspace before you present them. The copy is lossy: " +
+                    "symlinks are materialized and executable bits are dropped silently, so deliver an " +
+                    "archive or state the chmod for anything executable.")
             }
-            appendLine("- Workspace files are owned by Android's media provider, not by this app.")
-        }
-        if (hasWorkspace && !previousWorkspacePath.isNullOrBlank() && previousWorkspacePath != workspacePath) {
-            appendLine("- The workspace moved from " + previousWorkspacePath + " to " + workspacePath + ".")
         }
         appendLine("- Every `tools.bash` command carries the shim that names emulated-storage limits on " +
             "stderr as an `[fs: ...]` line — that line is a storage limit, not a policy denial, and " +
@@ -521,21 +480,21 @@ object PromptAssembler {
         appendLine(writableRootsText(filePolicy))
         appendLine(bashTimeoutText(bashTimeoutMs, bashMaxTimeoutMs))
         appendLine("- `/tmp` **is** `\$TMPDIR` (same inode, mapped by the shim), never a second " +
-            "place, and TMPDIR, TMP and TEMP point there too. `/data/local/tmp` belongs to the adb shell " +
-            "user and is not writable by apps.")
+            "place, and TMPDIR, TMP and TEMP point there too.")
         appendLine("- Hard links are not available at all (SELinux denies `link()` on app data; " +
             "emulated storage has none). `ln` without `-s`, `cp -l`, `git clone --local` and " +
             "ccache/pnpm caches therefore become an independent copy or fail, and an `[fs: ...]` line " +
             "on stderr says which. Where sharing matters, prefer `git clone --depth 1`, a plain " +
             "download, or `cp`.")
-        if (hasWorkspace) {
-            appendLine("- git is preconfigured for this workspace's ownership (`safe.directory` in " +
-                "\$HOME/.gitconfig).")
-        }
-        appendLine("- Network access works but is occasionally flaky: give a network command its own " +
-            "`-m`/`--max-time`, retry once before reporting a failure, and do not call a host " +
-            "unreachable on the strength of a single timeout.")
         appendLine(packageManagerText(filePolicy))
+        // glibc 预置（$PREFIX/glibc + bin/grun）：这是 App 本体的能力，值得写进环境细则 ——
+        // 不写的话模型会直接 exec 外部 Linux 二进制，拿到的是「required file not found」。
+        appendLine("- External glibc binaries do not start with a bare `./tool`: their interpreter is " +
+            "/lib/ld-linux-aarch64.so.1, which Android does not have. Run them through the bundled loader " +
+            "with a path: `grun ./tool` or `grun /abs/path/tool args` (a bare name is resolved by the " +
+            "loader, not by PATH). The bundled tools under \$PREFIX/glibc/bin start directly. grun clears " +
+            "the bionic runtime variables and does not extend the write fence or the /tmp mapping to that " +
+            "program, so treat its file access as unconstrained.")
         // 提示词里只写 App 本体就有的能力：`adsh-shot`（依赖用户自己装的 chromium）与
         // `adsh-env-check`（测试期定位内嵌 Termux 差异的诊断脚本）都不写进来。两个脚本照旧安装
         // （[com.adsh.app.runtime.termux.EnvSelfCheck] / [AdshShot] 与 TermuxRuntime.prepareHome），
@@ -550,7 +509,7 @@ object PromptAssembler {
      * 也不知道装包会失败。可写集合是**会变的策略事实**，所以正文只出现在 runtime-context 快照里
      * （系统提示词保持静态，见 [Delivery]）。
      */
-    private fun writableRootsText(filePolicy: String): String = when (filePolicy) {
+    private fun writableRootsText(filePolicy: String): String? = when (filePolicy) {
         "read-only" -> "- Writable roots under the standing file policy (read-only): none. Every write is " +
             "denied — `write` / `edit` reject and a fenced `bash` write fails with the sandbox notice, " +
             "though the command itself may still exit 0; `\$TMPDIR` and \$ADSH_SCRATCH are read-only " +
@@ -563,9 +522,8 @@ object PromptAssembler {
             "command prints the sandbox notice on stderr and that write fails, though the command itself " +
             "may still exit 0; `write` / `edit` reject). Reads work anywhere. Judge a denial by the target " +
             "path and the notice, not by the exit code alone. Every fenced command exports that same " +
-            "list as \$ADSH_FENCE_ROOTS — **set but empty** when there are no writable roots."
-        else -> "- Writable roots: the whole filesystem. The standing file policy (danger-full-access) does " +
-            "not fence writes and no \$ADSH_FENCE_ROOTS list is exported."
+            "list as \$ADSH_FENCE_ROOTS (read-only exports none)."
+        else -> null
     }
 
     /**
@@ -617,11 +575,7 @@ object PromptAssembler {
         }
         return "- A `tools.bash` command that outlives its `timeoutMs`" + numbers + " is **not killed**: the " +
             "call returns `{kind:\"promoted\", jobId, timeoutMs, output}` and the command keeps running as a " +
-            "background job (read newer output with `tools.job_output`, stop it with `tools.job_kill`). A " +
-            "genuinely " +
-            "slow step is better off starting that job up front with `run_in_background: true` than being " +
-            "designed to sit just under the default. Either way the result carries whatever output the " +
-            "command already produced."
+            "background job (read newer output with `tools.job_output`, stop it with `tools.job_kill`)."
     }
 
     /** 指令被截断时补的一句：模型看不到它就不知道还有后半份指令 */
@@ -672,7 +626,7 @@ object PromptAssembler {
      *  - 术语统一成 workspace（审查报告 N-1）：不再说 session workspace /
      *    session working directory。
      *  - ****（审查报告 F1）：模式正文后面补一句指针，点明「可写根不等于工作区」——
-     *    真实可写集合是四个根，精确清单在紧跟着的 `env:android-termux` 段里（同一份快照）。
+     *    真实可写集合是四个根，精确清单在紧跟着的 `环境细则` 段里（同一份快照）。
      *    这一句两种情况都要有：read-only 是「一个都没有」，workspace-write 是「不止工作区」。
      */
     fun sandboxPolicyText(mode: String): String = when (mode) {

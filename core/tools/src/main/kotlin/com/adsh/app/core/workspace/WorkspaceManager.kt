@@ -54,15 +54,15 @@ class WorkspaceManager(
 
     /** 绑定真实路径工作区；返回 null 表示成功，否则返回失败原因 */
     fun bindRealPath(dir: File, safUri: String? = null): String? {
-        if (!dir.isDirectory) return "目录不存在：" + dir.absolutePath
-        if (isForbidden(dir)) return "该目录不可作为工作区（系统限制）：" + dir.absolutePath
+        if (!dir.isDirectory) return "directory not found: " + dir.absolutePath
+        if (isForbidden(dir)) return "this directory cannot be used as a workspace (system restriction): " + dir.absolutePath
 
         val probe = "test -d \"" + dir.absolutePath + "\" && test -w \"" + dir.absolutePath +
             "\" && echo ADSH_WRITABLE"
         val result = runtime.run(probe, workspaceRoot = dir, timeoutMs = 15_000)
         if (!result.output.contains("ADSH_WRITABLE")) {
-            return "shell 无法写入该目录（可能缺少「所有文件访问」）：" + dir.absolutePath +
-                "；exit=" + result.exitCode + " out=" + result.output.trim()
+            return "the shell cannot write to this directory (All files access may be missing): " + dir.absolutePath +
+                "; exit=" + result.exitCode + " out=" + result.output.trim()
         }
 
         prefs.edit()

@@ -72,7 +72,7 @@ internal fun ImagePreview(path: String, reloadKey: Int = 0) {
         // 长边压到 2048 以内（共用实现，见 ui/ImageDecode.kt）：一次性的原图预览不进缓存
         val decoded = withContext(Dispatchers.IO) { decodeSampledImage(path, PREVIEW_MAX_PX) }
         bitmap = decoded
-        failure = if (decoded == null) "无法显示这张图片" else null
+        failure = if (decoded == null) "cannot display this image" else null
     }
 
     val image = bitmap
@@ -91,7 +91,15 @@ internal fun ImagePreview(path: String, reloadKey: Int = 0) {
             }
             val vertical = rememberScrollState()
             val horizontal = rememberScrollState()
-            Box(Modifier.fillMaxSize().padding(12.dp).verticalScroll(vertical)) {
+            // 横轴挂外层可视区：内层横向容器的高度随图片，竖图放大后挂在它底边的滚动条会滚出视口
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(12.dp)
+                    .dshVerticalScrollbar(vertical)
+                    .dshHorizontalScrollbar(horizontal)
+                    .verticalScroll(vertical),
+            ) {
                 if (width > availableWidth - 24.dp) {
                     Box(Modifier.horizontalScroll(horizontal).clipToBounds()) {
                         Image(

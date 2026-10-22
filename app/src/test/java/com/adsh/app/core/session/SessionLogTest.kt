@@ -72,7 +72,7 @@ class SessionLogTest {
         val log = SessionLog()
         log.append(SessionBody.ToolResult("c1", 3L, "bash", "out", false))
         val bad = SessionLog.violations(log.events)
-        assertTrue(bad.toString(), bad.any { it.contains("结果没有对应的调用") })
+        assertTrue(bad.toString(), bad.any { it.contains("tool result without a call") })
     }
 
     @Test
@@ -81,7 +81,7 @@ class SessionLogTest {
         // 子调用的 id 前缀指向 9，但日志里没有 harnessId=9 的调用
         log.append(SessionBody.PtcDispatchStart(sub(9L, 1)))
         val bad = SessionLog.violations(log.events)
-        assertTrue(bad.toString(), bad.any { it.contains("找不到父调用") })
+        assertTrue(bad.toString(), bad.any { it.contains("has no parent call") })
     }
 
     @Test
@@ -91,6 +91,6 @@ class SessionLogTest {
         log.append(SessionBody.ToolResult("c1", 5L, "bash", "out", false))
         log.append(SessionBody.ToolResult("c1", 5L, "bash", "out again", false))
         val bad = SessionLog.violations(log.events)
-        assertTrue(bad.toString(), bad.any { it.contains("结算了两次") })
+        assertTrue(bad.toString(), bad.any { it.contains("settled twice") })
     }
 }

@@ -198,7 +198,7 @@ class SettingsModelsTest {
     @Test
     fun `ID 全是空白的模型行不算数，提示直接指到那一行（dsh 的口径）`() {
         val form = formOf(models = listOf(ModelDef(id = "   ")))
-        assertEquals("模型 1: 模型 ID 不能为空。", form.hint)
+        assertEquals("Model 1: Model ID cannot be empty.", form.hint)
         assertFalse(form.ready)
     }
 
@@ -299,14 +299,14 @@ class SettingsModelsTest {
     fun `目录里有一行 ID 为空就整条不保存，报文指到那一行`() {
         val result = providerSaved(deepseek, keyInput = "sk-new", baseUrlInput = "", models = listOf(ModelDef(id = "gpt-x"), ModelDef(id = "  ")))
         assertTrue(result is ProviderSave.Failed)
-        assertEquals("模型 2: 模型 ID 不能为空。", (result as ProviderSave.Failed).message)
+        assertEquals("Model 2: Model ID cannot be empty.", (result as ProviderSave.Failed).message)
     }
 
     @Test
     fun `目录里有重复 ID（trim 之后相同）也整条不保存`() {
         val result = providerSaved(deepseek, "", "", listOf(ModelDef(id = "gpt-x"), ModelDef(id = " gpt-x ")))
         assertTrue(result is ProviderSave.Failed)
-        assertEquals("模型 2: 模型 ID 不能重复。", (result as ProviderSave.Failed).message)
+        assertEquals("Model 2: Model ID must be unique.", (result as ProviderSave.Failed).message)
     }
     // ------------------------------------------------------------ 编辑卡片：目录头上的那句话
 
@@ -463,8 +463,8 @@ class SettingsModelsTest {
 
     @Test
     fun `原因文案逐字照 dsh 的 zh 字典，行号从 1 数`() {
-        assertEquals("模型 1: 模型 ID 不能为空。", modelProblemText(InvalidModel(0, ModelProblem.ID_REQUIRED)))
-        assertEquals("模型 3: 模型 ID 不能重复。", modelProblemText(InvalidModel(2, ModelProblem.ID_DUPLICATE)))
+        assertEquals("Model 1: Model ID cannot be empty.", modelProblemText(InvalidModel(0, ModelProblem.ID_REQUIRED)))
+        assertEquals("Model 3: Model ID must be unique.", modelProblemText(InvalidModel(2, ModelProblem.ID_DUPLICATE)))
     }
 
     // ------------------------------------------------------------ 添加卡片：不合法的行也不给就绪
@@ -473,7 +473,7 @@ class SettingsModelsTest {
     fun `手写的卡片里有一行空 ID 就不就绪，提示指到那一行`() {
         val form = formOf(models = listOf(ModelDef(id = "gpt-x"), ModelDef(id = "")))
         assertFalse(form.ready)
-        assertEquals("模型 2: 模型 ID 不能为空。", form.hint)
+        assertEquals("Model 2: Model ID cannot be empty.", form.hint)
     }
 
     @Test
@@ -481,7 +481,7 @@ class SettingsModelsTest {
         assertTrue(formOf(models = emptyList(), catalogRoute = true).ready)
         val withBlankRow = formOf(models = listOf(ModelDef(id = "")), catalogRoute = true)
         assertFalse(withBlankRow.ready)
-        assertEquals("模型 1: 模型 ID 不能为空。", withBlankRow.hint)
+        assertEquals("Model 1: Model ID cannot be empty.", withBlankRow.hint)
     }
 
     @Test

@@ -78,8 +78,29 @@ private fun invalidJobId(args: JsonObject): ToolResult.Error {
  *  - 正文末尾永远带一行 `[status: ...]`；没有新输出时是 `(no new output)`。
  */
 object JobOutputTool : Tool {
-    override val name = "job_output"
-    override val description: String get() = ToolSdk.description("job_output")
+    override val spec = ToolSpec(
+        name = "job_output",
+        // dsh-tool-jobs 的三条 schema.description，逐字
+        description = "Read a background job. A stream job returns only the output produced since your " +
+            "previous read; a finished final-output job returns its result on the next read only.",
+        args = """
+            {
+                /** Job id returned by the tool that started the background work. */
+                job_id: string;
+                /** Block until the job finishes or the timeout expires; a timed-out wait leaves the job running. Defaults to false. */
+                wait?: boolean;
+                /** Max wait in milliseconds with wait: true. Defaults to and is capped by configuration. */
+                timeout_ms?: number;
+              }
+        """.trimIndent(),
+        output = """
+            {
+                text: string;
+                job: JobView;
+              }
+        """.trimIndent(),
+    )
+    override val parallelSafe = true
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         val id = Args.str(args, "job_id")
@@ -125,8 +146,13 @@ object JobOutputTool : Tool {
 
 /** job_list：本会话的全部任务（含已结束的），一行一个：`<id> [<kind>] <status> — <label>` */
 object JobListTool : Tool {
-    override val name = "job_list"
-    override val description: String get() = ToolSdk.description("job_list")
+    override val spec = ToolSpec(
+        name = "job_list",
+        description = "List your background jobs (running and finished) with their ids, kinds, and statuses.",
+        args = "{}",
+        output = "JobView[]",
+    )
+    override val parallelSafe = true
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         val jobs = Jobs.list(ctx.conversationId)
@@ -147,8 +173,24 @@ object JobListTool : Tool {
  * 人从界面上按的停止走的是另一条路（不认领投递，通知照发）。
  */
 object JobKillTool : Tool {
-    override val name = "job_kill"
-    override val description: String get() = ToolSdk.description("job_kill")
+    override val spec = ToolSpec(
+        name = "job_kill",
+        description = "Request cancellation of a running background job.",
+        args = """
+            {
+                /** Job id returned by the tool that started the background work. */
+                job_id: string;
+                /** Optional short reason, recorded in the log and forwarded to the job. */
+                reason?: string;
+              }
+        """.trimIndent(),
+        output = """
+            {
+                outcome: "cancellation-requested" | "already-finished";
+                job: JobView;
+              }
+        """.trimIndent(),
+    )
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         val id = Args.str(args, "job_id")

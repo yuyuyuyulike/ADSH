@@ -42,6 +42,7 @@ internal class TurnMeter(
     private var turnCacheHit = 0L
     private var turnReasoning = 0L
     private var turnLlmMillis = 0L
+    private var turnToolMillis = 0L
     private var turnTtft = 0L
     /** 本轮解码窗口之和（dsh 的 decodeMs）：每一步「首 token → 收尾」那一段，TPS 的分母 */
     private var turnDecodeMillis = 0L
@@ -102,7 +103,7 @@ internal class TurnMeter(
         roundToolMillis += millis
     }
 
-    /** 这一步执行了几个工具步（[com.adsh.app.core.tools.ToolStepCounter] 抽干后的值）。 */
+    /** 这一步执行了几个工具步（顶层调用 + 程序内子调用，口径见 [com.adsh.app.core.tools.ToolOutcome.steps]）。 */
     fun setSteps(steps: Int) {
         roundSteps = steps
     }
@@ -121,6 +122,7 @@ internal class TurnMeter(
         turnCacheHit += roundCacheHit
         turnReasoning += roundReasoning
         turnLlmMillis += roundLlmMillis
+        turnToolMillis += roundToolMillis
         if (turnTtft == 0L && firstTokenAt > 0) turnTtft = firstTokenAt - roundStartedAt
     }
 
@@ -158,6 +160,9 @@ internal class TurnMeter(
             outputTokens = turnCompletion,
             reasoningTokens = turnReasoning,
             runMillis = (System.currentTimeMillis() - turnStartedAt).coerceAtLeast(0),
+            // 逐轮聚合的两项：分叉 / 分支会话按这些数重算会话统计（见 aggregateTurnUsage）
+            llmMillis = turnLlmMillis,
+            toolMillis = turnToolMillis,
             ttftMillis = turnTtft,
             // dsh 的输出速度 = decodeTokens / decodeMs：首 token 之前的排队与 prefill 不算进去
             // （用整段模型用时当分母会让新会话首轮那 8.5K token 的冷 prefill 把速度压掉一大截）

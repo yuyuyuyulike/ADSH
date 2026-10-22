@@ -1,390 +1,101 @@
 # CHANGELOG
 
-历史记录。当前状态看 [HANDOFF.md](HANDOFF.md)，稳定事实看 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
-本文件由 HANDOFF.md 在 2026-10 拆分而来：**逐字搬迁，没有删改**。
-
-## 0.2.4 补丁：自动滚动的唯一判据是「跟随意图」（2026-10-18）
-
-会话结束后仍会自动滚动。按用户口径收口：**自动贴底只由「跟随意图」决定**（右侧滚动条在底、「回到底部」按钮不显示）——
-
-- 读者翻过历史（滚动条上移 / 按钮出现）时，内容长高、**键盘弹起**、输入区变高一律不动视口；读者还贴着底时，这些变化照常把视口带到新末端（键盘弹起时消息跟着上移）。
-- 去掉「按轮次生命周期开关自动贴底」的额外状态与「结束那一拍再收尾贴底一次」的例外：没有隐式重开的路径，也就没有「会话结束后又自己滚」。
-- 把「跟随意图」与滚动位置一起存进 `ChatScrollStore`（原来只存位置）：从文件页 / 设置页 / 旋转回来不会把「读者已翻过历史」重置成「跟随」，回来的第一帧不再被贴底保活拉回底部。
-
-用例：`AutoScrollTest` 覆盖「跟随中键盘弹起要贴」「翻过历史时键盘 / 内容 / 输入区变化都不贴」「回到底部后键盘弹起恢复贴」；debug 包真机复验：贴着底点输入框，键盘弹起消息跟着上移；长会话翻到中段打开工作区文件再返回，位置与按钮原样保留。
-
-## 0.2.4 发版（2026-10-18）
-
-- **新增**：右侧可拖滚动条（贴边时可拖、带防误触）、docx / xlsx / pptx / pdf / 图片的本地预览、双击状态栏刘海回到会话开头。
-- **修复**：`edit` 的极端错误（一次调用锁死整条工具网关、CRLF 与大文件匹配）、提示词与实际行为不一致等 harness 问题。
-- **其他**：卡片字级 / 间距与 dsh 对齐，两个最大模块按职责拆文件（零行为改动），会话流滚动、键盘与抽屉的每帧开销不再随历史增长。
-- 版本 **0.2.4 / versionCode 16**；release APK 已装机复验（版本号、冷启动、crash buffer 空），发布在 GitHub release `v0.2.4-20261018`。
-
-## 两个最大模块的梳理：大文件按职责拆开（2026-10-18）
-
-`:feature:chat`（主代码 9.9k 行）与 `:ui:blocks`（8.3k 行）里有 6 个 750～2000 行的「什么都装」文件。按「同一屏 / 同一渲染管线」聚簇拆文件，**零行为改动**（只搬代码；跨文件用到的 private 放开为 internal）：`:feature:chat` 的 Composer 拆出浮层宿主与定位（`Overlay.kt`）、TurnRail 拆出工具行模型（`ToolRowModel.kt`，纯函数）、TurnList 拆出节点模型与装配器（`TurnModel.kt` / `TurnBuilder.kt`）、ChatViewModel 拆出界面状态类型（`ChatUiState.kt`）；`:ui:blocks` 的 DocumentPreview 拆出图片预览（`ImagePreview.kt`）、LatexCore 拆出解析器与符号表（`LatexParser.kt`）。拆后最大的文件从 1989 行降到 1797 行（ChatViewModel），其余都回到 1500 行以下；模块总量不变。顺手复核了死代码与文档：`deadcode` 候选 0、未使用 import 0、版本目录别名 / 资源 / 字符串 0，`docs/MODULES.md` 的实测行数刷新。
-
-## 工具报错详情卡对齐 dsh：搜索 / 网页族不铺输入段，ioCard 改等宽小字（2026-10-18）
-
-用户对照 dsh 指出 grep / glob / todo_write / web_fetch（可能还有 web_search）报错后的详情卡样式不一致。按 dsh 0.2.1-rc.2 的源码与真机逐项核对：
-
-- **报错卡不再铺「输入」段**：dsh 的 SearchRow（grep / glob / web_search）与 WebRow（web_fetch）从不给 ToolRow 传 rawInput —— 展开体只有结果一侧，报错时就是一段红色输出、没有参数 JSON。ADSH 之前对所有工具都铺「输入(参数 JSON) + 输出」。现在这两族（连同 readFamilyRow / FileMutationRow 的 read / read_image / write / edit）一律没有输入段；todo_write / present 同样只留错误输出（参数 JSON 对报错没有信息量）。
-- **ioCard 字体改成等宽 11/16**：dsh 的 ioCard 继承 `--dsw-font-markdown-code-block-small`（等宽代码字体），「输入 / 输出」两个标签也是同一套字；ADSH 之前是 12/18 非等宽。参数 JSON 的缩进同时从 kotlinx 默认 4 空格改成 dsh `JSON.stringify(…, null, 2)` 的两空格。
-- 段高 **200dp 保留**（dsh 桌面端 150px）：那是此前用户点名的有意偏离，竖屏手机上 150 太矮。
-- 用例：`ToolRowSummaryTest` 钉「结果型工具与 todo / present 都没有输入段，通用工具仍铺两空格缩进 JSON」；门禁全绿（122 类 / 1039 例 / 0 失败）；真机 debug 装机核对 grep / todo_write 两张卡。
-- 顺手清掉的死代码：`inputBodyOf` 里被工具名集合完全覆盖的 singleFile 分支（不再有调用路径）；全仓扫过 Kotlin 声明（`deadcode.py` 候选 0，baseline 只剩 5 条测试口）、未使用 import / 版本目录别名 / 资源 / 字符串 / C 静态函数，均为 0。
-
-## 会话流性能：滚动 / 键盘 / 抽屉的每帧开销不再随历史行数增长（2026-10-18）
-
-用户反馈长内容 / 大量 Markdown / 大量工具调用的会话里滚动、抽屉动画、呼出键盘掉帧，并担心几十轮、上千步调用的历史会放大问题。复核后按三处「每帧 O(行数)」的根因修：
-
-- **行级绘制剔除**：每行原来各自读 `ScrollState.value` 和贴底补偿的一串状态 —— 滚动 / 键盘动画每一帧把全部行标脏、逐行重跑剔除。现在只读一个**派生剔除窗口**（滚动位置按 128px 台阶化、视口按 64px 向上取整、含贴底补偿），窗口只在跨台阶时换实例；台阶边界按「桶内可能的最小 / 最大滚动值」取安全边界，宁可多画一条边也不露行（`CullWindowTest` 钉住）。
-- **右侧滚动条**：原来在组合期读 value / maxValue，每帧重组 + SideEffect 写几何。现在滚动状态只在**绘制阶段**读（只重画 5dp 那条 RenderNode），thumb 命中 / 拖动几何在按下那一刻现算；边缘防误触的命中区改用 `snapshotFlow` 写 volatile。
-- **抽屉景深**：haze 实时模糊覆层每帧要把主内容重新渲染进离屏层再模糊，抽屉动画 p50 48ms / p90 61ms。改成主内容图层自己的 `RenderEffect`（API 31+，半径随 progress 连续长；旧系统退化成轻暗化），模糊全程都在、没有覆层与内容之间的颜色差，p50 12ms / p90 20ms。haze 依赖随之删除。
-- 真机 debug 实测（同一长会话，各 3–6 轮）：抽屉 p50 48→12ms / p90 61→20ms，键盘 p50 34→12ms；滚动本来就基本达标（p50 9→8ms、p99 30→24ms）。长历史的剩余成本集中在**首次组合 / 布局**（常驻列表的固有代价，虚拟化是硬约束禁止的方向），交互帧已基本与行数无关。
-
-## 深度 harness 测试修复：工具网关死锁 + edit 行尾/规模 + 提示词清理（2026-10-18）
-
-用户让 App 里的 agent 跑了一轮深度 harness 测试（报告只记问题）。本轮按报告复核、对照 dsh 修复：
-
-- **P0 工具网关死锁**：一次 `edit` 把整条工具层锁死（此后连参数校验都超时）。两个根因一起修：`ToolConcurrency` 从全进程单例改为**每轮一份**（`PtcToolRunner` 新建，dsh 的 per-run scheduler）——卡在非协作取消里的在途调用随本轮丢弃，不再堵下一次 `run_code`；`edit` 改用 dsh 的 `countOccurrences` + `String.replace` 单趟字面替换，5 MB 单行 + 百万匹配不再 OOM。
-- **edit 行尾语义对齐 dsh**：内容 / `old_string` / `new_string` 先 CRLF→LF 归一化再匹配，写回恢复原风格（此前 CRLF 文件用 `\n` 匹配必失败，提示词还把这个缺陷写成预期行为）。
-- **严格 UTF-8**：`write` / `edit` 的孤立代理项直接报错（此前 Java 编码器静默写成 `?`）。
-- **提示词**：删掉被测试证伪的「grep 跳过隐藏文件」概称；`edit` 的 CRLF 警告改成归一化事实；`job_output` 写清「流式任务只给上次读取之后的新输出，终局结果只给一次」；`web_fetch` 的 `timeoutMs` 按「每地址计时、一次尝试可能超预算」说真话；去掉重复的 FUSE / 升级 / promoted 段落与实测轶事，压缩 `SDK_INSTRUCTIONS` 里的宿主 API 清单。
-- 用例：`ToolConcurrencyTest` 新增「卡死的一轮不拖死下一轮」；`ToolExecTest` 新增 5 MB 单行 `replace_all`、CRLF 归一化、孤立代理项；`PromptAssemblerTest` 去掉被证伪的断言。门禁：全模块 `testDebugUnitTest` + `lint` + `:app:assembleDebug` + `spotlessCheck`，`deadcode` / 未使用 import 0。
-- 真机：debug APK 构建装机；清理深度测试残留（workspace `_t_*` / `.adsh/attachments/18`、scratch 测试树、`$TMPDIR` 的 spill 目录）。
-
-
-## 〇、阶段 10：拆分 `:app` + 归并迷你模块（11 → 8 个工程，2026-10）
-
-用户口径：「尽量不超过 12 个工程；单工程 5k–15k 行；别再有迷你工程」。两件事：先把 34k 行的 `:app` 拆出渲染基础与对话界面，再把剩下 4 个偏小的 core 模块并掉。**行为零改动**，用例全程 **99 类 / 889 例 0 失败**。
-
-**拆分（Lead，批 1–2）**：
-- `:ui:kit` → `:ui:blocks`：设计系统整体搬入，再把 `app/ui` 里的渲染基础（Markdown / LaTeX / 代码块 / 工具结果块 / 文件预览 / 图标 / 调色板等 32 个文件）搬进包 `com.adsh.app.ui.blocks`；`:core:workspace` 并进 `:core:tools`。
-- 建 `:feature:chat`（`com.adsh.app.ui.chat`，33 主文件 + 22 测试）：ChatViewModel / 会话屏 / 输入区 / 轮次渲染 / 会话级面板。`:app` 只剩壳、导航、设置、终端、灵动岛、组合根。库模块不许读自己的 `BuildConfig`（诊断开关改宿主注入 `ChatDebug.enabled`）；Compose 库单测底座补齐（`unitTests.isIncludeAndroidResources` + debug 清单 + `robolectric.properties`）。
-
-**归并（批 3–5）**：
-
-| 原模块 | 并入 | 依据 |
-|---|---|---|
-| `:core:base` 的 `core.jobs` | `:core:tools` | 唯一消费者是工具层与组合根 |
-| `:core:base` 的 `core.phone` | `:seam` 的 `seam.phone` | 脚本 ↔ App 的线协议，属缝层（包名改） |
-| `:core:llm`（含 `core.session`） | `:core:data` | LLM 客户端与会话仓储是同一份公开面 |
-| `:core:ptc` | `:platform:termux` | 同属平台实现（进程 / 原生 / QuickJS），都只认 `:seam` 端口（包名改 `com.adsh.app.platform.ptc`） |
-
-**`:ptc` 独立进程服务跟着改**：`app/src/main/AndroidManifest.xml` 的 `android:name` 从 `.core.ptc.PtcWorkerService` 改成 `.platform.ptc.PtcWorkerService`，用 `aapt2 dump xmltree` 核对 APK 清单（`com.adsh.app.platform.ptc.PtcWorkerService` + `android:process=":ptc"`）—— 写错就是运行时崩。
-
-| 指标 | 结果 |
-|---|---|
-| 工程数 | 16 → 11（阶段 8 / 3c-B）→ **8**（阶段 10） |
-| 单工程行数（main+test） | app 9.8k / chat 15.9k / blocks 9.7k / tools 8.7k / data 6.1k / agent 5.0k / platform 4.8k / **seam 1.8k（契约层例外）** |
-| 用例 | 99 类 / 889 例 0 失败，搬家全程不变 |
-| 单文件增量编译 | `:app` 7.1s（拆分前）→ **4.2s**；`:feature:chat` 3.7s |
-
-判据、例外与「不再拆」的结论见 `docs/MODULES.md`；门禁仍是全模块 testDebugUnitTest / lint / `:app:assembleDebug` / `:app:assembleRelease` / spotlessCheck + python 六条。
-
-**真机复验（Lead，debug 67,429,696 B）**：APK 原生库 291 条且装机后解压成可执行；终端页 PTY 起得来、`adsh-env-check` 全部 ok；新会话一轮 `run_code`→`tools.bash` 输出 `AGENT_OK` + 工作区路径（退出码 0），`:ptc` 进程服务按新 FQN `com.adsh.app.platform.ptc.PtcWorkerService` 正常拉起；logcat crash 缓冲空。
-
-## 一、组合根收口：ToolContext 装配与一次性 LlmClient 移出 UI（2026-10）
-
-路线图阶段 6 收尾：`docs/ARCHITECTURE.md` §五「组合根是唯一创建点」的最后两处例外 —— UI 自己装配工具上下文、设置页自己造 `LlmClient`。
-
-- 新增 `app/src/main/java/com/adsh/app/ToolingHost.kt`：工具上下文的装配点。全局项（应用上下文 / 运行时 / 14 项设置 / 实时权限读取器 / PTC 提供者 `PtcProcess`）在宿主里读一次；每轮才变的（会话 id / 工作区 / 轮次 / 计划模式 / 计划批准回调）由 `contextFor(...)` 传参。
-- `ChatViewModel` 只保留 `_state` / `planMode` / 算 turn / `setPlan`，`buildToolContext()` 缩成一次宿主调用；删掉 `com.adsh.app.core.ptc.PtcProcess` 引用与那 14 处 settings 直读。
-- 设置页「获取模型」的一次性通道改走 `AppContainer.newLlmClient(ProviderConfig)`，`SettingsModelsSection` 不再 `new LlmClient`。
-- 新增 `ToolingHostTest`（3 条）：全局项来自 settings / 注入的提供者，每轮项来自调用参数，`livePermission` 仍是实时读取器。`:app` 用例 53 类 / 463 例全绿。
-- 文档：`docs/ARCHITECTURE.md` §二、§五 的 `ChatViewModel.buildToolContext` 改为 `ToolingHost`，删掉「唯一例外」。
-
-## 二、Termux 平台层抽成 `:platform:termux`（2026-10）
-
-路线图 3c-B：`:core` 已成模块、`:seam` 的 `Shell` 端口已立之后，把 `runtime/termux` 从 `:app` 抽成 `:platform:termux`（10 → 11 个 Gradle 工程，用户口径 8–11 的上限）。提供者从此有编译期边界：它只能依赖 `:seam`，想 import `core` / `ui` / `island` 就编不过。
-
-- **搬运零改动**：8 个源文件（2332 行）+ 4 个测试 + `cpp/`（`fence.c` / `pty_bridge.c` / `CMakeLists.txt`）整体 `git mv`。包名 / 类名 / JNI 符号 / 资源路径一个没改；`execLibs/`（287 个 ELF）与 `assets/bootstrap/usr.zip` 留在 `:app` —— 库模块运行时通过宿主的 `context.assets` 读它们。
-- **原生部分跟着模块走**：`:platform:termux` 自己声明 `ndkVersion` + `externalNativeBuild.cmake`，产出 `libadshfence.so` / `libadshpty.so`；**APK 级**的 `packaging.jniLibs.useLegacyPackaging` 与 `execLibs` 的 `sourceSets` 留在 `:app`（它们决定 APK 怎么装，不属于平台实现）。
-- **门禁同步**：`PACKAGE_MODULES` 加 `runtime.termux → :platform:termux`；`layering-rules.json` 加一条「`runtime.termux` 不许 import `core.* / ui.* / island.*`」（0 违规）；`check-env-scripts.py` / `fence-selftest.sh` / `find-unused-c-symbols.py` 的硬编码路径跟着搬。
-- 验收：11 个工程；用例 **98 类 / 886 例不变**（4 个 runtime 测试跟着模块走）；`:app:assembleDebug` / `assembleRelease` 通过且 APK 里 `libadshfence.so` / `libadshpty.so` 齐全、`execLibs` 287 个 ELF 一个不少；`:app:assembleSide --dry-run` 通过；python 六条门禁全绿。
-
-## 三、模块合并：16 → 10 个 Gradle 工程（2026-10）
-
-用户口径：16 个工程分得太细（要求 8–11 个）。**纯机械搬运** —— 包名 / 类名 / 行为零改动，只动模块边界、构建脚本、门禁脚本与文档。映射与依据：
-
-| 原模块 | 新模块 | 依据 |
-|---|---|---|
-| `:seam:{llm,exec,model,tool,ptc}` | `:seam` | 五个包对消费者是**同一个契约面**（都属「服务定义」）；其中 model/tool/ptc 用 Android API，所以合成一个 Android library |
-| `:core:jobs` + `:core:phone` | `:core:base` | 两个包各只有 3 / 1 个文件，消费者只有 `:app` 与 `:core:tools`；Jobs 依赖 `:seam` 的 Spill，本来就不能是纯 JVM |
-| `:core:session` | `:core:llm` | 只有一个文件；`SessionEvent` 只被 `:core:llm` 与组合根看见 |
-
-结果 10 个工程：`:app` / `:seam` / `:ui:kit` / `:core:{base,workspace,llm,data,ptc,tools,agent}`。配套改动：
-
-- **门禁脚本改成显式映射**：`scripts/check-module-graph.py` 的「包 → 模块」从按名字推断（`core.* → :core:<第一段>`、`seam.* → :seam:<名>`）改成 `PACKAGE_MODULES` 表（最长前缀优先），`--write` / `--check` / `--strict` / `--selftest` 四种模式都过；`docs/module-graph.md` 随之重新生成。
-- **用例数逐项不变**（只搬文件没动测试）：`:core:base` 3 类 / 39 例 = `:core:jobs` 2/27 + `:core:phone` 1/12；`:core:llm` 2/14 = llm 2/14 + session 0 例；其余模块不变。
-- **连带一处插件变化**：`:core:jobs` 从 `adsh.kotlin.jvm` 改成 `adsh.android.library` —— 它的依赖闭包里出现了 Android library（`:seam`），纯 JVM 模块选不出变体。合并后 10 个工程里已没有纯 Kotlin JVM 模块。
-- 每批验收：`:app:assembleDebug` + 全模块 `testDebugUnitTest` + 包循环 / 模块图 / 文档预算门禁。工程数 16 → 12（seam）→ 11（base）→ 10（session）。
-
-## 四、真机 harness 回归修复（2026-10-17）
-
-用户让 App 里的 agent 跑了一轮 harness 深度测试（报告在设备 `/storage/emulated/0/1/App/harness-probe-report.md`），
-逐条与 dsh 参考实现比对：**先判定「是不是 dsh 本来就这样」，再决定改不改** —— 13 条里 6 条是 dsh 的既有行为，不动。
-
-修掉的：
-
-- **P0 `job_kill` 后 PTC 程序必崩（`control channel ended`）**：杀进程树的根 pid 来自子 shell 写的标记文件；spawn 后立刻 kill（或进程已退出、标记已被删）时读到空串，旧实现把 `-1` 交给 `Os.kill` —— kill(2) 的 `-1` 是「本 uid 所有进程」的广播，一次 SIGTERM 把 `:ptc` 运行时进程杀掉。修：`killOrder` 对非法根 pid 返回空表、杀树前最多等 250ms 让标记落地、否则只杀直接子进程（`RuntimeDecisionsTest` 钉住）。
-- **P1 write/edit 大文件「先落盘后报错」**：4 MiB 值上限在工具执行**之后**才判，而 value 带完整 before/after。修：回显按 256 KiB 截断（字符边界 + 标记 + `beforeBytes`/`afterBytes`），落盘始终完整；4 MiB 上限只留给只读工具。
-- **P2 read 行数**：改用 dsh 的切行口径（只认 `\n`、剥行尾 `\r`、末尾残段非空才计行）——`a\nb\n` 是 2 行、空文件 0 行。
-- **P3 文案**：glob/grep 失败按 dsh 三种形状（`<tool> pattern rejected by ripgrep` / `search failed (exit N)` / `could not start its search command`）；workdir 是文件时报 `not a directory`。
-- **P3 value.path 口径**：read/write/edit/read_image 的结构化 `path` 改成执行世界绝对路径（dsh 口径），信封正文仍用相对路径（界面卡片不变）；glob/grep 仍相对。
-- **P3 spill 目录回收**：`$TMPDIR` 每进程一个 `adsh-subprocess-*`，安卓不会自动清；`Spill.sweepStale` 启动时回收超过 24h 的（3 条用例）。
-- **P3 PTC 绑定**：`bindService` 直接返回 false 时立刻按 worker-exit 报告，不再白等 5s 报「绑定超时」。
-
-判定为 dsh 既有行为 / 有意偏离、**不修**：
-
-- `read_image` 把副本写进用户工作区：**有意** —— ADSH 的附件都随会话存在 `<工作区>/.adsh/attachments/<会话 id>/`（导出/删除/显示同一套）；dsh 存 `$DSH_HOME/attachments`（用户口径：不修）。
-- glob 含 `/` 的 pattern 锚在搜索根：dsh 原样把 pattern 交给 rg，同一行为；工具说明里已写「include a separator to anchor the depth」。
-- bash 截断只留尾部、标记加在末尾：dsh 同款（errors and final results cluster at the end）。
-- `signal` 恒 null：Android 的 Process API 不暴露 wait status（dsh 从 Node 的 exit 事件拿）；被信号终止体现为 exit code 128+n。
-- 非法 UTF-8：bash 静默替换 U+FFFD、read/edit 严格报错 —— dsh 的两条路径本来就不一致（read 用 `TextDecoder(..., fatal)`）。
-- job_kill 对 stopping 任务再 kill 仍回 `cancellation-requested`：dsh 的 kill 也返回「请求是否被接受」，不是状态查询。
-
-真机验证（debug 包）：一轮 agent 程序 5 个 `run_code` 全部正常结束、**0 次 worker-exit**；job_kill 后读 stopping 与终态 killed 都不再崩；2.97 MB 文件 edit 成功返回并带截断标记；末行换行的 5 行文件 `totalLines=5`（与 `wc -l` 一致）。
-
-## 五、真机修复：Activity 多实例（2026-10-16）
-
-真机现象（用户复现）：agent 干活时切后台、灵动岛挂着，agent 提问 → 切回来答完，主界面像卡住了 —— 输入框的
-方块（停止）变回**灰色发送**，正文停在那一刻，agent 跑完正文才「蹦」出来。
-
-根因：`MainActivity` 是 `standard`。桌面图标等 `NEW_TASK` 启动会给已在后台的同一个 App **再开一份实例**；
-而会话宿主 `ChatViewModel` 是 `viewModel<ChatViewModel>()`（**Activity 作用域**），于是每份实例各有自己的宿主 ——
-用户看到的这份新实例 `sending=false`（按钮变灰）、正文只到开实例那一刻；agent 那一轮照旧在**旧实例**里跑完
-（消息落库正常，所以「蹦出来」时内容是全的）。`UserQuestionChannel` 是进程级单例，所以提问卡在新实例上照样作答。
-取证：`dumpsys activity activities` 里 Task #25626 **sz=3**（3 个 ActivityRecord / 3 个窗口，`topResumedActivity` 是最后那份）；
-`HOME` + `monkey -c android.intent.category.LAUNCHER` 稳定复现（sz 3 → 4）。附带风险：任一份实例退出时
-`onCleared` 会 `Jobs.cancelAll("app is shutting down")` —— 关掉一份副实例会掐掉真跑着那一轮的**后台任务**。
-数据面还有第二个后果：`Jobs.onNotice` 按 VM 各订阅一份，而 `turnsInFlight` 是实例私有的 —— 多实例时同一条结算
-通知会让两份实例**各给同一条会话开一轮**（两个 AgentLoop 抢同一个收件箱与库）。
-
-修法：`MainActivity` 声明 `android:launchMode="singleTask"`（硬约束 24）+ 回归 `MainActivityLaunchModeTest`；装机后同一套操作 sz 恒为 1。
-
-同族第二处（同日发现，用户点名改）：**返回键会 `finish()`** → `onCleared` → `Jobs.cancelAll` —— 等于「返回 = 掐掉正在跑的那一轮与它的
-后台任务」，而岛正是为「后台继续跑」才存在。改成 `OnBackPressedCallback` → `moveTaskToBack(true)`（硬约束 25）：返回键只退到后台，
-抽屉 / 浮层 / 菜单自己的返回键处理登记得更晚，仍然优先。
-
-## 六、规划与地基加固（2026-10，结构轮次）
-
-不是功能轮次：把「只有 Kotlin + Compose 的直觉」补成**有文档、有门禁、有边界**的工程。逐条结论：
-
-- **规划文档**：`AGENTS.md`（改动规矩）、`docs/ARCHITECTURE.md`（分层 / 能力缝 / 硬约束清单）、`docs/TECH-STACK.md`（选型与触发条件）、`docs/MODULES.md`（模块化方案）、`docs/ROADMAP.md`；`HANDOFF.md` 从 463 行拆成「当前状态 + 下一步」，历史搬到本文件、操作细节搬到 `docs/LESSONS.md`，文档行数由 `check-doc-budget.py` 卡住。
-- **解耦**：两个强连通分量归零 —— 界面环（island ↔ ui ↔ ui.panels）与核心环（8 个包）。后者靠 8 条回边下沉 `seam.*` 并立起 `PtcRunner`、`Shell` 两个端口。包循环与**依赖方向**从此由门禁盯（`check-package-cycles.py`：剥注释、认内联全限定名、Tarjan；分层规则在 `scripts/layering-rules.json`）。
-- **模块化**：切出 5 个 `:seam:*` + `:ui:kit`。`:seam:llm` / `:seam:exec` 能编成**纯 Kotlin JVM** —— 这是「缝没有 Android 依赖」的判据本身；边界用**故意违规探针**验证过（改坏 → 编译失败）。
-- **工具链**：build-logic 约定插件、Android Lint 进门禁、Robolectric + Compose ui-test + Turbine 测试底座、Spotless（只做行尾空白 / 末尾换行 / LF；**全仓 ktfmt 格式化被否决** —— 实测会给中文注释插 ASCII 空格）、`gradle-gate.ps1`（Gradle 串行锁）、`reset-lint-cache.ps1`。
-- **注释**：全仓「第 N 轮」归零（含 `.c/.h/.js/.pro/.sh`，含中文数字与区间写法）；口径改成**判据制**（不设硬性行数上限）。154 个改动文件的**代码在剥掉注释后逐字节相同**。
-- **组合根 + 门禁补口（2026-10 同日续）**：`:app` 的 `AppContainer`（`AdshApp.container`，懒建）成为有状态对象的**唯一创建点**，`ChatViewModel` 全部构造注入（`ChatViewModelFactory`）——「谁依赖谁」只写在构造函数上，界面不再自己 `new` 数据库 / LLM / 运行环境；设置页「获取模型」是唯一例外（一次性列模型）。注释门禁口径补上「第 60 几轮」这类**数字后夹「几 / 多」**的写法 —— 旧口径漏了它，仓里真有一处，自检 28 → 29。
-- **阶段 7 批 1：`:core:session` / `:core:jobs` 切成模块（2026-10 同日）**：包名与文件内容一个字节没动（6 个文件 `git mv`，逐字节比对过）；`:core:session` 因公开签名带 `seam.ptc.SubCall` 而只能是 Android library，`:core:jobs` 才能纯 JVM —— 判据是**依赖闭包全 JVM**，不是「自己有没有 android import」。可见性口径：只把需要 `internal` 的 2 个测试搬进模块（6 个 internal 一个都没放宽）。用例总数不变（`:app` 93/845 + `:core:jobs` 2/27 = 95/872），因此门禁口径改成「两处测试加起来」——**只跑 `:app` 会漏 27 条**。同一批还落地了**模块图门禁**：`scripts/check-module-graph.py`（`--write`/`--check`/`--selftest`，复用包循环脚本的词法器）+ `docs/module-graph.md`（180 文件 / 61 条包级边 / 0 环；`agent ↔ tools` 已是单向）。
-- **阶段 7 批 2：`:core:workspace` / `:core:llm` 切成模块（2026-10 同日）**：10 个文件 `git mv`（内容逐字节不变），接线 `api(:seam:exec)` / `api(:core:session)` 与 `implementation(:seam:llm)`。两处口径定案：① `internal` 只要是 `:app` 既定入口就**放宽为 public 并补契约 KDoc**（`collectText`、`watchNetwork`），不许悄悄放宽；② **库不许读自己的 `BuildConfig`** —— `LlmClient` 改成构造注入 `logDebug`（由组合根传 :app 的 `BuildConfig.DEBUG`），因为 `side` 变体对库的 matchingFallbacks 是 debug，库自己的 `DEBUG` 会打开日志、行为就不是零改动了。`:core:llm` 另加模块清单声明 `ACCESS_NETWORK_STATE`（lint 的 MissingPermission 按模块清单判，合并后仍只有一条）。用例分家后总数不变：`app` 91/831 + `:core:jobs` 2/27 + `:core:llm` 2/14 = **95 类 / 872 用例**。
-- **阶段 7 批 1 余项 + 批 3：`:core:phone`/`:core:ptc`/`:core:data`（2026-10 同日）**：47 个文件 `git mv`（index 里全部逐字节相同）。`:core:data` 这刀最重：14 个源文件 + 7 个测试 + **16 份 Room 导出 schema** 一起搬（数据库类 FQN 不变，schema 身份不变），`ksp { room.schemaLocation }` 跟着走，`:app` 那边删掉已无用的 KSP 插件 / `ksp {}` 块 / room-compiler，Room 在模块里改 `api`（`AdshDatabase` 的父类型要给消费者看得见）。可见性共放宽 6 个（`resumeConversationId`、`fallbackTitleOf`、`NEW_SESSION_TITLE`、`generateSessionTitleIfNeeded`、`webSearchKeyFollowsProvider`、`injectedName`）+ phone 6 个协议函数 + `PtcProcess`，每处都补了契约 KDoc。**切模块逼出一条真 bug**：`SessionExport.kt` 对 `message.reasoning` 的智能转换失效（别的模块的 `public val` 不许智能转换）→ 先取局部变量。用例总数不变：`app` 80/735 + `jobs` 2/27 + `phone` 1/12 + `llm` 2/14 + `ptc` 3/14 + `data` 7/70 = **95 类 / 872 用例**；`:app:lint` 的告警从 62 降到 38（Room/数据代码已经搬出 :app），五个核心模块 lint 全「No issues found」。
-- **阶段 7 批 4：`:core:tools`（2026-10 同日）**：30 个文件 `git mv`（index 里逐字节相同：15 源 + 15 测试），`:app` 侧测试从 80/735 降到 65/614，总数仍是 **95 类 / 872 用例**。api/implementation 按「类型是否出现在公开签名上」逐条定：api = `:seam:tool`/`:seam:ptc`/`:seam:exec`/`:core:workspace`/serialization/coroutines，implementation = `:core:data`/`:core:jobs`/`:seam:model`。第三次放宽 internal（共 20 个：llm 2 / data 6 / phone 6 / ptc 1 / tools 5），口径补了一条：**测试搬不动时（跨模块契约只能留在 :app 测）就把符号放宽并写明它是契约面** —— `GrepMatch`/`renderGlobPaths`/`renderGrep` 就是 `SearchWebCardTest` 钉「工具正文 ↔ UI 卡片」这一对契约用的。两次返工的教训：① 测试搬进模块要同时补 `testImplementation(libs.junit)`；② 扫 internal 的第一版正则漏了成员级（类内 `internal fun`）与 `suspend`，`ToolConcurrency.holdingNow()` 就是被漏掉的那个。
-- **阶段 7 批 5（收尾）：`:core:agent`（2026-10 同日）**：21 个文件 `git mv`（16 个逐字节相同；5 个差异全是批准过的可见性/注入改动），`:app` 侧降到 56 类 / 532 用例，总数仍是 **95 类 / 872 用例 0 失败**。依赖按公开签名逐条定：api = `:core:llm`/`:core:data`/`:core:tools`/`:core:workspace`/`:seam:model`/`:seam:tool`，implementation = `:core:session`/`:seam:ptc`/`:seam:exec`/`:seam:llm`/coroutines/serialization。**切模块照出一处真的反向依赖**：`AgentLoop.kt` 直接读 `com.adsh.app.BuildConfig.DEBUG`（core → :app）—— 处理同 `LlmClient`：`AgentLoop(..., logDebug)` 由组合根注入宿主值（不开库自己的 buildConfig，理由同 side 变体）。可见性再放宽 4 个（`estimateTokens`、`contextMessageTokens`、`titleNoThink`、`ThinkingWire`），共 24 个。**九个核心包到此全部成模块**，`:app` 只剩 `ui`/`island`/`runtime`/组合根。
-- **口径修正：Hilt 的触发条件（2026-10 收尾）**：原写「模块数 ≥8 或引入 WorkManager 时换 Hilt」。切完 9 个 `:core:*`（全仓 16 个 Gradle 工程）之后回头量：装配仍然只是一个 ~40 行的 `AppContainer` + 一个 `ChatViewModelFactory`，而 Hilt 的代价是**每个模块**都跑 KSP 与字节码转换 —— 「模块数」是个错代理。判据改成**装配点 >15 个 / 需要按作用域注入（Activity、Service、Worker）/ 引入 WorkManager**，TECH-STACK、ARCHITECTURE §五、MODULES §七 三处同时改（此前三处口径一致，但指的是错的那个量）。
-- **最有价值的踩坑**（详见 `docs/LESSONS.md` 新增三节）：**单元测试通过 ≠ 能出包** —— 模块化引入的变体匹配问题让 `assemble` 失败，而测试 / lint / spotless 全绿。
-## 七、逐轮结论（R213–R216）
-
-- **R213（本轮）的装机口径**：改动**只进了源码**，`dist/` 与 GitHub release 仍是 0.2.3 的旧制品；最终装机的是
-  `app/build/outputs/apk/release/app-release.apk`（**44,653,034 字节**，同包名同一把签名，`install -r` 直接覆盖，数据不丢）——
-  收尾那一轮（job 工具行照 `presentCall` 对齐 + 清掉拼进提示词的开发备注）也并进了这份 release：核对 `versionCode=15 versionName=0.2.3`、
-  `run-as` 被拒（非 debuggable）、MainActivity 起得来、`logcat -b crash` 空、截图确认工具行与长回答切块渲染正常。
-  真机结论（用户手指）：**快速上下滑动的「卡一下 / 回弹」明显好转**；工具详情卡滚到头之后**能带动会话继续滑**。
-  jobs 展开卡的观感等用户下一次有后台任务时再确认。门禁 861 → **867 用例**（新增 `AnswerChunksTest` 6 条）。
-- **R214（本轮）**：**只改注释与文档，行为面零改动** —— ① dsh 参考源换成 master 全量源码树（见上）；② 16 处
-  `spec-log §x` / `[session]:行号` 引用改指新源码现址（`packages/core/session`、`packages/core/agent-loop`、
-  `packages/core/tools/src/ptc.ts`、`packages/llm/llm/src/assembler.ts`）；③ 提示词复查：把 `PromptAssembler.kt` /
-  `ToolSdk.kt` 的**全部字符串字面量**抽出来做词法扫描 → 模型可见文本里**没有作者注**（R213 那处是唯一一处）；
-  拆句查重复 → **无逐字重复**（命中的 3 组是互斥分支或两个工具的同名参数说明）。装机：**debug 包**（用户点名，
-  `app/build/outputs/apk/debug/app-debug.apk` 64,641,269 字节 → 覆盖了 R213 装的那份 release，数据不动）：
-  `versionName=0.2.3-debug`、MainActivity 起得来、`logcat -b crash` 空、截图正常；门禁 **868 用例全过**。
-  ④ 第 4 点核实（用户截图里那位 agent 的原话「程序里我看不到图，图片是跑完之后作为附件回来的，所以一次视觉迭代固定两轮」）：
-  **成立，且与最新 dsh 机制完全相同** —— PTC 子调用返回的图片走 `deferContext`，作为一条 user 消息紧跟那次 run 的
-  tool 结果之后（`packages/core/tools/src/ptc.ts`，dsh 自己的 `run_code` SDK 文案也是这么写的），所以「产出图的那一轮
-  看不到图、必须等下一轮」两边都成立，不是 ADSH 的缺陷 → 用户口径「一样的话那就不动了」，代码未动。
-  **顺带核实**：那位 agent 提的优化方向「希望一次提交多张图，而不是每张一次 read_image」**现在就已经支持** ——
-  一个程序里 `read_image` 调 N 次，N 张图会在同一条 deferred user 消息里一起回来（`AgentLoop.kt` 从子调用轨迹
-  `subCalls.flatMap { it.images }` 收图片；`SubCallTrimmer` 的 60 条上限只管**落库的轨迹**，不碰图片）；
-  每张的上限仍是 dsh 那两个（640k 像素 / 1 MiB）。
-- **R215（本轮）**：**滚动卡顿对齐 dsh + 三处修复（只改源码）**。用户口径：① 滚到**两轮交界处**总是卡；
-  ② 展开 run-code 详情也有渲染代价；③ 思考**收起时**的滚动展示落后 dsh（追问：滚动时那一行会闪 / 跳 / 高度变一下）。
-  **dsh 侧的事实**（master 源码，`packages/client/ui-chat`）：会话**从不做 DOM 虚拟化**（`ChatView.tsx` 全量渲染），
-  靠**宿主分页**（`api/session-controller` 的 `PAGE_MESSAGES=50 / maxMessages=500 / turnWindow`）+ **每行一把 key 的脏订阅**
-  （`chat-snapshot-builder.publish()` 只推脏 key）+ memo + 稳定 key 扛长会话；两轮之间**没有任何分割元素**（只有 `margin-top`
-  变量与零高度占位），过程行固定 33px（边框含在盒内）、动作行 28px、hover 只改 opacity；**收起态思考行 = 24px 定高 +
-  `contain: size layout`**，切换只影响展开方向；动画一律关在小盒子里（全仓 `will-change` 2 处、`contain` 4 处；没有
-  `content-visibility` / `translateZ`）。**结论：dsh 滚动时不需要重建任何东西；ADSH 的 LazyColumn 每滚回一行都要重新组合 +
-  重新测量文本**，交界处一次进出四五种行 ⇒ 手感最差。
-  **改动**：① LazyColumn 补 **`contentType`**（`ChatDecisions.chatItemType`，11 类）—— 之前所有行共用一个类型，交界处那几种行
-  互相顶替槽位、整棵子树重建；② 运行扫光**只在绘制相位读动画值**（`RunningSweep` / `DshStateDot`）—— 之前每帧重组整行，
-  dsh 的同类动画只动合成层；③ 扫光相位**只由墙钟算**（`sweepPhaseAt`），修掉「行滚出视口再回来时动画从 0 重来、偏移已按
-  墙钟走远」的**跳相**（用户报的「滚动时那一行会闪 / 跳」）；④ 核对展开体上限，与 dsh 一致（代码块 260dp / ioCard 150 /
-  终端 224 / 系统提示词 141，都带内部滚动）。
-  **测量与判据**：合成的 `input swipe` **复现不了**用户手指的卡顿（慢速连续拖 5 次：1742 帧 / 0 Janky / p99 22ms；快速 fling：
-  99 分位 20ms / 2 Janky）⇒ 手感仍以用户手指为准；`parseMarkdown` 基准（JVM 单测）**320 字 62µs / 4KB 84µs** —— 慢的不是
-  Markdown 解析，**别再去缓存它**；本机 atrace 文本 trace 会丢事件（B/E 栈失衡 ⇒ 帧时长不可信），别拿它当验收。
-  装机：debug 包 66,164,054 字节（`versionName=0.2.3-debug`）。
-- **R216（本轮）**：**清死代码 + 构建 release 装机**。`scripts/deadcode.py` 两档阈值（默认 / `--min-confidence 20`）都是 **0 条**，
-  baseline 里那 5 条豁免逐条复核过（都是「测试口」且理由成立，不动）；**真正翻出来的是 3 处没用的 import**
-  （`ChatDecisions.kt` 的 `getValue`/`setValue`、`PtcChannelTest.kt` 的 `assertFalse`）—— deadcode.py 的判据只覆盖
-  **声明**，import 不在里面，所以顺手把这个洞补上：新增 **`scripts/find-unused-imports.py`**（复用 `kt_source` ——
-  注释与字符串正文都抹掉再搜名字，`$name` 模板引用保留；getValue/setValue/invoke/plus 这类**运算符与委托名跳过**，
-  它们的 import 是给 `by` 和运算符糖提供语义的），带 `--fail-on-found` 可当门禁，自带 6 条自检（含「只在字符串/
-  注释里出现 = 没用」这两条反例）。**注意别再写 `scripts/remove-unused-imports.py`**（旧笔记里的这个名字在仓库里不存在）。
-  装机：**release 包** `app/build/outputs/apk/release/app-release.apk` = **44,652,138 字节**（`versionCode=15` /
-  `versionName=0.2.3`，`run-as` 被拒 = 非 debuggable，签名仍是那把 debug 钥匙），覆盖安装、数据没动；冒烟：冷启动落在
-  新会话空态 → 抽屉里三个会话与两个工作区都在（`课设内容与要求（分支）/（2 小时）` 等），`logcat -b crash` 空。
-  门禁 868 用例全过；`dist/` 与 GitHub release 仍未动。
-
-## 八、阶段索引
-
-
-原来每轮的详细段落已全部删除，这里**每轮只留结论与判据**；更早的五段历史（项目自己的轮次计数）：① 界面照进 Compose；
-② 内嵌 Termux 与执行层（**方案 A：包名 `com.termux`、targetSdk 钉 28** ＋ LD_PRELOAD 写围栏 shim）；③ 提示词与工具逐字对 dsh
-（系统提示词**纯静态化**，动态走 `context` 快照）；④ 真机实测（`ctx.jobs` 整链、注入行改**收件箱认领**）；⑤ 收尾（PTC 展示重写、
-**QuickJS 栈 256 KB**、自动滚动重写、终端显示根因，出 0.1.9）。
-
-### 一、第二阶段熵减（R0–R99）
-
-目标：**不加新功能**，只做等价改写；验收看行为不变量（编译 + 单测 + 真机），不看减了多少行。
-
-| 轮次 | 结论 / 判据 |
-|---|---|
-| R0 | 恢复单测门禁 + 立熵基线（CPD）｜368 绿 |
-| R1 | 83 处无涟漪点击 → `Modifier.dshClickable` |
-| R2 | 图标 5 份私有工厂 → `DshIconFactory` |
-| R3 | 133 处 `spacedBy(N.dp)` → `DshSpacing` |
-| R4 | 审批 / 计划卡共用壳 `DshWarnCard` |
-| R5 | 删 `ChatEvent.Finished` 整条链 |
-| R6 | 抽屉两处 `SessionRow` → 局部 composable |
-| R7/R7b | 图标工厂残留并入 `dshIcon` + `check-icon-structure.py` |
-| R8 | 381 个裸 dp → `DshSpacing` |
-| R9 | 设置页三张插件卡拆开 |
-| R10 | 拆 `TerminalPanel`（4 提交） |
-| R11 | `runTurnBody` 判定提纯 → `TurnDecisions.kt`（8 纯函数） |
-| R12 | 浮层互斥 + dismissed → `ChatOverlays.kt` |
-| R13 | 切缝 ChatScreen 六刀 + `AutoScroll.kt` |
-| R14 | ChatScreen 主函数 state holder |
-| R15 | `DshComposer` 弹层菜单 → `ComposerMenus.kt` |
-| R16 | 抽屉整簇 → `Drawer.kt` |
-| R17 | 抽屉主体拆四小节 |
-| R18 | 问题卡拆三段 |
-| R19 | 命令字典 → `Palette.sessionPaletteCommands` |
-| R20 | items 装配 + 附件选择器提纯 |
-| R21 | AppRoot 画布 → `AppLayerStack` |
-| R22 | 三处流式收文本 → `LlmTextCollect.collectText` |
-| R23 | 先织网：三个窄端口 + 黄金用例 |
-| R24 | runTurnBody 一刀：请求装配 / 落库 / 日志 |
-| R25 | 二刀：记账 + 采样 → `TurnMeter.kt` |
-| R26 | 三刀：工具派发 → `runToolCalls` + `ToolCallGuard.kt` |
-| R27 | 工具世界收成端口 `TurnTools.kt` |
-| R28 | `buildMessages` 拆四函数｜150 → 43 |
-| R29 | 请求装配整簇 → `RequestMessages.kt` |
-| R30 | `Attachments.kt` 三分 |
-| R31 | `startTurn` 一刀：事件 → 状态纯判定 |
-| R32 | 事件循环 / 收尾各起名字 |
-| R33 | 开轮输入 / 工具上下文提纯，startTurn 收官 |
-| R34 | 多重集比对固化成 `scripts/check-move.py` |
-| R35 | 删死代码 + 默认值兜底（漏接线变编译错误） |
-| R36 | 「自己发的消息」判定六处 → `ChatDecisions.kt` |
-| R37 | 触发菜单可见性算式 → `paletteViewOf` |
-| R40 | 死代码清扫（未用 import / 死参数 / 过期注释） |
-| R41 | 粘滞 Ctrl 判定 → `draftOutcome` |
-| R42 | 切会话改成「内容就位再收起」 |
-| R43 | 换模块设置页：容量字段 → `SettingsModels.kt` |
-| R44 | 添加卡就绪算式 → `providerFormState` |
-| R45 | 编辑卡「保存」转移提纯｜变异 3 处 |
-| R46 | 提供方清单增 / 存 / 删提纯 |
-| R47 | 按 dsh 修「空白 ID 模型行」 |
-| R48 | `scripts/dsh-extract.py` 从 `app.asar` 取原实现 |
-| R49 | 拉模型弹窗候选 / 过滤 / 全选 / 采纳提纯 |
-| R50 | 修草稿生命周期 bug（取消后空行残留） |
-| R51 | 模型行内编辑 → `modelEdited` |
-| R52 | 设置页切缝一：模型区整簇 |
-| R54 | 切缝二：功能区整簇｜顺带修脚本写 CRLF |
-| R55 | 切缝三：共用小件 → `SettingsParts.kt` |
-| R56 | core/data 一：`claimInjected` 的 name 改写 |
-| R57 | 会话搜索纯逻辑 → `SessionSearch.kt` |
-| R58 | 落库标题判定 → `SessionTitle.kt` |
-| R59 | 老配置 → 提供方清单迁移判定（挖到共享密钥 bug） |
-| R60 | `modelAcceptsImages` 三岔 → `acceptsImagesFrom` |
-| R61 | 按 dsh 修迁移 bug：凭据按提供方路由各一份 |
-| R62 | 网页搜索 prefs 值判定 → `WebSearchSettings.kt` |
-| R63 | 深度死代码清理｜扫描器全 0 候选 |
-| T0 | `/system/bin` 进 bash PATH（零权限只读认知层） |
-| T1 | phone 通道（`$PREFIX/bin/phone` + 轮询） |
-| T1-熵减 | 假字段 / 协议提纯 |
-| R64 | runtime/termux 一：`BootstrapInstaller` → `BootstrapPlan` |
-| R65 | 二：环境装配 → `shellEnvironment(ShellFacts)` |
-| R66 | 三：围栏 / 杀树顺序 / `/proc` 解析 → `RuntimeDecisions.kt` |
-| R67 | runtime/termux 收官 |
-| R68 | core/tools 一：`renderBash` → `BashRender.kt` |
-| R69 | 二：字符集判定提纯（整页乱码防线） |
-| R70 | 审计 §8.3 / §8.4 收官 |
-| R71 | core/jobs 一：`OutputRing` + `RingChunk` 提纯 |
-| R72 | 二：栅栏 + 结算 detail → `JobRules.kt` |
-| R73 | 三：注册表行为用例（不改生产代码） |
-| R74 | core/jobs 收官 + 结论文档 |
-| R75 | 自查 R64–R74：删三处「为可测多出来的层」 |
-| R76 | 深度死代码清理（六角度） |
-| R77 | 修实测报告第 4 / 8 / 9 点（含 `spawn` cwd） |
-| R78 | run-as 深度测终端 / bash |
-| R79 | 修「标题没总结」= 标题调用没关思考 |
-| R83 | 抽屉动画退回定长缓动（弹簧被否） |
-| R84 | 抽屉最终口径：**不要缓动**（线性） |
-| R85 | 抽屉自己的时长 170ms（原与覆盖页共用 220） |
-| R86 | 抽屉 170 → 130ms |
-| R87 | 抽屉 130 → 112ms；模型重连照 dsh |
-| R88 | 抽屉 112 → 120ms；灵动岛 |
-| R89 | 保活没生效的真因 = 自绘悬浮窗外层崩溃 |
-| R90 | 岛样式改走 MIUI 焦点通知 |
-| R91 | 焦点通知真机不画 → 撤回媒体路线 |
-| R92 | 切会话「停」的真根因：`stashLiveRun()` 用屏幕上的会话 id |
-| R93 | 四点熵减 + 死代码扫描器深度优化 |
-| R94 | `Hairline` 42 处替换 + run-as 深度测 bash |
-| R95 | 后台任务「一直等」真因在 `run_code` |
-| R96 | 按 dsh 进程隔离模型重做 PTC 运行时（**到点杀进程**） |
-
-> 原表缺 R38/39/53/80–82/97–99 的独立行；R104 与 R106–R191 也没有独立行（过程记录在更早的历史压平里被删）。
-
-### 二、之后的功能与实测修复（R100–R213）
-
-| 轮次 | 结论 / 判据 |
-|---|---|
-| R100 | 发布 0.2.1 + 整理仓库 / 工作区｜冒烟 `2 + 3` → `5` |
-| R101 | UI 九条 + 熵减｜弹窗夹取照 dsh |
-| R102 | 细节四条 + 版本 0.2.2 |
-| R103 | 细节两条（新会话不占位） |
-| R105 | 快照 → 试做自绘灵动岛 → 被否回滚 → 改启动行为 |
-| R192 | 丢自绘岛 + 清空会话 + 查 `ask_user` |
-| R194 | 新会话首轮慢的定位：标题调用没关思考 |
-| R195 | 标题生成默认关闭思考（按路由族给） |
-| R196 | 只有 DeepSeek 那条路由发 `thinking=disabled` |
-| R197 | 工具输出打爆 app 的闪退 → 加工具侧上限 |
-| R198 | 发布 0.2.2 + 整理工作区（压平 + `push-via-api.py`） |
-| R199 | UI 三条 + 细节两条（抽屉照 0.1.9 的 spring） |
-| R200 | 窗口三条 + 细节两条（胶囊可直接切换） |
-| R201 | 卡片折行 + 展示细节向 dsh 看齐 |
-| R202 | 修「一轮结束后子调用只剩最后一条」= 累积 + 同步列表 |
-| R203 | 深度清理死代码 + 构建 release 装机｜44,635,730 字节 / code 14 |
-| R204 | 一步里第二个 run_code 必失败 → 真机定位到 MIUI 拒绝重启 `:ptc` 服务｜解绑先于杀 + 等进程消失；标题换字去动画 |
-| R205 | 展示与标题都照 dsh 回正｜撤回 run_code 行的「流式详情」；标题改回「首条消息写兜底 + 主请求之后跑小模型」 |
-| R206 | 卡片与文字照 dsh 的令牌回正｜菜单面 = `--dsw-specific-menu`（半透明 + backdrop blur）的合成色 + .5px 描边 + `--dsw-elevation-prominent`；行内代码改圆角底框、紧凑档列表标记改 inherit；`log` 别名 |
-| R207 | 「应用缓存很少」核查 = 正常（磁盘缓存只有 apt partial，热缓存全在内存）；清掉残留的 `\$TMPDIR` 目录；版本 0.2.3 / code 15，release 装机 |
-| R208 | 发版 0.2.3：本地压成单提交快照（旧 tag 全清）、API 推源码、`gh release create v0.2.3-20261011`、README 链接更新；整理工作区 |
-| R209 | 指令栏改**同层布局**（键盘联动不再卡）｜自建 TextToolbar 拦掉「只有全选」的残留栏｜工具详情卡片圆角照 dsh 回到 16（12 是 radius-md）｜预览补齐 .docx/.xlsx/.pptx/.csv/.tsv（OOXML 就地解析）｜装 debug 包 |
-| R210 | 指令栏三处收尾｜「+」菜单改成一次性（草稿一动就作废，删回空不再自己回来）｜切会话清草稿（dsh 的输入框状态挂在会话上）｜指令栏改成**不占布局**（报 0 高、画到输入框上方）：它占布局时会把输入卡片自己的高度吃光，键盘弹起后按钮行与下方胶囊被压成 0 高消失｜Office 预览改**按内容认格式** + Word 表格照版面还原（tblGrid 列宽比例 / gridSpan+vMerge 合并 / jc+sz+b / 格子里的图）｜装 debug 包 |
-| R211 | 当天改动的一次熵减（不改行为）｜OfficePreview.kt 拆成 **OfficeRead.kt（就地解析）/ OfficePreview.kt（渲染）**｜图片解码收口：字节那一路进 ImageDecode.kt，五处手写的 produceState+IO+缓存 收成 rememberImage / rememberImageBytes｜指令面板的「不占布局」改由组件自带（调用方漏传就重犯旧 bug）｜网格计划用具名 PlacedCell（不再 Triple）｜面板最小高度 160→96dp（它现在是同层卡片，下限大过可用空间就会顶出屏幕上沿）｜清掉过时注释与失效 import｜**菜单卡圆角统一到 16**（DshMenuCard 默认 12→16 = --dsw-radius-lg，12 处调用点跟着走；用户口径「浮层圆角统一为 dsh 的 16」）｜死代码扫描 0 条（阈值 40 与放宽到 20 都 0）后**构建 release 装机** |
-| R212 | 快照 + 整理：`git add -A && git commit`（不发版、不动远端）；清 `app/build/`（640MB）/`build/`/`app/.cxx/`/`.kotlin/`/`scripts/__pycache__/` 与 `D:\tmp\adsh-recon`；HANDOFF 收束（指令栏那条经验按现在的实现重写、菜单圆角补上 16 的口径、用例数 858→861、解析器位置改指 OfficeRead.kt、轮次行排序） |
-| R213 | 打磨三件（**只改源码、未发版**）｜① 长回答**切块**：一整条回答原来是一个 LazyColumn item，它进视口那一帧要一次性组合 + 测量 + 首绘上百个文本节点 —— 真机 atrace 实测 `Compose:recompose` 18ms + 文本测量 ~30ms + `AndroidOwner:draw` 45ms ≈ **95ms**（60Hz 预算 16.7ms），表现为「滑到正文底部卡一下、位置瞬移 400~500px」；`answerChunks` 只在「上下都是普通段落」的空行上切、前缀稳定，`hasPreceding`/`hasFollowing` 保住切点两侧的边距 ⇒ 渲染与整段一致；② **行内代码底框**改「按布局缓存 + 一行只查两端字符框」：`drawBehind` 每次重录制都会跑，逐字符 `getBoundingBox` 一屏要 ~100ms（关掉它、同一协议下 5 次停顿→0 次）；③ jobs 展开的输出区换成 dsh 的 **TerminalBlock 任务面板变体**（12px 沟槽、不画状态点与收尾胶囊、输出上限 288px、复制命令行、无输出写「（无输出）」）；④ 取消 **ScrollEdgeEater**（六处用法 + 连接本体）：卡片滚到头之后恢复 dsh / 浏览器的滚动链，用户第 213 轮点名；⑤ 对话里的 job 工具行照 dsh 的 `presentCall` 对齐：`job_list` / `job_output` / `job_kill` 各有标题（列出后台任务 / 读取任务输出 / 停止后台任务），**摘要与展开体只取 `job_id`**（不铺参数 JSON 原文；`job_list` 没有 rawInput ⇒ 没有输入段）；⑥ 清掉拼进提示词的一句开发备注（env 快照里混进过「(第 186 轮删掉…：dsh 的 present 不做这个判定)」，用户在「上下文注入」卡片里直接看到了）—— 复查 `PromptAssembler.kt` / `ToolSdk.kt` 的字符串字面量：中文 0 处 |
-| R214 | 参考源更新 + 提示词复查（**只改源码、未发版**）｜① dsh 参考源码换成 GitHub master 的**全量源码树**（`gh api repos/deepseek-ai/deepseek-harness/tarball/master` → 34MB tar，commit 5719020 / 2026-10-14，16122 个文件 / 160MB，仍在 `D:\tmpdsh-work`）：旧的 `gh-src` / `src` 两套零散拷贝与手写规格 `spec-ui.md` / `spec-log.md` 按用户口径**整目录删掉重建**；源码里 16 处 `spec-log §x` / `[session]:行号` 引用改指新源码现址（`packages/core/session`、`packages/core/agent-loop`、`packages/core/tools/src/ptc.ts`、`packages/llm/llm/src/assembler.ts`），一个悬空引用都不留｜② 提示词复查：把 `PromptAssembler.kt` / `ToolSdk.kt` 的**全部字符串字面量**抽出来做词法扫描（CJK / 「第 N 轮」/ `dsh` / 旧实现 / TODO 这类开发者标记）→ 模型可见文本里**没有作者注**（R213 那句是唯一一处，已清）；拆句查重复 → **无逐字重复**（命中 3 组分别是互斥分支、与两个工具的同名参数说明）｜③ 第 4 点「一次视觉迭代固定两轮」核实**成立、且与最新 dsh 机制完全相同**（PTC 子调用返回的图片走 `deferContext`，作为一条 user 消息紧跟那次 run 的 tool 结果之后，模型下一步看到；dsh 自己的 SDK 文案也是这么写的）→ 用户口径「一样的话那就不动了」，不改代码 |
-| R215 | 滚动卡顿对齐 dsh + 三处修复（**只改源码**）｜查出 dsh 的会话**不做 DOM 虚拟化**（全量渲染 + 宿主分页 + 每行脏订阅 + memo），两轮之间**没有分割元素**（只有 margin-top 与零高度占位），收起态思考行 **24px 定高 + `contain: size layout`**，动画只关在小盒子里 ⇒ ADSH 的 LazyColumn「滚回即重建」是结构性差异；改动：① `contentType`（11 类）② 扫光/状态点改**只在绘制相位读动画值** ③ 扫光相位改**纯墙钟**（修行滚出再回来时的跳相）④ 核对展开体上限与 dsh 一致（260/150/224/141）｜`parseMarkdown` 基准 62µs/320 字 ⇒ 不是解析的锅；合成 swipe 复现不了手指卡顿（p99 20~22ms） |
-| R216 | 清死代码 + release 装机（**只改源码**）｜`deadcode.py` 两档阈值 0 条、baseline 5 条豁免逐条复核；补掉它管不到的那一类：**未使用 import** 3 处（`ChatDecisions` 的 getValue/setValue、`PtcChannelTest` 的 assertFalse），并新增 `scripts/find-unused-imports.py`（复用 kt_source，运算符/委托名跳过，自带自检，可 `--fail-on-found`）｜release 44,652,138 字节装机、抽屉里会话与工作区齐全、crash 缓冲空 |
-| R220 | 移除老式 .doc 浏览 + 清理死代码（**只改源码**）｜① 按用户口径「docx 没问题了，.doc 浏览先去掉」：删掉 WordLegacy.kt（CFB / PAPX / CHPX / SEPX / TDefTable 全量解析）、WordLegacyTest 与 preview.doc 夹具（THIRD_PARTY_NOTICES 同步删行）；OfficePreview 去掉 LegacyWordPreview 与 isLegacyWord 分支，.doc / .xls / .ppt 统一落「不支持」屏（说明需要 Office 引擎 + 「用其他应用打开」）。② 死代码清理：WordBody 去掉只为老式 .doc 存在的 notice / openWithPath 参数与顶部横幅；删掉解析了却从未使用的 WordPage.heightTw 与 WordCell.widthTw；WordTable.widthTw（w:tblW）改为表格宽度真值（之前只解析不用，现在参与「自然宽度」判断）；删掉失效 import。③ 新回归 DocUnsupportedTest：.doc 走「不支持」屏（说明里点明 .doc/.xls/.ppt 需要 Office 引擎）+ 可用其他应用打开。④ 门禁：全模块测试 / lint / assembleDebug / spotless + Python 七条全绿，deadcode 0 条、未使用 import 0 处 |
-| R219 | 文件浏览：Word 预览对齐 PDF（**只改源码**）｜① **A4 版心缩放**：.docx 读 w:sectPr 的页宽 / 页高 / 页边距（老式 .doc 读 SEPX），预览按页宽缩到屏幕宽 —— 字号、缩进、表格列宽、图片尺寸都乘同一系数，横版工艺卡也不再左右滚动；白纸底 + 页边距，与 PDF 预览同比例。② **OMML 公式**：新增 WordMath.kt（m:oMath / m:oMathPara → LaTeX：分式 / 上下标 / 根号 / 定界符 / 大运算符 / 矩阵 / 等式组 / 直立体文字；认不出的结构按子节点拍平），渲染走聊天同一套 LatexCore（位图缓存），行内公式用 appendInlineContent 占位、独立公式居中成块；w:vertAlign 上下标（x² / H₂O）按 65% 字号 + 基线抬降画。③ **老式 .doc 全量升级**：WordLegacy.kt 从「只提正文」改成读 PAPX（对齐 / 缩进 / 段距 / 行距 / fInTable+fTtp）、CHPX（粗 / 斜 / 下划线 / 字号 / 上下标 / 颜色）、SEPX（页宽页边距）、TDefTable（列宽），表格结构与列宽都还原；兼容 WPS 系「记录前多 1 字节 0x00」的 PAPX 变体；表格按细线画。④ 用例：WordMathTest（OMML 七种结构）+ WordReadTest 加页面设置 / 公式内联 / vertAlign。真机复验：pWPS 的 4 个线能量分式、工艺卡（横版 A4）、老式 .doc（任务书 / 大纲 / 日进度表）都不再横滚。已知边界：老式 .doc 的合并格（TC 标志）与图片 / OLE 对象不还原，模板类表单可能出现空行；⑤ 表格「一行格子多于列数」时按列数截断（真机在模板文档上踩到 ArrayIndexOutOfBounds，measure 阶段列下标越界），回归见 WordTableUiTest |
-| R218 | 文件浏览热修（**只改源码**）｜① 真机闪退定位：logcat 里 `IllegalStateException: measure() may not be called multiple times on the same Measurable` —— 表格为了算行高把同一格量了两遍（Compose 一次测量只许量一次，LazyColumn 预取也会触发）。改为**单次测量**：格子只按列宽量内容，行高 / 纵向对齐 / 底纹 / 边框由 `WordTableGeometry` 在测量阶段算好、父层 draw 阶段画（`drawBehind` + 纯数据几何，与 ChatTranscript 的 rowTops 同一套做法）。② 顺带修两个「黑变透明」：`wordColor` 存的是 0xRRGGBB，边框 / 正文字色直接 `Color(it)` 会把 `000000` 当 alpha=0 → 黑边框、黑字全看不见；渲染处补 `0xFF000000 or it`。③ 解析兜底：字号夹 4..96 磅、缩进 / 间距 / 行高 / 列宽 / 列数全部夹进可用范围（生成器写坏的巨大 twip 会把 Compose 约束撑爆）；docDefaults 的段落默认值（pPrDefault）也纳入继承链。④ 新回归：`WordTableUiTest`（Robolectric + Compose：表格放进 LazyColumn，让预取真的跑到）+ `ui/blocks` 的 `robolectric.properties`（sdk=34，不设会按高版本 SDK 起 Robolectric 在 ApplicationSharedMemory 崩）。真机用用户的实际 .docx 复验：工艺卡（15 列 / 22 行 / 纵横向合并 / tcBorders / 内嵌示意图）与评定报告（8 表 469 格）都能打开、滚动不崩 |
-
-| R217 | 文件浏览：Word 渲染 + 老式 .doc（**只改源码**）｜① .docx 解析改成**按 OOXML 摊平继承链**（docDefaults → 段落样式 basedOn → 直接格式）：字号取文档里的真值（w:sz 半磅 → dp）、run 的粗/斜/下划线/删除线/颜色、段落对齐 / 左右缩进 / 首行 / 悬挂缩进 / 段前段后 / 行距、标题档（样式名或 w:outlineLvl）、列表前缀与编号级别缩进 —— 不再一律 14sp + 24sp 行高。② 表格改成**按版面真值画**：列宽取 w:tblGrid（窄表等比撑满、宽表横滚）、w:gridSpan 横向合并、w:vMerge 纵向合并由起始格按行高撑满（自定义 Layout 两遍测量）、w:tblBorders / w:tcBorders 只画文档真有的线（样式名带 Grid 兜底）、w:shd 底纹、w:vAlign、w:tblCellMar 内边距、w:trHeight 行高。③ 老式二进制 .doc：新增 CFB（OLE 复合文档）+ FIB 片段表解析（`WordLegacy.kt`），提取正文（段落 / 单元格制表符 / 域代码跳过），顶部一句口径说明 + 「用其他应用打开」。④ 预览读不了的格式（老式 .xls/.ppt、未知类型）给「用其他应用打开」：FileProvider 受控 URI + ACTION_VIEW（安卓 7 起的标准出路，`file://` 会抛 FileUriExposedException）。⑤ 新用例：`WordReadTest`（现造最小 .docx：样式链 / run 格式 / 表格结构 / 编号）+ `WordLegacyTest`（dsh 的 MIT `preview.doc` 夹具）；`THIRD_PARTY_NOTICES` 记夹具来源 |
-
+只保留**最近 8 轮**变更；更早历史不再保留（源码历史见 git 快照）。经验与坑在 [docs/LESSONS.md](docs/LESSONS.md)，当前状态看 [HANDOFF.md](HANDOFF.md)、稳定事实看 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
+## 0.2.6（2026-10-22 发布，versionCode 25）
+
+run-as 深度测试 **只测 bash**（37 用例；原始 logcat 摘要在 `.tmp/device-reports/`），非 bash 的 harness 报告先按 dsh 0.2.1-rc.1 逐条复核再决定修不修。
+
+- **release**：`:app:assembleRelease`（R8 minify + shrink）→ `dist/ADSH-0.2.6-release.apk`（debug 签名、同包名可覆盖安装）→ 装机复验（versionName 0.2.6 / versionCode 25、启动无 crash）；GitHub 已推送并发布 `v0.2.6-20261022`。
+- **死代码清理**：删除无任何 UI/调用方的「重命名工作区」整链（`ChatViewModel.renameWorkspace` → `ConversationRepository.renameWorkspace` → `WorkspaceDao.rename`；R8 `-printusage` 证实三者 release 均不可达）；`SettingsStore.fetchedModels` 与 `ChatViewModel.refreshWorkspaceInfo` 只在本文件使用，收为 private。复跑 `deadcode.py` / `find-unused-imports.py` / `find-unused-resources.py` / `find-unused-c-symbols.py` / `find-unused-catalog-entries.py` 全 0；R8 usage 里其余整类删除均为内联常量或测试口（如 `sendWithTools`、`holdingNow`），非死代码。
+
+- **bash 测试结论**（真机，run-as + debug 探针驱动真 `BashTool`）：前台/后台/promote、stdout/stderr 分开、尾部截断 + `omittedBytes` + spill（64000 整、64001、单行 200 KB、400 KB 混合行、CJK 180 KB 字节边界）、退出码 0/1/126/127/143/137、非零退出不是工具错误、stdin=/dev/null、workdir 解析（缺失/文件/相对/scratch 覆盖）、`timeoutMs` 夹取与 promote、`job_output` 消费语义与二次读、`job_kill`/杀树（含只读下）、前台取消、10 任务上限回退前台、围栏三模式（read-only/workspace-write/danger-full-access 的标记、可写根、`/tmp` 映射、chmod/hardlink 的 `[fs:]`）、glibc（随包二进制直接跑；外部构建 PT_INTERP=/lib/... 直跑 127、`grun` 正常、`grun` 在 workspace-write 下正常）。**全部 PASS**；记录项（内部符号可见、非法 UTF-8 解码为 U+FFFD）判为 dsh 同源行为。
+- **修掉的 harness 问题**：
+  - **只读下每条命令 stderr 多出假拒绝（根因修复）**：`spawn` 包装用子 shell 把 `$$` 写进内部 pid 标记文件（杀树根 pid 的唯一来源），只读白名单为空 → 这次内部写被判越权，每条命令都带 `[sandbox: file access denied]` + hint，模型会误以为自己的命令被拒。`fence.c` 现在按 `ADSH_PID_MARKER` 单文件放行（`TermuxRuntime.spawn` 只在围栏生效时导出），同目录其他文件仍拒；`fence-selftest.sh` 加 P 组 4 例。
+  - **重复当前模式的 `sandbox_permissions` 被误拒**：dsh 的 `approveEscalation` 对 `requestedMode === effectiveMode` 直接放行、不弹审批；ADSH 缺这条。补齐同模式提前返回；bash 族按 dsh 的 `validateBashArgs` 额外放开「同模式不校验 justification / 无模式时空白 reason 视同缺省」，write/edit 保持 dsh fs 的严格校验。用例 `EscalationSemanticsTest` 6 例。
+  - **`run_code` 返回值有损序列化**：dsh 要求 completion 是无损 JSON，否则整次 `invalid-output`；ADSH 原来直接 `JSON.stringify`（Map/Set→`{}`、NaN→null、undefined 字段消失）。现在先用 `__adsh_isLossless` 校验（undefined 完成值仍合法），失败信封逐字 `program completion must be lossless JSON`、kind `invalid-output`，已成功子调用回执与 Captured output 保留。真机 `run_code` 探针 4 例过。
+  - **glob 目录遍历跟随符号链接**：`sym/up` 指回父目录会把同一棵树重复枚举到 2 万次上限并产出不属于工作区的路径；现在跳过符号链接目录、真实目录按 canonical 去重。`FsSearchCapsTest` 加回归。
+  - **参数类型按 dsh 严格化**：`Args.str` 只接受 JSON 字符串（write `content=42` 不再静默写 `"42"`）；read 的 `offset`/`limit` 用严格整数（`"2"`、`1.5`、`null` 报参数错误）。`ArgsTest`/`ReadShapeTest` 同步。
+  - **rg 固定加 `--no-config`**（dsh search argv 同款），防 `RIPGREP_CONFIG_PATH` 注入改变搜索语义。
+- **非 bash 报告复核**：D1/D2/D3/D7/D10/D13(rg stderr)/D14/D15 判为 **dsh 既有行为或报告误读，不改**（read 单行 2000 字符内联标记、grep 250 上限只在 render、read 无 truncated 字段、BOM 由 TextDecoder 吞掉、job_output 消费式读取等都与 dsh 同源）；D4/D5/D6/D9/D11 为真实偏差，本轮修 D4/D6/D9/D11，D5（PTC 沙箱内部全局符号收敛）风险大且被宿主帧校验兜底，**留作下一轮**。
+- **提示词第一性原理修剪**：静态段散文 −约 0.76 KB、SDK 固定说明 −约 0.58 KB、环境细则 −约 0.61 KB（真机实测 env 段 2838 字符、系统提示词 27270 字符，其中 `ToolSdk.section()` 21540 字符）；`ToolSdk.section()` 的工具声明按「契约单源」不动。
+  - **删除环境细则里的「工作区变化通知」**（用户点名）并清掉整条 `previousWorkspacePath` / `lastWorkspacePath` 链（`PromptAssembler` / `TurnContext` / `RequestMessages` / `AgentLoop` / `AppContainer` / `ChatViewModel` / `TurnSettings` / `SettingsStore`）——事件叙述不该进「当前事实」快照，且数据源是全局设置会造假叙述；旧快照已有 supersedes 抬头。
+  - 静态段：删掉与当前 danger-full-access 矛盾的「only writes are fenced」绝对句（改成策略中立 + 指向 runtime context）、glob/grep 上限复述、bash 长输出复述、无工作区重复句；升级重试流程收敛为一句指针（策略事实留在 file-policy 段）。
+  - 环境细则：删 `$PREFIX/$HOME`、full-access 可写根 bullet（会说成「整机可写」）、present 复述、超时建议句；FUSE/`[fs:]`/硬链接合并；`$ADSH_FENCE_ROOTS` 改为如实描述（workspace-write 导出、read-only 不导出）；glibc 句改精确（随包二进制直接跑，外部构建才要 `grun` 且必须带路径）；段标题改英文 `## Environment`（界面显示名仍是「环境细则」）。
+  - SDK 段：删「What remains is the ECMAScript language itself… plus tools.*」假穷举（内部全局存在）改为「其余是实现细节，不是 API」；one-program / 预算 / OOM 段去重；升级说明指针改指 runtime context；`ProgramDiagnostics` 同步去掉 "only"。
+- **验证**：全模块 `testDebugUnitTest` 全绿（新增 `EscalationSemanticsTest`、Args 严格整数、glob 符号链接回归）；`:app:assembleDebug` 过；真机 debug 探针跑完 37+22+11+9+4 条并全过（logcat 见 `.tmp/device-reports/`）。探针文件验证后删除，未进版本库。
+## 2026-10-22（未发版，debug 已装机）
+
+滚动条 / `@` 文件补全 / 随包 glibc 三件。参考调研：`.tmp/research-dsh-mention.md`（dsh 的 @ 补全面板逐条源码定位）、`.tmp/research-glibc-runner.md`（termux-pacman glibc 运行时与预置方案）。
+
+- **右侧滚动条改成只读指示**：会话流的 `TranscriptScrollbar` 不再吃手势 —— 删掉 thumb 命中区、拖动换算、`dragging` 态、`ThumbGeometry` 与边缘防误触的 thumb 豁免（`EdgeTouchGuard` 只剩纯边缘带，`TranscriptScrollbarHitRegion` 删除）；thumb 仍按滚动容器真实 `maxValue` 取长度，**停止滚动满 1 秒**（`SCROLLBAR_HIDE_DELAY_MS` 3000→1000）后淡出、再滚重新出现。回归 `TranscriptScrollbarTest`（删拖动用例、补隐藏时延）。
+- **输入框 `@` 文件补全**：照 dsh 的 `ui-input-trigger` + `ui-reference` + `file-reference-local` 复刻。规则层 `Mention.kt`：`@` 只能在当前行行首 / 空白之后（`user@host` 不弹）、`@"...` 引号内可含空格、token 必须结束在光标处；空查询或含 `/` 列该目录一级（空查询列工作区根），其余走大小写不敏感模糊评分（精确 1000 / 前缀 900 / 基名含 700 / 路径含 500 / 子序列 300+，目录 +25；同分目录优先 → 短路径 → 字典序；上限 20）。数据源 `WorkspaceFileIndex`：BFS readdir 有界索引（50k 项、按名排序、排除 `.git/node_modules/dist/build/…`，**不读 .gitignore** —— 与 dsh 一致），第一次打 `@` 时在 IO 上建、一轮结束后失效重建（dsh 在 tool/result 后失效）。面板 `MentionPanel.kt` 复用 slash 菜单的几何（贴卡片上沿 4dp、同宽、向上长、按上方空间夹高）：文件 / 文件夹图标、目录尾 `/`、右对齐父目录、目录行尾箭头 = drill（把 token 换成 `@dir/` 并保持菜单打开），点行 = 引用；含空格路径插 `@"..."`、文件选中补一个尾随空格（后一字符已是空格则不加）。硬件键盘 ↑↓/Enter/Tab/Esc 走 `onPreviewKeyEvent`（面板开时 Enter 不再落到发送 / 换行）；`ChatScreen` 在一轮结束后 +1 `fileIndexRevision`。回归 `MentionTest`（语法 / 引号 / 插入 / 目录与模糊查询 / 排序 / 有界索引）。
+  **有意偏离 dsh**（均为移动端/最小改动）：目录列表走索引而非实时 readdir（新建文件要等下一次失效）、无面包屑、无会话引用（只补文件）、无 pending skeleton、无 IME 组合键特判；插入的是纯文本 `@路径`（模型可见面与 dsh 相同）。
+- **随包 glibc 运行时 + `grun`**：构建期 `scripts/fetch-glibc.sh` 从 termux-glibc 源下载 `glibc 2.44` / `glibc-runner 2.0-3`（SHA 固定），用 Python 标准库解 deb（`ar` + `tarfile r:xz`），精选 58 个运行期文件（加载器 / libc 族 / C.utf8 + en_US.utf8 / getent·ldd·locale·iconv·getconf）与一个 12 行 `bin/grun`（`unset LD_PRELOAD` + `unset LD_LIBRARY_PATH` + `ld-linux-aarch64.so.1 --library-path $PREFIX/glibc/lib`），并进 `assets/bootstrap/usr.zip`（32.8 MB → 35.6 MB）；`SYMLINKS.txt` 追加 `glibc/bin/ld.so → ../lib/ld-linux-aarch64.so.1` 与 `glibc/etc/{resolv.conf,hosts} → $PREFIX/etc/...`。`BootstrapInstaller`：`INSTALLER_VERSION` 6→7、`EXEC_PREFIXES` 加 `glibc/bin/` 与加载器、空间预检 200→220 MB（安装流程 / 合并判定不变，老前缀照旧只补缺）。`androidEnvText` 补一句「glibc 二进制用 `grun ./tool`，且它不受写围栏 / `/tmp` 映射约束」+ `PromptAssemblerTest` 钉住；文档见 `docs/ARCHITECTURE.md` 硬约束 33 / `docs/TECH-STACK.md` / README。
+  **语义代价**（如实记录，不是 bug）：glibc 进程不加载 bionic shim → 写围栏与 `/tmp` 映射对它不生效；`/proc/self/exe` 经 `grun` 时指向加载器；DNS 依赖 `$PREFIX/etc/resolv.conf`（已软链）；X11 / ALSA / dbus 不可用；不预置编译工具链与 `-s/-c/-f/-d/-t` 分支（依赖闭包 100 MB+）。
+- **胶囊行出现动画收口（四个节点的根因修复）**：footer 是底部锚定、其高度就是会话流的底部内边距 —— 原来 `ChatStatsDock` 用 150ms `expandVertically/shrinkVertically` 把整排胶囊从 0 高度展开，动画每一帧都改 footer 高度，于是启动恢复 / 切会话 / 首轮收尾都变成「会话流被顶一下」。现在：① 可见性判据提成 `statsDockVisible(stats)`（UI 与会话载入共用一处）；② `ChatUiState.dockEntranceArmed` 只在**会话载入时统计为空**（新会话、还没跑出过胶囊）时为 true，启动恢复 / 切到已有统计的旧会话都为 false；③ `ChatStatsDock` 的初始 `MutableTransitionState` 取首次组合时的可见性、入场动画只在 armed 时播（否则 `EnterTransition.None`），退出一律瞬间（`ExitTransition.None`）—— 所以重启 / 切换「像没有动画」，只有**新会话第一轮跑出统计**那一次有 150ms 淡入 + 展开；④ 删掉 `Row.animateContentSize`：出现之后数字 / 胶囊变化只改宽度，行高与 footer 高度不变、不再触发贴底。`clearedMain()` 一并清掉武装位。回归 `StatsDockTest`（可见性 3 例）/ `StatsDockUiTest`（数字变化不移动行）/ `LiveRunStateTest`（clearedMain 清武装位）。
+- **启动 / 切会话「上滚迹象」根因修复**：① footer 高度与会话流底部内边距分成两帧 —— 原来是「量 footer → 写回 state → 下一帧会话流重测并贴底」，启动实测视口在第二帧矮 204px、贴底把整页上滚（debug trace pin keep gap=204）。现在 ChatScreen 用 SubcomposeLayout 两趟同帧测量：先量 footer，再把实测高度作为会话流底部内边距，footer 高度不再回灌 state。② 首帧 WindowInsets 为 0：Compose 的 insets 在第一次 attach 后才分发，会话页首帧若已布局，下一帧补状态栏 / 导航栏内边距会让视口再缩、贴底再滚一次。现在 AppRoot 等 insets 就绪（状态栏 / 导航栏 / IME 任一非 0）再画会话页，全屏设备 500ms 兜底放行。③ 切会话的统计跟正文同一帧到齐（缓存命中路径不再先摆正文、稍后补统计）—— 胶囊出现 / 消失落在抽屉还盖着的那一帧，收起动画里不再单独改 footer 高度。④ 浅色模式滚动条由 dsh 的 neutral-200 加深到 neutral-400（DshPalette l1/l2 同值），深色档不变。回归：AutoScrollTest 删掉随旧实现下线的 chromeMeasured 用例；启动 trace 验证 pin keep 消失。
+- **验证**：157 类 / 1232 例 0 失败；统一门禁（test / lint 0 error / assembleDebug / spotless）与包循环 / 分层 / 模块图（已 `--write` 重生成）/ 注释 / 文档预算 / env / QJS preamble / deadcode / 未使用 import 全绿。debug 装机后 `INSTALLER_VERSION=7` 走全量 Merge（`entries=3536`、`secondStage=ok`，用户前缀保留），重装 APK 走 Relink 且 glibc 文件未动；真机应用 shell（run-as）验证：`grun locale -a` → C / C.utf8 / POSIX / en_US.utf8，`grun getent hosts localhost` → 127.0.0.1，`LD_LIBRARY_PATH=$PREFIX/lib` 下仍正常；把一份 glibc 二进制的 PT_INTERP 改成 `/lib/ld-linux-aarch64.so.1` 后直接 exec 报 `required file not found`、`grun` 起来正常。
+
+## 0.2.5（2026-10-21 发布，versionCode 24）
+
+对外版本号 0.2.5（上一个公开版本 0.2.4）。0.3.0–0.3.5 是**未发版的内部批次名**，内容全部随本版发布；下面 `0.2.5-pre` 一节是发布前的开发记录。
+
+- **release 包**：`:app:assembleRelease`（R8 minify + shrink）→ `dist/ADSH-0.2.5-release.apk`（46,440,727 字节，debug 签名、同包名可覆盖安装），已装机复验：`versionName=0.2.5` / `versionCode=24`，启动无 crash；GitHub 尚未推送。
+- **本版内容**（详见下面各节）：0.3.0 tools / agent 现代化；0.3.1–0.3.2 深度测试修复；0.3.3 `:platform:termux` 优化（PTY 生命周期 / bootstrap 只补缺合并 / PTC 泵等待 / 围栏时间戳 / 环境与结构拆分）；0.3.4–0.3.5 bash 截断修复（单行大输出不空、`omittedBytes`、`Jobs.read` 的结算裁剪顺序）。
+- **死代码清理**：删除无人引用的 `adsh.kotlin.jvm` 约定插件（8 个模块都是 Android library）；`package-cycles-baseline.json` 归零（包环已 0，旧基线是死配置）；`deadcode-baseline.json` 删掉已不存在的 `resetForTest` 条目；`THIRD_PARTY_NOTICES` 删掉早已移除的 haze 依赖行，proguard / `AppRoot` / `app/build.gradle.kts` 里关于 haze 与已删规则的历史注释一并清掉；`SettingsStore.contextWindow` 去掉从未被赋值的 setter、`SettingsStore.Companion.acceptsImages` 与只被测试调用的 `ToolSdk.description` / `ToolRegistry.byName` 删除（测试改读 `ToolSdk.specs`）。另用 R8 `-printusage` 核对了 release 的不可达成员，没有发现 app 类整类死代码。
+- **验证**：154 类 / 1214 例 0 失败；统一门禁（test / lint 0 error / assembleDebug / spotless）与包循环 / 分层 / 模块图 / 注释 / 文档预算 / env / QJS preamble / deadcode / 未使用 import / 未使用资源 / 未使用 C 符号 / 未使用 catalog 全绿。
+
+## 0.3.5（未发版，2026-10-21）
+
+真机 agent 对 0.3.4 截断元数据的复测（三个新问题）+ 设备侧深度回归；本轮按 dsh 收集器的
+`truncated = 真的丢过字节` 语义修根因，没有再加新的结果字段。
+
+- **根因**：`Jobs.read` 在**结算裁剪之后**才计算 `droppedChannels` —— 结算时环会裁到 16 KiB 保留窗口，于是「这次已经完整读到」的输出也被判成丢过字节：单行 16385 / 64000 字节全量返回却 `truncated:true`；2000 行（20 KB）/6000 行（60 KB）多行输出再被行对齐砍掉首行、`omittedBytes:10`，而 spill 根本没开（没有 `spillPath`，那几个字节拿不回来）。现在 `dropped` 在 `readFrom` 之后、`trim(SETTLED_RETAIN_BYTES)` 之前算：`truncated` 只表示真的丢了字节（与 dsh 的 OutputCollector 同义）。
+- **结果契约**：小于 / 等于 `bashMaxOutputBytes` 的输出原样返回（`truncated:false`，无 `omittedBytes`）；只有真的丢过字节时才 `truncated:true`，此时 `omittedBytes` 与 `spillPath` 一起出现，spill 文件大小 = 原始流字节数（尾部保留方向写进 `bash` 输出 schema 的注释）。
+- **设备侧深度回归**（debug 构建里临时探针跑真实 `BashTool` + 真实 bash/Jobs/Spill，跑完删除）：
+  - 20 KB / 60 KB / 恰好 64 KB / 单行 16385 字节 → 全量返回、`truncated:false`、无 omitted/spill；
+  - 单行 200 KB + 换行 → 64000 字节尾巴、`truncated:true`、`omittedBytes:136001`、spill 200001 字节；
+  - 400 KB 中段超长行 → `"L3\nL4\n"`、`omittedBytes:400007`、spill 400013 字节；
+  - stderr 200 KB → 尾部 64000、`omittedBytes:136000`、spill 200000 字节；
+  - 中文 60000 字 → UTF-8 安全尾（64000 字节 / 21334 字符）、`omittedBytes:116001`、spill 180001 字节。
+- 用例 154 类 / 1215 例 0 失败（新增 5 例：20 KB/60 KB/16385/64000 全量不标 truncated，以及 64001 边界「行对齐 + omittedBytes + spill」）；门禁（test / lint 0 error / assembleDebug / spotless）与包循环 / 分层 / 模块图 / 注释 / 文档预算 / env / QJS preamble / deadcode / 未使用 import 全绿。
+
+## 0.3.4（未发版，2026-10-21）
+
+真机 agent 对 0.3.2 截断策略的两项残留复测（"第 3 点：主问题已修，还剩两处小问题"）。
+
+- **单行大输出不再变成空串**：`wholeLineTail` 的行对齐只在「丢掉半截首行后还剩至少一整行」时执行；尾巴只有一条被切断的长行（`print('A'*500000)`，尾部是一个换行）时保留原尾巴，不再把整段可见内容丢成 `text:""`（调用方会误以为命令没有输出）。`dropPartialFirstLine` 对「窗口只有一个换行」仍按空处理。
+- **截断策略进结构化字段**：`stdout` / `stderr` 在 `truncated` 时新增可选 `omittedBytes`（被丢掉的头部字节数，等于保留文本在完整流里的起始偏移；行对齐丢掉的半行也算在内）。`ExecResult` 补 `outputBytes` / `stderrBytes`（完整流字节数），后台任务路径由 `Jobs.Read` 的每路累计字节数提供；前台直跑与 job 两条路都填。正文不加说明（dsh 的 render / canonical 分工不变），`BashTool` 的输出 schema 两处都声明该字段。
+- 用例 154 类 / 1210 例 0 失败；门禁（test / lint 0 error / assembleDebug / spotless）与包循环 / 分层 / 模块图 / 注释 / 文档预算 / env / QJS preamble / deadcode / 未使用 import 全绿。
+
+## 0.3.3（未发版，2026-10-21）
+
+`:platform:termux` 模块优化（对照 dsh 0.2.1-rc.1 的 subprocess / shell-env / terminal / ptc-runtime 与 Termux 官方实现；调研报告在 `.tmp/research/dsh-platform-mechanisms.md`、`community-platform-practices.md`）。
+
+- **PTY 会话有了真正的生命周期**：之前 `PtySession.waitFor()` 没有任何调用者，用户敲 `exit` / 关掉终端页后子 bash 一直以 `Z` 状态挂着；关页面也只关 fd，后台任务（apt / 构建 / ssh）会活下来。现在每个会话一根 reaper 线程独占 `waitpid`，`close()` 先关 master（内核向会话发 SIGHUP）再确认退出，仍有活口就对会话进程组 `-pid` 依次 SIGTERM → SIGKILL；读循环 EOF 与页面 onDispose 两条路径都走它。
+- **bootstrap 全量安装不再删用户装的东西**：`installPlan` 的全量分支原先 `removeTree(prefix)` 后重解压 —— 用户 `apt` 装的包与 dpkg 数据库会一起没。现在前缀是真实目录时改为**只补缺的合并**（已存在的文件一律不动，用户 apt 升级过的库/程序优先；缺的链接与 exec 槽位随后重链接），只有不存在 / 是符号链接（老方案的自指别名）才清掉重建。`MANIFEST.properties` 改为原子写（临时件 + fsync + rename），并在 `filesDir` 留一份副本：前缀里的那份读不出、而前缀仍像装好的树时用副本恢复（不再掉进全量安装）。全量安装前还做剩余空间预检（约 200 MB，bootstrap 解压 90 MB、安装峰值约 180 MB），不够时在解压前报可读错误。
+- **PTC 运行时**：泵循环从「每 1 ms 求值一次空表达式」改成睡在回执队列（`ReplyQueue`）上 —— 等几十秒的工具时不再每秒一千次 QuickJS 求值 + 线程唤醒；有回执立刻醒，取消/超时仍按 20 ms 粒度检查。补上 dsh 的在途调用上限（128 个 / 参数总字节 128 MiB，超限整次运行 `protocol` 失败，原文同 dsh），bind 阶段失败不再白等满 5 s。
+- **输出收集器**：`finalize()` 与 `append()` 共用锁、收尾后拒绝新字节；进程结束后最多等 1 s，超时就关掉读端让读线程退出（孙进程占着管道时不再留一个永久阻塞的线程，也不会读到撕裂的尾部）。spill 只在开文件那一次拷贝内存尾巴（大输出时每 8 KiB 拷 64 KiB 的浪费没了）。
+- **shell 环境**：交互（终端页）与一次性命令分开两套终端口径 —— 一次性命令用 dsh 的 `TERM=dumb` / `NO_COLOR=1` / `PAGER=cat` / `GIT_PAGER=cat`，终端页保留 `xterm-256color` / `COLORTERM`；终端会话的 `PWD` 改成真实 cwd（家目录），工作区仍走 `ADSH_WORKSPACE`。bootstrap second stage 的环境改为复用 `shellEnvironment` 同一份装配（原先手写 18 条，漏了 `ANDROID__BUILD_VERSION_SDK` 等 termux-tools 依赖的变量）。
+- **写围栏**：补 `utime / utimes / futimes / lutimes / futimesat` 五个写入口判决（在此之前改文件时间戳不受围栏管辖）；`scripts/fence-selftest.sh` 增 N 组 6 项（host 侧 64 项），并把编译器做成 `CC` 变量、H1（glibc 目标）在非桌面系统上跳过 —— 现在可以在装了 clang 的 Termux 设备上用 `CC=clang` 直接跑整套。
+- **PTY bridge fork 安全**：fork 后不再 `opendir/readdir`（列表在父进程里收集）、不再 `clearenv/putenv`（直接挂 `environ`，exec 用现成 envp）、绝对路径走 `execv` 避开 `execvp` 的 PATH 搜索；exec 失败时往 PTY 写一行原因（以前是静默 `_exit(127)`，终端只剩空白）。
+- **结构**：`TermuxRuntime.kt` 673→约 430 行，拆出 `OutputCollector.kt` / `ProcessTree.kt` / `HomePrep.kt`；`readProcessTable` 接受 `procRoot`，用假 /proc 目录单测（comm 空格括号、非数字项、畸形 stat、缺目录）。新增用例：`ProcessTableTest` / `AtomicFilesTest` / `ReplyQueueTest` / `PendingCallsTest` 等。
+- 用例 154 类 / 1205 例 0 失败；统一门禁（test / lint 0 error / assembleDebug / spotless）与包循环 / 分层 / 模块图 / 注释 / 文档预算 / env / QJS preamble / deadcode / 未使用 import 全绿。
+
+## 0.3.2（未发版，2026-10-21）
+
+第二轮深测修复（0.3.1 那两处修复自己带出 / 暴露的问题）。
+
+- **围栏写判决修掉「软链 + /..」逃逸**：`canonical()` 原先在 realpath 之前做词法归一化，`u -> $PREFIX` 时 `u/../x` 会被折回 `u` 所在目录而按工作区内放行；现在去掉预归一化，`..` 按内核语义在解析软链之后回退。真机复现：修前 `echo > $SCRATCH/lt2/u/../esc_files.txt` 落到 `$HOME` 上级（rc=0），修后同路径 rc=1 并带拒绝标记；工作区内直写 / 改名 / 删除仍 rc=0。`scripts/fence-selftest.sh` 增 M 组 5 项（host 侧 58 项）。
+- **bash 截断尾巴从整行开始**：字节对齐的窗口尾巴可能从半行开始（`seq` 首行 190858 只剩 90858）；现在丢过字节时丢掉首个半截行（`wholeLineTail`），结构值与正文一致；没有换行（单行大输出）时原样保留。`truncated` / `spillPath` 语义不变（全文仍在 spill 文件里）。
+- 用例 150 类 / 1180 例 0 失败（新增 2 例：半行裁剪 + 完整首行）；统一门禁（test / lint 0 error / assembleDebug / spotless）与包循环 / 分层 / 模块图 / 注释 / 文档预算 / env / QJS preamble / deadcode / 未使用 import 全绿。
+## 0.3.1（未发版，2026-10-21）
+
+真机深度 harness 测试后的修复（逐条对照 dsh 0.2.1-rc.2 审查；判定为 dsh 既有行为的项不改）。
+
+- **写围栏不再把「删除软链」判成越权**：删 / 重命名目录项写的是父目录里的 entry，不是链接目标；`fence.c` 的 unlink / unlinkat / rmdir / remove / rename / renameat / renameat2 改按父目录判决。指向只读根的软链（以及含这种软链的目录）现在能正常删掉，`rm -rf` 不再被卡住；路径中间的软链仍解析，穿链删 / 移目标仍拒。真机验证：删外指软链 rc=0、`mv` 软链 rc=0、`rm -rf` 含软链目录 rc=0；删工作区外文件 / 穿链删 / 移出 / 移入仍 rc=1 并带拒绝标记。`scripts/fence-selftest.sh` 增 K 组 7 项（host 侧 53 项）。
+- **bash 的截断提示不再污染结构化值**：`[output truncated; full output: …]` 只进正文渲染（dsh 的 render.ts），`value.stdout/stderr.text` 回到未追加提示的纯尾部文本（dsh 的 canonicalBashResult）—— 程序里 `JSON.parse` 合法输出不会再被提示行打断；`truncated` / `spillPath` 字段不变。
+- **read 的 50 KiB 上限说明改成事实**：结构化值本来就没有截断字段（dsh 的 output schema 也没有）；SDK 里 `limit` 的说明改为「窗口也会在 50 KiB 处停止，compare `lines.length` with `totalLines` 才能发现」。
+- **审查结论（不改，dsh 同构）**：grep 默认忽略 hidden / .gitignore、glob 显式 `--no-ignore --hidden`（dsh 两处本来就不同）；glob 带 `/` 的 pattern 锚定 cwd 而非 `path`；`ask_user_question` 允许空字符串 id / question（dsh 的 schema 只要求 string）；二进制文件在 grep 里按 rg 默认跳过；glob 工作区内相对 / 外绝对。
+- 用例 150 类 / 1178 例 0 失败（新增 1 例 bash 值回归）；统一门禁（test / lint 0 error / assembleDebug / spotless）与包循环 / 分层 / 模块图 / 注释 / 文档预算 / env / QJS preamble / deadcode / 未使用 import 全绿。

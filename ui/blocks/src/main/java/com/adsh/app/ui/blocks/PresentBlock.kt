@@ -26,7 +26,7 @@ import kotlinx.serialization.json.contentOrNull
 /** 摘要里的状态词（dsh 的 row.running / row.ok / row.error / row.stopped） */
 private fun presentStateLabel(running: Boolean, error: Boolean): String = when {
     running -> "正在交付"
-    error -> "交付失败"
+    error -> "delivery failed"
     else -> "已交付"
 }
 

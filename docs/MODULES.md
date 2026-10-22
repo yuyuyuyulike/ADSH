@@ -1,6 +1,6 @@
 # 模块化方案
 
-这份文件回答「现在怎么切、判据是什么、靠什么守」。分层与边界规则看 [ARCHITECTURE.md](ARCHITECTURE.md)，阶段与验收看 [ROADMAP.md](ROADMAP.md)。行数上限 120。
+这份文件回答「现在怎么切、判据是什么、靠什么守」。分层与边界规则看 [ARCHITECTURE.md](ARCHITECTURE.md)。行数上限 120。
 
 ## 一、现状：8 个 Gradle 工程
 
@@ -14,7 +14,7 @@
 | `:core:agent` | `core.agent`：Agent 主循环与轮次装配 | 5.0k | android library |
 | `:core:data` | `core.data` + `core.llm` + `core.session`：持久化（Room/KSP，`schemas/` 在模块里）+ LLM 客户端 + 会话事件日志 | 6.0k | android library + serialization |
 | `:core:tools` | `core.tools`（含 `core.workspace`）+ `core.jobs`：工具运行时 + 工作区 + 后台任务 | 10.5k | android library |
-| `:platform:termux` | `runtime.termux` + `platform.ptc` + `cpp/`：Termux 进程 / PTY / 原生 shim / bootstrap 安装 + `:ptc` 独立进程与 QuickJS 运行时 | 5.0k | android library（含 CMake） |
+| `:platform:termux` | `runtime.termux` + `platform.ptc` + `cpp/`：Termux 进程 / PTY / 原生 shim / bootstrap 安装 + `:ptc` 独立进程与 QuickJS 运行时 | 5.6k | android library（含 CMake） |
 | `:seam` | `seam.{llm,exec,model,tool,ptc,phone}`：纯契约与数据类型 | 1.9k | android library + serialization |
 
 **判据：功能优先，行数只当参考**（2026-10 实测 8 工程：最大 `:feature:chat` main+test 17.8k；非契约模块里 `:core:agent` 5.0k / `:platform:termux` 5.0k 最小）。工程数也不设硬性目标（用户口径：8–12 之间都行，**别为凑行数硬拆/硬并**）。唯一的结构性例外是 `:seam` —— 它是「服务定义」层（接口 + 数据类型），**天生小**，但必须独立：五个能力缝 + 电话线协议的契约面只有放在这里，才能规定 provider「只许依赖它」。`:feature:chat` 不再往下切（会话宿主 / 轮次渲染 / 输入区拆开会让「同一屏内的重组协调」跨模块，判过收益不抵成本）。

@@ -41,7 +41,6 @@
 | QuickJS wrapper | wang.harlon.quickjs 3.2.3 | MIT | https://github.com/HarlonWang/quickjs-android |
 | Jetpack Compose / AndroidX / Room / Lifecycle | 见 `gradle/libs.versions.toml` | Apache-2.0 | https://developer.android.com/jetpack |
 | kotlinx.serialization / coroutines | 见 `gradle/libs.versions.toml` | Apache-2.0 | https://github.com/Kotlin |
-| haze | 2.0.0-beta02 | Apache-2.0 | https://github.com/chrisbanes/haze |
 
 ## 四、合规说明
 

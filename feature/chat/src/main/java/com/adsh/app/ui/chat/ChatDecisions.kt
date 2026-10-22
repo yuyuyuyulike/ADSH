@@ -41,16 +41,13 @@ internal fun shouldClearComposerFocus(
     longPressTimeoutMillis: Long,
 ): Boolean = !dragged && heldMillis < longPressTimeoutMillis
 
-/** dsh 的跟随阈值（`useScrollFollow(following, 25)`）：离底部 25dp 以内就算「读者还在底部」 */
-internal const val FOLLOW_THRESHOLD_DP = 25f
-
 /** 流式采样节拍（ms）：30fps 量级的重绘节流 */
 internal const val STREAM_TICK_MS = 33L
 
 /**
- * 贴底补钉的容差（px）：只吸收取整误差。**不能**拿 [ChatScreen] 里那个 25dp 的 [followSlopPx]
- * 当这个容差 —— 那是 dsh 的 atBottom 阈值（读者算不算在底部），一行子调用才 22dp：用 25dp 判
- * 「要不要补钉」时新长出来的一行够不着阈值，底部会停在「半行被切在视口外」，直到下一次更大变化。
+ * 贴底的容差（px）：只吸收取整误差。它同时用于判定「读者是不是在底部」（[ChatScrollState.sampled]）
+ * 与「要不要补钉」（[KeepPinnedEffect]）—— 后者不能放大：一行子调用才 22dp，容差一大就会把
+ * 「半行被切在视口外」当成已贴底，直到下一次更大变化才补。
  */
 internal const val PIN_SLOP_PX = 1
 

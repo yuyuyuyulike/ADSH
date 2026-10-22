@@ -56,14 +56,14 @@ internal fun mimeTypeOf(path: String): String = when (File(path).name.substringA
 internal fun openFileWithOtherApp(context: Context, path: String) {
     val file = File(path)
     if (!file.isFile) {
-        Toast.makeText(context, "文件不存在", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "file not found", Toast.LENGTH_SHORT).show()
         return
     }
     val uri = runCatching {
         FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
     }.getOrNull()
     if (uri == null) {
-        Toast.makeText(context, "无法分享这个文件", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "cannot share this file", Toast.LENGTH_SHORT).show()
         return
     }
     val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -72,7 +72,7 @@ internal fun openFileWithOtherApp(context: Context, path: String) {
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     runCatching { context.startActivity(intent) }.onFailure {
-        Toast.makeText(context, "没有能打开这种文件的应用", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "no app can open this file type", Toast.LENGTH_SHORT).show()
     }
 }
 

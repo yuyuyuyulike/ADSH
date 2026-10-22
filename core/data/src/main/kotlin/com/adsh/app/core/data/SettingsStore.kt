@@ -264,24 +264,18 @@ class SettingsStore(context: Context) : TurnSettings {
         get() = prefs.getInt(KEY_AGENT_MAX_PARALLEL, DEFAULT_AGENT_MAX_PARALLEL).coerceAtLeast(1)
         set(value) = prefs.edit().putInt(KEY_AGENT_MAX_PARALLEL, value.coerceAtLeast(1)).apply()
 
-    /** 上下文窗口（token），供「上下文已用」按比例显示 */
-    var contextWindow: Long
+    /** 上下文窗口（token）：界面按比例显示「上下文已用」，压缩器按它算阈值与保留尾巴 */
+    override val contextWindow: Long
         get() = prefs.getLong(KEY_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW)
-        set(value) = prefs.edit().putLong(KEY_CONTEXT_WINDOW, value).apply()
 
     /**
      * 从服务端 GET /models 拉到的可用模型清单（换行分隔）。
      * dsh 用的是内置目录，但账号权限不同、目录也会变（本机账号实际只提供
      * deepseek-flash / deepseek-v4-pro），所以拉取结果优先于内置目录。
      */
-    val fetchedModels: List<String>
+    private val fetchedModels: List<String>
         get() = (prefs.getString(KEY_FETCHED_MODELS, "") ?: "")
             .split('\n').map { it.trim() }.filter { it.isNotEmpty() }
-
-    /** 上一次装配提示词时使用的工作区；变化时输出「基线替换」 */
-    override var lastWorkspacePath: String?
-        get() = prefs.getString(KEY_LAST_WORKSPACE, null)
-        set(value) = prefs.edit().putString(KEY_LAST_WORKSPACE, value).apply()
 
     /**
      * 「关闭应用时所在的工作区」（口径：重新进入应用开一个新会话页，
@@ -417,22 +411,9 @@ class SettingsStore(context: Context) : TurnSettings {
         fun canonicalModelId(modelId: String): String = LEGACY_MODEL_IDS[modelId] ?: modelId
 
         /**
-         * 这个模型 id 能不能收图（dsh 的 catalog inputModalities）。
-         *
-         * **目录里认识它 → 按目录；不认识 → 默认能收图**（用户点名）：
-         * **未知 id 不能按纯文本处理**：新加的模型（qwen3.8-flash 这类）发的图片会被换成
-         * 「image omitted」占位、静默丢掉，用户根本不知道模型到底收没收到图。现在的口径是
-         * 「先按能收图发，收不了会报错」—— 报错文案里直接指路（设置 → 模型 → 展开 →
-         * 取消勾选「可识别图片」），一次点击就能纠正，比静默降级好。
-         */
-        fun acceptsImages(modelId: String): Boolean {
-            val canonical = canonicalModelId(modelId)
-            return MODEL_CATALOG.firstOrNull { it.id == canonical }?.acceptsImages == true
-        }
-
-        /**
          * 「可识别图片」开关的默认值（模型目录里没手动拍过板时用它）：
-         * 目录认识的按目录，不认识的默认**开**（见 [acceptsImages] 的说明）。
+         * 目录认识的按目录，不认识的默认**开**（用户点名：未知 id 不能按纯文本静默丢图，
+         * 先按能收图发、收不了会在报错文案里指路回设置页取消勾选）。
          * 设置页的复选框与请求装配读的是同一个函数，不会出现「界面没勾、实际却按能收图发」。
          */
         fun defaultImageInput(modelId: String): Boolean {
@@ -597,7 +578,6 @@ class SettingsStore(context: Context) : TurnSettings {
         private const val KEY_WEB_MAX_USES = "web_search_max_uses"
         private const val KEY_AGENT_MAX_PARALLEL = "agent_max_parallel"
         private const val KEY_SYS_SUFFIX = "system_prompt_suffix"
-        private const val KEY_LAST_WORKSPACE = "last_workspace_path"
         private const val KEY_LAST_WORKSPACE_ID = "last_workspace_id"
         private const val KEY_LAST_CONVERSATION_ID = "last_conversation_id"
         private const val KEY_FETCHED_MODELS = "fetched_models"

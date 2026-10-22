@@ -22,12 +22,15 @@ import org.junit.Test
  */
 class ToolConcurrencyTest {
 
+    /** 并行安全集合由 `Tool.parallelSafe` 投影而来（生产里是 ToolRegistry.parallelSafeNames） */
+    private val SAFE = setOf("read", "grep", "web_search")
+
     /** 每个用例一份新调度器 —— 生产里也是每个 run_code 一份（见 ToolConcurrency 的 KDoc） */
     private lateinit var gate: ToolConcurrency
 
     @Before
     fun setUpGate() {
-        gate = ToolConcurrency(10)
+        gate = ToolConcurrency(10, SAFE)
     }
 
     @Test(timeout = 30_000)
@@ -75,7 +78,7 @@ class ToolConcurrencyTest {
      */
     @Test(timeout = 30_000)
     fun nestedFanOutDoesNotDeadlockAtLimitOne() = runBlocking {
-        gate = ToolConcurrency(1)
+        gate = ToolConcurrency(1, SAFE)
         val done = async(Dispatchers.Default) {
             gate.withToolPermit("read") {
                 // 模拟 web_search 的 queries 扇出：真实代码是 coroutineScope { async { … } }，
@@ -92,7 +95,7 @@ class ToolConcurrencyTest {
     /** 嵌套调用占的还是同一个名额：并发数不会因为可重入而被放大 */
     @Test(timeout = 30_000)
     fun nestedCallsStillCountAsOneSlot() = runBlocking {
-        gate = ToolConcurrency(2)
+        gate = ToolConcurrency(2, SAFE)
         val running = java.util.concurrent.atomic.AtomicInteger(0)
         var peakInside = 0
         (1..8).map {
@@ -110,7 +113,7 @@ class ToolConcurrencyTest {
         }.awaitAll()
         assertTrue("重叠数 $peakInside 超过了上限 2", peakInside <= 2)
         assertEquals(0, gate.running)
-        gate = ToolConcurrency(10)
+        gate = ToolConcurrency(10, SAFE)
     }
 
     // ------------------------------------------------------------ 写类独占
@@ -124,7 +127,7 @@ class ToolConcurrencyTest {
      */
     @Test(timeout = 30_000)
     fun exclusiveCallsNeverOverlap() = runBlocking {
-        gate = ToolConcurrency(4)
+        gate = ToolConcurrency(4, SAFE)
         val running = java.util.concurrent.atomic.AtomicInteger(0)
         var peakInside = 0
         (1..6).map {
@@ -139,13 +142,13 @@ class ToolConcurrencyTest {
         }.awaitAll()
         assertEquals("写类调用重叠了", 1, peakInside)
         assertEquals(0, gate.running)
-        gate = ToolConcurrency(10)
+        gate = ToolConcurrency(10, SAFE)
     }
 
     /** 写类调用要等**正在跑的读类调用**跑完才进来（run alone 的另一半） */
     @Test(timeout = 30_000)
     fun exclusiveWaitsForRunningSafeCalls() = runBlocking {
-        gate = ToolConcurrency(4)
+        gate = ToolConcurrency(4, SAFE)
         val safeInside = CompletableDeferred<Unit>()
         val releaseSafe = CompletableDeferred<Unit>()
         val writerStarted = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -168,7 +171,7 @@ class ToolConcurrencyTest {
         safe.await()
         writer.await()
         assertTrue("读类结束后写类没有进来", writerStarted.get())
-        gate = ToolConcurrency(10)
+        gate = ToolConcurrency(10, SAFE)
     }
 
     /**
@@ -179,7 +182,7 @@ class ToolConcurrencyTest {
      */
     @Test(timeout = 30_000)
     fun safeCallWaitsWhileAnExclusiveCallRuns() = runBlocking {
-        gate = ToolConcurrency(4)
+        gate = ToolConcurrency(4, SAFE)
         val writerInside = CompletableDeferred<Unit>()
         val releaseWriter = CompletableDeferred<Unit>()
         val safeStarted = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -200,19 +203,30 @@ class ToolConcurrencyTest {
         safe.await()
         assertTrue("写类结束后读类没有进来", safeStarted.get())
         assertEquals(0, gate.running)
-        gate = ToolConcurrency(10)
+        gate = ToolConcurrency(10, SAFE)
     }
 
-    /** 分类表：只有登记过的工具名算并行安全；未知工具按写类处理（宁严勿松） */
-    @Test
-    fun onlyListedToolsAreSafe() {
-        assertTrue(ToolConcurrency.isSafe("read"))
-        assertTrue(ToolConcurrency.isSafe("grep"))
-        assertTrue(ToolConcurrency.isSafe("web_search"))
-        assertTrue(!ToolConcurrency.isSafe("bash"))
-        assertTrue(!ToolConcurrency.isSafe("write"))
-        assertTrue(!ToolConcurrency.isSafe("edit"))
-        assertTrue(!ToolConcurrency.isSafe("some-future-tool"))
+    /**
+     * 分类只认构造时传入的集合（生产中由各 `Tool.parallelSafe` 投影）：未登记的工具
+     * 按写类独占处理 —— 宁严勿松，漏登记只是少一点并行，错登记就是并发写坏文件。
+     */
+    @Test(timeout = 30_000)
+    fun unlistedToolsAreExclusive() = runBlocking {
+        val classificationGate = ToolConcurrency(4, SAFE)
+        val running = java.util.concurrent.atomic.AtomicInteger(0)
+        var peakInside = 0
+        (1..4).map {
+            async(Dispatchers.Default) {
+                classificationGate.withToolPermit("some-future-tool") {
+                    val now = running.incrementAndGet()
+                    if (now > peakInside) peakInside = now
+                    Thread.sleep(3)
+                    running.decrementAndGet()
+                }
+            }
+        }.awaitAll()
+        assertEquals("未登记的工具必须独占", 1, peakInside)
+        assertEquals(0, classificationGate.running)
     }
 
     // ------------------------------------------------- 独立调用：提交顺序 + 并发
@@ -241,7 +255,7 @@ class ToolConcurrencyTest {
      */
     @Test(timeout = 30_000)
     fun mutatingCallsRunInSubmissionOrder() {
-        gate = ToolConcurrency(10)
+        gate = ToolConcurrency(10, SAFE)
         val order = java.util.Collections.synchronizedList(ArrayList<Int>())
         submitInOrder(10) { index ->
             gate.withToolPermit("bash") {
@@ -258,7 +272,7 @@ class ToolConcurrencyTest {
     /** 读类调用照样能重叠：顺序保证不能把并行一起吃掉（名额仍由闸门管） */
     @Test(timeout = 30_000)
     fun safeCallsOverlap() {
-        gate = ToolConcurrency(4)
+        gate = ToolConcurrency(4, SAFE)
         val peak = java.util.concurrent.atomic.AtomicInteger(0)
         val running = java.util.concurrent.atomic.AtomicInteger(0)
         submitInOrder(8) {
@@ -285,7 +299,7 @@ class ToolConcurrencyTest {
      */
     @Test(timeout = 30_000)
     fun mutatingCallsStayExclusiveAmongSafeOnes() {
-        gate = ToolConcurrency(4)
+        gate = ToolConcurrency(4, SAFE)
         val inside = java.util.concurrent.atomic.AtomicInteger(0)
         val writerOverlapped = java.util.concurrent.atomic.AtomicBoolean(false)
         val writersSeen = java.util.concurrent.atomic.AtomicInteger(0)
@@ -295,8 +309,8 @@ class ToolConcurrencyTest {
             gate.withToolPermit(names[index]) {
                 kotlinx.coroutines.withContext(Dispatchers.IO) {
                     val now = inside.incrementAndGet()
-                    if (ToolConcurrency.isSafe(names[index])) peakSafe.updateAndGet { maxOf(it, now) }
-                    if (!ToolConcurrency.isSafe(names[index])) {
+                    if (names[index] in SAFE) peakSafe.updateAndGet { maxOf(it, now) }
+                    if (names[index] !in SAFE) {
                         writersSeen.incrementAndGet()
                         if (now > 1) writerOverlapped.set(true)
                     }
@@ -318,7 +332,7 @@ class ToolConcurrencyTest {
      */
     @Test(timeout = 30_000)
     fun cancellingWhileQueuedReleasesTheSlot() = runBlocking {
-        gate = ToolConcurrency(1)
+        gate = ToolConcurrency(1, SAFE)
         val firstInside = CompletableDeferred<Unit>()
         val releaseFirst = CompletableDeferred<Unit>()
         val first = async(Dispatchers.Default) {
@@ -340,7 +354,7 @@ class ToolConcurrencyTest {
         // 给 pump 一点时间把归还后的名额放出去
         Thread.sleep(50)
         assertEquals("取消一个排队中的调用漏水了：池子里还占着名额", 0, gate.running)
-        gate = ToolConcurrency(10)
+        gate = ToolConcurrency(10, SAFE)
     }
 
     // ------------------------------------------------------------ 标记是怎么传下去的
@@ -374,7 +388,7 @@ class ToolConcurrencyTest {
      */
     @Test(timeout = 30_000)
     fun aStuckRunDoesNotWedgeTheNextRun() = runBlocking {
-        val stuckGate = ToolConcurrency(4)
+        val stuckGate = ToolConcurrency(4, SAFE)
         val neverReleased = CompletableDeferred<Unit>()
         val stuck = async(Dispatchers.Default) {
             stuckGate.withToolPermit("edit") { neverReleased.await() }
@@ -382,7 +396,7 @@ class ToolConcurrencyTest {
         // 等它真的占住写类名额
         while (stuckGate.running == 0) Thread.sleep(5)
         // 新的一轮（新实例）照常跑，且读类/写类都不受旧实例影响
-        val next = ToolConcurrency(4)
+        val next = ToolConcurrency(4, SAFE)
         kotlinx.coroutines.withTimeout(5_000) {
             next.withToolPermit("read") { }
             next.withToolPermit("bash") { }
@@ -395,12 +409,12 @@ class ToolConcurrencyTest {
 
     @Test(timeout = 20_000)
     fun theHoldingMarkerReachesNestedFanOut() = runBlocking {
-        gate = ToolConcurrency(1)
+        gate = ToolConcurrency(1, SAFE)
         val inside = CompletableDeferred<Boolean>()
         gate.withToolPermit("read") {
             inside.complete(coroutineScope { async(Dispatchers.Default) { gate.holdingNow() }.await() })
         }
         assertTrue("withToolPermit 的标记没有传到嵌套的 async 里", inside.await())
-        gate = ToolConcurrency(10)
+        gate = ToolConcurrency(10, SAFE)
     }
 }

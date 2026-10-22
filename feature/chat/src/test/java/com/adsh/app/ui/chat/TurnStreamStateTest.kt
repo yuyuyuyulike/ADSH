@@ -106,7 +106,6 @@ class TurnStreamStateTest {
         stats = stats,
         pendingAttachments = listOf("/ws/.adsh/attachments/9.png"),
         runStartedAt = 111L,
-        connection = ConnectionState.Reconnecting(3, "boom"),
     )
 
     @Test
@@ -126,7 +125,6 @@ class TurnStreamStateTest {
         assertEquals(LiveTurn(), after.liveTurn)
         assertEquals(emptyList<String>(), after.pendingAttachments)
         assertEquals(999L, after.runStartedAt)
-        assertEquals("新的一轮：重连条从零开始", ConnectionState.Idle, after.connection)
 
         assertEquals("stats 是会话级累计，开轮绝不复位", stats, after.stats)
         // 开轮只动上面那 12 个字段
@@ -433,7 +431,7 @@ class TurnStreamStateTest {
         val hinted = turnProjected(withImage, ChatEvent.Failed("HTTP 400")) { label }
         assertEquals("HTTP 400" + "\n\n" + imageRouteHintText(label), hinted.error)
         assertEquals(
-            "HTTP 400\n\n如果这个模型不能识图：请到「设置 → 模型 → qwen-test → 展开」取消勾选「可识别图片」，再重新发送。",
+            "HTTP 400\n\nIf this model cannot read images: open Settings > Models > qwen-test > expand, uncheck \"Accepts images\", and send again.",
             hinted.error,
         )
         assertEquals(withImage.messages, hinted.messages)
@@ -454,15 +452,23 @@ class TurnStreamStateTest {
     }
 
     @Test
-    fun reconnectingReconnectedAndUsageComeBackUntouched() {
-        val current = dirtyState().copy(connection = ConnectionState.Reconnecting(1, "boom"))
+    fun retryEventsAndUsageComeBackUntouched() {
+        val current = dirtyState()
 
         assertSame(
-            "重连归 setConnection 的计时器",
+            "重试行要落库：状态更新归 ChatViewModel 的 persistRetry / markRetryStarted",
             current,
-            turnProjected(current, ChatEvent.Reconnecting(attempt = 2, message = "又断了", delayMs = 1500L)),
+            turnProjected(
+                current,
+                ChatEvent.RetryScheduled(
+                    retry = 2,
+                    maximum = com.adsh.app.core.llm.LlmRetry.MAX_RETRIES,
+                    delayMs = 1500L,
+                    failure = "断了",
+                ),
+            ),
         )
-        assertSame(current, turnProjected(current, ChatEvent.Reconnected))
+        assertSame(current, turnProjected(current, ChatEvent.RetryStarted(retry = 2)))
         assertSame(
             "Usage 归 AgentLoop 的 token 账本：stats 走 Stats 事件",
             current,
@@ -493,7 +499,7 @@ class TurnStreamStateTest {
         assertTrue("带图：非空且以两个换行开头", hint.startsWith("\n\n"))
         assertEquals("\n\n" + imageRouteHintText(label), hint)
         assertEquals(
-            "\n\n如果这个模型不能识图：请到「设置 → 模型 → qwen-test → 展开」取消勾选「可识别图片」，再重新发送。",
+            "\n\nIf this model cannot read images: open Settings > Models > qwen-test > expand, uncheck \"Accepts images\", and send again.",
             hint,
         )
 

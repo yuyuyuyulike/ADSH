@@ -1,8 +1,6 @@
 package com.adsh.app.ui.chat
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -21,6 +19,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -48,7 +47,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -56,13 +58,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -70,6 +82,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
@@ -91,16 +104,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.adsh.app.core.data.SettingsStore
 import com.adsh.app.ui.blocks.AnchorRect
 import com.adsh.app.ui.blocks.DshIcons
 import com.adsh.app.ui.blocks.FileTypeIcon
+import com.adsh.app.ui.blocks.ImagePreviewState
 import com.adsh.app.ui.blocks.RegisterOverlayDismiss
 import com.adsh.app.ui.blocks.RiskConfirmationDialog
+import com.adsh.app.ui.blocks.dshHorizontalScrollbar
 import com.adsh.app.ui.blocks.dshProminentShadow
 import com.adsh.app.ui.blocks.dshSoftShadow
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
+import com.adsh.app.ui.blocks.lightCardShadow
 import com.adsh.app.ui.blocks.fileSizeText
 import com.adsh.app.ui.blocks.isImagePath
 import com.adsh.app.ui.blocks.rememberImage
@@ -112,6 +130,9 @@ import com.adsh.app.ui.kit.dshClickable
 import com.adsh.app.ui.kit.dshInteraction
 import java.io.File
 import kotlin.math.roundToLong
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.adsh.app.seam.exec.Permissions
 
 /**
@@ -155,6 +176,9 @@ const val COMPOSER_HINT = "发消息或创建任务, / 调用指令, @ 文件或
 
 /** dsh 的 placeholder.plan（plan mode 生效时的占位文案） */
 const val COMPOSER_HINT_PLAN = "描述你的任务以生成计划"
+
+/** 还没有绑定工作区时的占位（dsh 的 placeholder.workspace）：输入框这时候是工作区选择器 */
+const val COMPOSER_HINT_WORKSPACE = "选择一个工作区开始"
 
 // 触发菜单的行与规则（PALETTE_SECTION_* / PaletteCommand / slashQueryOf …）在 Palette.kt：
 // 那一层只认字符串，能在 JVM 单测里逐条钉死；这里只管把它画出来。
@@ -228,7 +252,14 @@ fun DshMenuCard(
     }
 }
 
-/** dsh 的菜单行：高 34、圆角 12、内边距 6/8、gap 8、13/20；hover -> --dsw-alias-interactive-bg-hover */
+/**
+ * dsh 的菜单行（`Menu.module.css` 的 .item）：高 34、圆角 12、内边距 6/8、gap 6、13/20；
+ * 按下铺 --dsw-alias-interactive-bg-hover（触屏没有 hover）；选中标记是行尾 14dp 的勾，不铺底。
+ *
+ * 模型 / 推理等级的选项行是 dsh 的 .option 刻度（内边距 5/7、13/18），根页两行是 .cell 刻度
+ * （值右对齐、行尾 12dp 倒角）：差异全走 [horizontalPadding] / [verticalPadding] /
+ * [textLineHeight] / [chevronSize] / [checkSize]，不另立第二套行组件。
+ */
 @Composable
 fun DshMenuRow(
     label: String,
@@ -238,7 +269,16 @@ fun DshMenuRow(
     iconSize: Dp = 14.dp,
     value: String? = null,
     chevronRight: Boolean = false,
+    /** 行尾倒角：dsh 的 .cellChevron 是 12×12 */
+    chevronSize: Dp = 12.dp,
     selected: Boolean = false,
+    /** 行尾选中勾：dsh 的 .check 是 14×14 */
+    checkSize: Dp = 14.dp,
+    /** 行内边距：.item 是 6/8，.option 是 5/7 */
+    horizontalPadding: Dp = DshSpacing.Xl,
+    verticalPadding: Dp = DshSpacing.Lg,
+    /** 文案行高：.item 是 20sp；.option 的模型名 / 等级名是 18sp */
+    textLineHeight: TextUnit = 20.sp,
 ) {
     val palette = LocalDshPalette.current
     val interaction = remember { MutableInteractionSource() }
@@ -250,7 +290,7 @@ fun DshMenuRow(
             .clip(RoundedCornerShape(12.dp))
             .background(if (pressed) palette.hover else Color.Transparent)
             .dshClickable(interactionSource = interaction, onClick = onClick)
-            .padding(horizontal = DshSpacing.Xl, vertical = DshSpacing.Lg),
+            .padding(horizontal = horizontalPadding, vertical = verticalPadding),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(DshSpacing.Lg),
     ) {
@@ -260,7 +300,7 @@ fun DshMenuRow(
         Text(
             text = label,
             fontSize = 13.sp,
-            lineHeight = 20.sp,
+            lineHeight = textLineHeight,
             color = palette.labelPrimary,
             maxLines = 1,
         )
@@ -269,7 +309,7 @@ fun DshMenuRow(
                 text = value,
                 modifier = Modifier.weight(1f),
                 fontSize = 13.sp,
-                lineHeight = 20.sp,
+                lineHeight = textLineHeight,
                 color = palette.labelTertiary,
                 textAlign = TextAlign.End,
                 maxLines = 1,
@@ -283,7 +323,7 @@ fun DshMenuRow(
                 DshIcons.ChevronRight,
                 contentDescription = null,
                 tint = palette.labelTertiary,
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(chevronSize),
             )
         }
         if (selected) {
@@ -291,7 +331,7 @@ fun DshMenuRow(
                 DshIcons.Check,
                 contentDescription = null,
                 tint = palette.labelPrimary,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(checkSize),
             )
         }
     }
@@ -321,6 +361,7 @@ fun ContextMeter(
     Box(Modifier.overlayAnchor(anchor)) {
         Row(
             modifier = Modifier
+                .lightCardShadow(RoundedCornerShape(8.dp))
                 .clip(RoundedCornerShape(8.dp))
                 .background(if (open) palette.hover else Color.Transparent)
                 .dshClickable(interactionSource = dshInteraction(), onClick = onToggle)
@@ -471,6 +512,11 @@ internal object ComposerSpec {
     val CardGap = 12.dp
     /** .input 的 min-height：一行 24 + 顶部 4，余 8 是卡片内的呼吸 */
     val InputMinHeight = 36.dp
+    /**
+     * 输入区在内部滚动前最多显示几行（触发滚动的高度）。
+     * dsh 的 --dsh-composer-text-max-height:336px = 14 行；ADSH 按用户口径取它的一半。
+     */
+    const val InputMaxLines = 7
     val InputPaddingTop = 4.dp
     /** .input 的左侧 14 */
     val InputPaddingStart = 14.dp
@@ -485,11 +531,31 @@ internal object ComposerSpec {
     val SendSize = 34.dp
     /** .primary 的 translateY(-2px)：工具行整体下移 2 后发送键保持原位 */
     val SendLift = 2.dp
-    /** 附件区（dsh 的 .accessory）：padding 10 12 0 */
-    val AccessoryPaddingTop = 10.dp
-    val AccessoryPaddingSide = 12.dp
     /** 工作区 chip 在 hero 阶段的左侧缩进（dsh 的 .heroWorkspaceRow：padding-left 20，右侧 16） */
     val HeroWorkspaceStartInset = 20.dp
+}
+
+/**
+ * 无工作区卡片那圈虚线（dsh 的 .cardWorkspaceTrigger::after）：1px、inset 0、圆角同卡片，
+ * 断点节奏取 Chromium 的 `border-style: dashed` —— 2×线宽实 / 1×线宽空。
+ *
+ * 画在内容之后（最上层）：卡片描边在 dsh 里是 elevation 的一部分，改成虚线后必须自己画在
+ * Surface 底色之上，否则整圈都被底色盖掉。
+ */
+private fun Modifier.dashedWorkspaceCard(color: () -> Color): Modifier = drawWithContent {
+    drawContent()
+    val stroke = 1.dp.toPx()
+    val inset = stroke / 2f
+    drawRoundRect(
+        color = color(),
+        topLeft = Offset(inset, inset),
+        size = Size(size.width - stroke, size.height - stroke),
+        cornerRadius = CornerRadius((ComposerSpec.CardRadius.toPx() - inset).coerceAtLeast(0f)),
+        style = Stroke(
+            width = stroke,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(stroke * 2f, stroke)),
+        ),
+    )
 }
 
 /**
@@ -545,6 +611,13 @@ fun DshComposer(
     onRequestHandled: () -> Unit,
     /** 是否显示输入框外的工作区 chip（dsh 只在 hero 阶段显示） */
     showWorkspace: Boolean,
+    /**
+     * 没有绑定工作区的惰性态（dsh 的 .cardWorkspaceTrigger）：
+     * 卡片换 1px 虚线描边、不可编辑、发送键禁用；整张卡片是「选择工作区」的点击目标。
+     */
+    workspaceTrigger: Boolean = false,
+    /** 惰性态下点卡片：展开左上角工作区 chip 的详情卡（没有工作区时由调用方直接进目录选择） */
+    onRequestWorkspace: () -> Unit = {},
     /** 已绑定的工作区（dsh 侧栏的树）与当前会话所属工作区 */
     workspaces: List<com.adsh.app.core.data.WorkspaceEntity>,
     workspaceId: Long?,
@@ -559,11 +632,14 @@ fun DshComposer(
     menu: String?,
     onMenuChange: (String?) -> Unit,
     /**
-     * 掉线重连条的状态（dsh 的 ConnectionIndicator）：挂在输入框那一行的**右侧**
-     * （模型选择器与发送键之间 = dsh 的 conversation.input.activity 槽）。
+     * 当前会话工作区根（`@` 文件补全的索引根）。null = 没有可读的真实路径，@ 面板不出现。
      */
-    connection: ConnectionState,
-    onRetryConnection: () -> Unit,
+    workspaceRoot: String? = null,
+    /**
+     * 工作区索引的失效计数：一轮结束后父层 +1，下一次打 `@` 时重建索引
+     * （dsh 在每次 tool/result 之后让 file-reference 索引失效）。
+     */
+    fileIndexRevision: Int = 0,
     /**
      * 输入框**下方**那一排（dsh 的 InputBar dock：会话统计 / Token 用量 / 上下文占用）。
      *
@@ -605,6 +681,9 @@ fun DshComposer(
     val permissionOpen = menu == OPEN_PERMISSION
     val modelOpen = menu == OPEN_MODEL
     var confirmFullAccess by remember { mutableStateOf(false) }
+    // 惰性态的点击 / 按下反馈（dsh 的卡片 hover 色）：只在没有绑定工作区时挂到卡片上
+    val workspaceInteraction = remember { MutableInteractionSource() }
+    val workspacePressed by workspaceInteraction.collectIsPressedAsState()
 
     LaunchedEffect(requestPermission) {
         if (requestPermission) {
@@ -629,7 +708,15 @@ fun DshComposer(
         if (claim == null) "" else draft.trimStart().removePrefix(claim).trim()
     }
     val claimHint = claimHintOf(claim)
-    val inputStyle = TextStyle(fontSize = 14.sp, lineHeight = 24.sp, color = palette.labelPrimary)
+    // 输入正文的行高：滚动触发高度 = 行高 × [ComposerSpec.InputMaxLines]
+    val inputLineHeight = 24.sp
+    val inputStyle = TextStyle(fontSize = 14.sp, lineHeight = inputLineHeight, color = palette.labelPrimary)
+    /** 输入区最多长到几行（dsh 的 336px = 14 行；用户口径取一半），再高就在内部滚动 */
+    val inputMaxHeight = with(LocalDensity.current) {
+        (inputLineHeight * ComposerSpec.InputMaxLines).toDp()
+    }
+    /** 输入区的滚动状态：滚动由外层容器承担（BasicTextField 内部不滚），才能挂 [dshVerticalScrollbar] */
+    val inputScroll = rememberScrollState()
     val measurer = rememberTextMeasurer()
     val hintOffset = remember(claim, inputStyle) {
         claim?.let { measurer.measure(AnnotatedString(it + " "), inputStyle).size.width } ?: 0
@@ -649,6 +736,110 @@ fun DshComposer(
             appliedRevision = draftRevision
             fieldValue = TextFieldValue(draft, selection = TextRange(draft.length))
         }
+    }
+    // ---------------------------------------------------------------- @ 文件补全（dsh 的 input trigger `@file`）
+    // 规则层在 Mention.kt（纯函数，单测直接打），这里只接状态：光标处的活 token → 候选 → 插回草稿。
+    val mention = remember(fieldValue.text, fieldValue.selection) {
+        if (fieldValue.selection.collapsed) activeAtToken(fieldValue.text, fieldValue.selection.start) else null
+    }
+    val mentionToken = mention?.let { fieldValue.text.substring(it.start, it.end) }
+    /** 关掉之后同一个 token 不再自己弹回来（dsh 的 dismissed）：再打字 / 换位置才重新武装 */
+    var mentionDismissed by remember { mutableStateOf<String?>(null) }
+    /** 工作区索引：第一次打 @ 才建（一遍遍历），一轮结束后按 [fileIndexRevision] 重建 */
+    var mentionIndex by remember(workspaceRoot) { mutableStateOf<List<MentionEntry>?>(null) }
+    var mentionIndexRevision by remember(workspaceRoot) { mutableIntStateOf(-1) }
+    LaunchedEffect(mention != null, workspaceRoot, fileIndexRevision) {
+        if (mention == null || workspaceRoot.isNullOrBlank()) return@LaunchedEffect
+        if (mentionIndex != null && mentionIndexRevision == fileIndexRevision) return@LaunchedEffect
+        val built = withContext(Dispatchers.IO) { WorkspaceFileIndex.build(File(workspaceRoot)) }
+        mentionIndex = built
+        mentionIndexRevision = fileIndexRevision
+    }
+    val mentionItems = remember(mention?.query, mentionIndex) {
+        val index = mentionIndex
+        if (mention == null || index == null) emptyList() else mentionEntriesFor(index, mention.query)
+    }
+    var mentionHighlight by remember { mutableIntStateOf(0) }
+    LaunchedEffect(mention?.query, mentionItems.size) { mentionHighlight = 0 }
+    LaunchedEffect(mentionToken) {
+        if (mentionDismissed != null && mentionDismissed != mentionToken) mentionDismissed = null
+    }
+    // 与 slash 触发菜单互斥：同一时刻只有一张输入框浮层（结构上也只有一个位置）。
+    val mentionVisible = mention != null && mentionItems.isNotEmpty() &&
+        mentionDismissed != mentionToken && !paletteVisible && !workspaceTrigger
+    val mentionBounds = remember { AnchorRect() }
+    /**
+     * 选中 / drill 一条候选：把 `[@, 光标)` 整段换成引用文本。
+     *
+     * 文件补一个尾随空格（后一个字符已经是空格就不补 —— dsh 的 insertReference 规则）；
+     * drill 不补空格：菜单要按目录查询继续往下列。
+     */
+    fun applyMention(entry: MentionEntry, drill: Boolean) {
+        val at = mention ?: return
+        val text = fieldValue.text
+        if (at.start > at.end || at.end > text.length) return
+        val insertion = if (drill) {
+            formatMention(entry.path, directory = true, preserveQuote = at.quoted)
+        } else {
+            formatMentionPick(entry.path, entry.directory)
+        }
+        if (insertion == null) {
+            mentionDismissed = mentionToken
+            return
+        }
+        val tail = if (at.end < text.length) text[at.end] else null
+        val suffix = when {
+            drill -> ""
+            tail == ' ' -> ""
+            else -> " "
+        }
+        val next = text.replaceRange(at.start, at.end, insertion + suffix)
+        fieldValue = TextFieldValue(next, selection = TextRange(at.start + insertion.length + suffix.length))
+        onDraftChange(next)
+        mentionDismissed = null
+        runCatching { inputFocus.requestFocus() }
+    }
+    /** 硬件键盘：↑↓ 选行、Enter 引用、Tab 进目录、Esc 关。软键盘没有这些键，点行即可选中。 */
+    fun mentionKeyEvent(event: KeyEvent): Boolean {
+        if (!mentionVisible || event.type != KeyEventType.KeyDown) return false
+        val count = mentionItems.size
+        return when (event.key) {
+            Key.DirectionDown -> {
+                mentionHighlight = (mentionHighlight + 1) % count
+                true
+            }
+            Key.DirectionUp -> {
+                mentionHighlight = (mentionHighlight - 1 + count) % count
+                true
+            }
+            Key.Enter, Key.NumPadEnter -> {
+                mentionItems.getOrNull(mentionHighlight)?.let { applyMention(it, drill = false) }
+                true
+            }
+            Key.Tab -> {
+                mentionItems.getOrNull(mentionHighlight)?.let { applyMention(it, drill = it.directory) }
+                true
+            }
+            Key.Escape -> {
+                mentionDismissed = mentionToken
+                true
+            }
+            else -> false
+        }
+    }
+    val mentionPanelHeight = if (mentionVisible) {
+        popupPanelMaxHeight(
+            density = paletteDensity,
+            anchorTopPx = composerCardTop,
+            safeTopPx = WindowInsets.statusBars.getTop(paletteDensity),
+            screenHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp,
+            maxHeight = PALETTE_MAX_HEIGHT,
+            minHeight = PALETTE_MIN_HEIGHT,
+            gap = PALETTE_GAP,
+            topMargin = PALETTE_TOP_MARGIN,
+        )
+    } else {
+        0.dp
     }
     val claimColor = palette.warnLabel
     val claimTransform = remember(claim, claimColor) {
@@ -713,6 +904,25 @@ fun DshComposer(
                 unionAnchor(composerBounds.value, paletteBounds.value)
             }
         }
+        // `@` 文件候选菜单：与 slash 菜单同一套几何（贴卡片上沿、同宽、向上长、不占布局）。
+        MentionPanel(
+            visible = mentionVisible,
+            items = mentionItems,
+            highlighted = mentionHighlight,
+            widthPx = composerCardWidth,
+            height = mentionPanelHeight,
+            bounds = mentionBounds,
+            gap = PALETTE_GAP,
+            onHighlight = { mentionHighlight = it },
+            onPick = { entry -> applyMention(entry, drill = false) },
+            onDrill = { entry -> applyMention(entry, drill = true) },
+            onDismiss = { mentionDismissed = mentionToken },
+        )
+        if (mentionVisible) {
+            RegisterOverlayDismiss({ mentionDismissed = mentionToken }) {
+                unionAnchor(composerBounds.value, mentionBounds.value)
+            }
+        }
 
         // dsh 的 heroWorkspaceRow：输入框「外」左上角的工作区入口（文件夹图标 + 名称 + 倒角）
         // 只在「新对话且还没有内容」时出现（dsh 的 hero 阶段），开始对话后自动隐藏
@@ -740,6 +950,27 @@ fun DshComposer(
                 .fillMaxWidth()
                 .widthIn(max = ComposerSpec.CardMaxWidth)
                 .dshSoftShadow(cardShape)
+                .lightCardShadow(cardShape)
+                // 惰性态（没有绑定工作区）：整张卡就是「选择工作区」的点击目标（dsh 把卡片本身
+                // 当工作区选择器），虚线描边画在内容之后 —— 否则会被 Surface 的底色盖住。
+                .then(
+                    if (workspaceTrigger) {
+                        Modifier
+                            .dshClickable(
+                                interactionSource = workspaceInteraction,
+                                onClickLabel = "选择工作区",
+                                onClick = onRequestWorkspace,
+                            )
+                            .semantics { contentDescription = "选择工作区" }
+                            .dashedWorkspaceCard {
+                                // dsh 的 hover 色是 --dsw-alias-state-business-primary；触屏没有 hover，
+                                // 按下时把虚线转成同一档 accent。
+                                if (workspacePressed) palette.accent else palette.borderL4
+                            }
+                    } else {
+                        Modifier
+                    },
+                )
                 .onGloballyPositioned { coordinates ->
                     composerCardTop = coordinates.positionInRoot().y
                     composerCardWidth = coordinates.size.width
@@ -747,28 +978,18 @@ fun DshComposer(
             shape = cardShape,
             color = palette.inputMajor,
             contentColor = palette.labelPrimary,
-            // dsh 的输入卡片描边画在 --dsw-elevation-soft 里（0.5px、颜色重绑到 border-l2），不占布局。
-            border = BorderStroke(DshSpacing.Hairline, palette.borderL2),
+            // dsh 的输入卡片描边画在 --dsw-elevation-soft 里（0.5px、颜色重绑到 border-l2），不占布局；
+            // 惰性态没有实线描边，换成下面画在卡片内容之上的那圈虚线。
+            border = if (workspaceTrigger) null else BorderStroke(DshSpacing.Hairline, palette.borderL2),
         ) {
             Column(
                 Modifier.padding(top = ComposerSpec.CardPaddingTop),
                 verticalArrangement = Arrangement.spacedBy(ComposerSpec.CardGap),
             ) {
-                // 附件在输入框内部：卡片自动变高，文字输入区留在下方
-                if (attachments.isNotEmpty()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(
-                                start = ComposerSpec.AccessoryPaddingSide,
-                                end = ComposerSpec.AccessoryPaddingSide,
-                                top = ComposerSpec.AccessoryPaddingTop,
-                            ),
-                        horizontalArrangement = Arrangement.spacedBy(DshSpacing.Xl),
-                    ) {
-                        attachments.forEach { path -> AttachmentCard(path = path, onRemove = onRemoveAttachment) }
-                    }
+                // 附件条在输入框内部（dsh 的 .rail）：卡片自动变高，文字输入区留在下方。
+                // 惰性态没有会话可挂附件，即便状态里残留也不画（发送键同时被禁用）。
+                if (attachments.isNotEmpty() && !workspaceTrigger) {
+                    AttachmentRail(attachments = attachments, onRemove = onRemoveAttachment)
                 }
                 Box(
                     Modifier
@@ -780,43 +1001,70 @@ fun DshComposer(
                             top = ComposerSpec.InputPaddingTop,
                         ),
                 ) {
-                    if (draft.isEmpty()) {
+                    if (workspaceTrigger) {
+                        // 惰性态没有输入框：只留 dsh 的 placeholder.workspace，编辑入口是整张卡
                         Text(
-                            text = if (planMode) COMPOSER_HINT_PLAN else COMPOSER_HINT,
+                            text = COMPOSER_HINT_WORKSPACE,
                             fontSize = 14.sp,
                             lineHeight = 24.sp,
-                            // dsh：停靠态占位是一行省略，hero（空会话）才允许折两行
-                            maxLines = if (showWorkspace) 2 else 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             color = palette.labelCaption,
                         )
-                    }
-                    BasicTextField(
-                        value = fieldValue,
-                        onValueChange = { updated ->
-                            fieldValue = updated
-                            onDraftChange(updated.text)
-                        },
-                        modifier = Modifier.fillMaxWidth().focusRequester(inputFocus),
-                        textStyle = inputStyle,
-                        cursorBrush = SolidColor(palette.accent),
-                        visualTransformation = claimTransform,
-                        // dsh 的 --dsh-composer-text-max-height:336px = 14 行（超出在输入区内部滚）
-                        maxLines = 14,
-                    )
-                    // claim 生效且还没输入内容时，在 token 后面显示 dsh 的 hint（如「输入目标，智能体将持续执行」）
-                    if (claim != null && claimHint != null && claimRest.isEmpty()) {
-                        Text(
-                            text = claimHint,
-                            modifier = Modifier.padding(
-                                start = with(LocalDensity.current) { hintOffset.toDp() },
-                            ),
-                            fontSize = 14.sp,
-                            lineHeight = 24.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            color = palette.labelCaption,
-                        )
+                    } else {
+                        if (draft.isEmpty()) {
+                            Text(
+                                text = if (planMode) COMPOSER_HINT_PLAN else COMPOSER_HINT,
+                                fontSize = 14.sp,
+                                lineHeight = 24.sp,
+                                // dsh：停靠态占位是一行省略，hero（空会话）才允许折两行
+                                maxLines = if (showWorkspace) 2 else 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = palette.labelCaption,
+                            )
+                        }
+                        // 超过 [ComposerSpec.InputMaxLines] 行就内部滚动，并画 dsh 的覆盖式滚动条。
+                        // 里层 BasicTextField 不自己滚（maxLines = Int.MAX_VALUE）：滚动状态在外层才有
+                        // ScrollState 可画；光标跟随仍由 BasicTextField 的 bring-into-view 向祖先滚动容器请求。
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = inputMaxHeight)
+                                .dshVerticalScrollbar(inputScroll)
+                                .verticalScroll(inputScroll),
+                        ) {
+                            BasicTextField(
+                                value = fieldValue,
+                                onValueChange = { updated ->
+                                    fieldValue = updated
+                                    onDraftChange(updated.text)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(inputFocus)
+                                    // @ 面板开着时先吃方向键 / Enter / Tab / Esc：Enter 不能落到「发送」，
+                                    // 也不能在草稿里插入换行（dsh 的 keymap 与此同一优先级）。
+                                    .onPreviewKeyEvent { event -> mentionKeyEvent(event) },
+                                textStyle = inputStyle,
+                                cursorBrush = SolidColor(palette.accent),
+                                visualTransformation = claimTransform,
+                                maxLines = Int.MAX_VALUE,
+                            )
+                        }
+                        // claim 生效且还没输入内容时，在 token 后面显示 dsh 的 hint（如「输入目标，智能体将持续执行」）
+                        if (claim != null && claimHint != null && claimRest.isEmpty()) {
+                            Text(
+                                text = claimHint,
+                                modifier = Modifier.padding(
+                                    start = with(LocalDensity.current) { hintOffset.toDp() },
+                                ),
+                                fontSize = 14.sp,
+                                lineHeight = 24.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = palette.labelCaption,
+                            )
+                        }
                     }
                 }
 
@@ -834,44 +1082,37 @@ fun DshComposer(
                 ) {
                     // ＋：触发菜单（与键入 "/" 同一个菜单，含「文件」那一行）。
                     // dsh 的 .uV2eYG_tools：28px 圆形、--dsw-specific-selector 底、gap 8px（窄容器）。
-                    CircleIconButton(DshIcons.Plus, "添加文件或调用指令", active = paletteVisible) {
+                    CircleIconButton(
+                        DshIcons.Plus,
+                        "添加文件或调用指令",
+                        active = paletteVisible,
+                        enabled = !workspaceTrigger,
+                    ) {
                         onMenuChange(null)
                         onPaletteVisibleChange(!paletteVisible)
                     }
 
-                    // 权限预设（弹层在 ComposerMenus.kt）
-                    PermissionMenuTrigger(
-                        permission = permission,
-                        open = permissionOpen,
-                        cardWidthPx = composerCardWidth,
-                        onOpenChange = { want -> onMenuChange(if (want) OPEN_PERMISSION else null) },
-                        onSelect = onSelectPermission,
-                        onSelectNeedsConfirm = { confirmFullAccess = true },
-                    )
+                    // 没有会话的惰性态（dsh 的 sessionId === undefined）：权限 / 计划 / 模型这几个槽
+                    // 整块不渲染 —— 这一行只剩禁用的「＋」和发送键，焦点落在整张卡上。
+                    if (!workspaceTrigger) {
+                        // 权限预设（弹层在 ComposerMenus.kt）
+                        PermissionMenuTrigger(
+                            permission = permission,
+                            open = permissionOpen,
+                            cardWidthPx = composerCardWidth,
+                            onOpenChange = { want -> onMenuChange(if (want) OPEN_PERMISSION else null) },
+                            onSelect = onSelectPermission,
+                            onSelectNeedsConfirm = { confirmFullAccess = true },
+                        )
 
-                    if (planMode) PlanChip(onExit = onTogglePlan)
+                        if (planMode) PlanChip(onExit = onTogglePlan)
+                    }
 
                     Spacer(Modifier.weight(1f))
 
-                    // 掉线重连条（dsh 的 conversation.input.activity 槽）：位置在模型选择器与
-                    // 发送键之间 = 输入框的右侧。它出现时**模型选择器让位** —— dsh 在 activity
-                    // 非空时把 standardControls（模型那一组）整个 hidden，这一行才放得下。
-                    //
-                    // 「让位」的判据是**退场动画演完**（currentState 与 targetState 都为 false），
-                    // 不是「状态已经不是 Reconnecting」：后者会让重连条在淡出的 150ms 里和模型选择器
-                    // 同时占着这一行（两个加起来 ~340dp，比卡片还宽），发送键会被顶出卡片右边缘。
-                    val activityState = remember { MutableTransitionState(false) }
-                    activityState.targetState = connection !is ConnectionState.Idle
-                    AnimatedVisibility(
-                        visibleState = activityState,
-                        enter = fadeIn(tween(150)),
-                        exit = fadeOut(tween(150)),
-                    ) {
-                        ConnectionBar(state = connection, onRetry = onRetryConnection)
-                    }
-
-                    // 模型 / 推理等级两级菜单（弹层在 ComposerMenus.kt）
-                    if (!activityState.currentState && !activityState.targetState) {
+                    // 模型 / 推理等级两级菜单（弹层在 ComposerMenus.kt）。
+                    // 模型请求重试不再画在这里：它是会话流里的一行（dsh 的 model-retry），见 RetryRow。
+                    if (!workspaceTrigger) {
                         ModelMenuTrigger(
                             open = modelOpen,
                             modelGroups = modelGroups,
@@ -891,8 +1132,8 @@ fun DshComposer(
                     SendButton(
                         sending = sending,
                         // 只有附件没有文字也能发（dsh 的 canSubmit = 文本非空或附件非空）：
-                        // 发送键不能只看正文：只发一张图也必须点得动
-                        enabled = draft.isNotBlank() || attachments.isNotEmpty(),
+                        // 发送键不能只看正文：只发一张图也必须点得动。惰性态永远发不出去。
+                        enabled = !workspaceTrigger && (draft.isNotBlank() || attachments.isNotEmpty()),
                         busyEnter = busyEnter,
                         onSend = onSend,
                         onCancel = onCancel,
@@ -930,8 +1171,9 @@ fun DshComposer(
  * 文件夹图标 16px（未绑定用闭合文件夹），名称超长省略，右侧 12px 倒角；
  * hover / 展开时底色 --dsw-alias-interactive-bg-hover。
  *
- * 点开是 dsh 的工作区菜单：已有工作区列表（当前项打勾）+「添加工作区…」；
- * 一个工作区都没有时直接进目录选择（对应 dsh 的 addIsTheOnlyEntry）。
+ * 点开是 dsh 的工作区菜单（dsh 的 WorkspacePicker 走共享 Menu 原语）：已有工作区列表 + 行尾 14dp 勾；
+ * 有工作区时「添加工作区…」钉在底部（.footer：上方 3dp、0.5dp border-l2 分隔线、线下 3dp）；
+ * 一个工作区都没有时添加动作就是唯一菜单项，点 chip 直接进目录选择（dsh 的 addIsTheOnlyEntry）。
  */
 @Composable
 private fun WorkspaceChipRow(
@@ -994,19 +1236,34 @@ private fun WorkspaceChipRow(
         if (open) {
             DshPopup(onDismiss = { onOpenChange(false) }, alignStart = true, anchor = anchor) {
                 DshMenuCard(Modifier.width(200.dp)) {
-                    workspaces.forEach { workspace ->
-                        DshMenuRow(
-                            label = workspace.name,
-                            icon = DshIcons.FolderClose,
-                            selected = workspace.id == workspaceId,
-                            onClick = { onPick(workspace.id) },
-                        )
+                    if (workspaces.isEmpty()) {
+                        // 唯一菜单项：没有工作区可列时「添加工作区…」就是菜单本身
+                        DshMenuRow(label = "添加工作区…", icon = DshIcons.Plus, onClick = onAdd)
+                    } else {
+                        workspaces.forEach { workspace ->
+                            DshMenuRow(
+                                label = workspace.name,
+                                icon = DshIcons.FolderClose,
+                                selected = workspace.id == workspaceId,
+                                onClick = { onPick(workspace.id) },
+                            )
+                        }
+                        // dsh 的 .footer：列表与分隔线之间 3dp、线上 0.5dp border-l2、线下 3dp
+                        Column(Modifier.padding(top = DshSpacing.Sm)) {
+                            Spacer(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(DshSpacing.Hairline)
+                                    .background(palette.borderL2),
+                            )
+                            DshMenuRow(
+                                label = "添加工作区…",
+                                icon = DshIcons.Plus,
+                                modifier = Modifier.padding(top = DshSpacing.Sm),
+                                onClick = onAdd,
+                            )
+                        }
                     }
-                    DshMenuRow(
-                        label = "添加工作区…",
-                        icon = DshIcons.Plus,
-                        onClick = onAdd,
-                    )
                 }
             }
         }
@@ -1021,17 +1278,107 @@ private fun WorkspaceChipRow(
 // isImagePath 已搬到 ui/ImageDecode.kt（与缩略图解码同一个家：图片这条路上的共用件只有一处）
 
 /**
- * 待发附件：**图片**与**文件**是两种形状（各自向参考实现看齐）。
+ * 待发附件条（dsh 的 ComposerAttachments `.rail` + `AttachmentRail`）：
  *
- *  - 图片：只显示缩略图，**不带文件名**，移除的叉压在图的右上角（dsh 的图片附件）；
- *  - 文件：类型图标（与文件浏览里同一个 [FileTypeIcon]）+ 文件名 + 大小，
- *    右上角一枚深色圆形叉徽标 —— 形状照 DeepSeek app 的附件卡片。
+ *  - 布局：水平一行、间距 10、隐藏滚动条；新增附件**滚到末尾**（dsh 只在 item 数变大时滚，
+ *    首次挂载在已有草稿上不跳）；
+ *  - 容器：padding 2 / 10 / 0，并上收 6（dsh 的 `margin-bottom:-6px`：卡片 gap 12 视觉成 6）；
+ *  - 溢出：两端浮出 24dp 翻页圆钮（dsh 的 `.arrow`：面板阴影 + input-major 底），一次翻
+ *    「一屏减一张卡」（下限 200）。
+ *
+ * ADSH 的导入是同步复制，所以这里只有 dsh 的**就绪态**（没有上传中 / 失败重试两态）。
+ */
+@Composable
+private fun AttachmentRail(attachments: List<String>, onRemove: (String) -> Unit) {
+    val scroll = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    val canScrollLeft by remember { derivedStateOf { scroll.value > 1 } }
+    val canScrollRight by remember { derivedStateOf { scroll.value < scroll.maxValue - 1 } }
+    BoxWithConstraints(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 10.dp, end = 10.dp, top = 2.dp)
+            .pullUpBottom(6.dp),
+    ) {
+        val pagePx = with(LocalDensity.current) { maxOf(maxWidth - 64.dp, 200.dp).roundToPx() }
+        // dsh 只在 **item 数变大**时滚到末尾；首次带着已有草稿挂载（previousCount == null）保持起点，
+        // 删除附件也不动视口。
+        var previousCount by remember { mutableStateOf<Int?>(null) }
+        LaunchedEffect(attachments.size) {
+            val grew = previousCount != null && attachments.size > previousCount!!
+            previousCount = attachments.size
+            if (grew) {
+                // 新附件要等这一帧量完宽度，maxValue 才是新的
+                withFrameNanos { }
+                scroll.scrollTo(scroll.maxValue)
+            }
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .dshHorizontalScrollbar(scroll, elevated = true)
+                .horizontalScroll(scroll),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            attachments.forEach { path -> AttachmentItem(path = path, onRemove = onRemove) }
+        }
+        if (canScrollLeft) {
+            RailArrow(left = true) {
+                scope.launch { scroll.animateScrollTo((scroll.value - pagePx).coerceAtLeast(0)) }
+            }
+        }
+        if (canScrollRight) {
+            RailArrow(left = false) {
+                scope.launch { scroll.animateScrollTo((scroll.value + pagePx).coerceAtMost(scroll.maxValue)) }
+            }
+        }
+    }
+}
+
+/** 一侧的翻页钮（dsh 的 `.arrow` / `.arrowLeft` / `.arrowRight`：24dp 圆、贴边 4dp、面板阴影） */
+@Composable
+private fun BoxScope.RailArrow(left: Boolean, onClick: () -> Unit) {
+    val palette = LocalDshPalette.current
+    Box(
+        modifier = Modifier
+            .align(if (left) Alignment.CenterStart else Alignment.CenterEnd)
+            .offset(x = if (left) 4.dp else (-4).dp)
+            .size(24.dp)
+            .clip(CircleShape)
+            .background(palette.inputMajor)
+            .dshSoftShadow(CircleShape)
+            .dshClickable(interactionSource = dshInteraction(), onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            DshIcons.ChevronRight,
+            contentDescription = if (left) "向左翻页" else "向右翻页",
+            tint = palette.labelSecondary,
+            modifier = Modifier.size(14.dp).rotate(if (left) 180f else 0f),
+        )
+    }
+}
+
+/** dsh 的 `.rail{margin-bottom:-6px}`：量高时上收一段，内容仍画在原位 */
+private fun Modifier.pullUpBottom(pull: Dp): Modifier = layout { measurable, constraints ->
+    val placeable = measurable.measure(constraints)
+    layout(placeable.width, (placeable.height - pull.roundToPx()).coerceAtLeast(0)) {
+        placeable.place(0, 0)
+    }
+}
+
+/**
+ * 待发附件：**图片**与**文件**是两种形状（各自向 dsh 看齐）。
+ *
+ *  - 图片：64 缩略图、**不带文件名**，移除键 18dp 压在右上角内 4dp（dsh 的 composer 图片附件）；
+ *  - 文件：240×64 卡片，类型图标 28 + 文件名 14/22 + 大小 12/15，移除键在右上角内 6dp。
  *
  * 是不是图片用**魔数**判定（与发出去之后消息里那一行同一套），不看扩展名：
  * 否则会出现「输入框里是图片缩略图、发出去变成文件卡片」这种前后不一致。
  */
 @Composable
-private fun AttachmentCard(path: String, onRemove: (String) -> Unit) {
+private fun AttachmentItem(path: String, onRemove: (String) -> Unit) {
     if (remember(path) { isImagePath(path) }) {
         ImageAttachment(path, onRemove)
     } else {
@@ -1039,17 +1386,21 @@ private fun AttachmentCard(path: String, onRemove: (String) -> Unit) {
     }
 }
 
-/** 图片附件：缩略图 + 压在右上角的叉（没有文件名 —— dsh 那边也没有） */
+/** dsh 的 composer 图片附件：64×64、radius-xl=20、.5 描边（border-l2-darkmode-thin）、hover 底 */
 @Composable
 private fun ImageAttachment(path: String, onRemove: (String) -> Unit) {
     val palette = LocalDshPalette.current
     val thumbnail by rememberImage(path, THUMB_TARGET_PX)
+    val shape = RoundedCornerShape(20.dp)
     Box(Modifier.size(64.dp)) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(RoundedCornerShape(12.dp))
-                .background(palette.selector),
+                .clip(shape)
+                .background(palette.hover)
+                .border(DshSpacing.Hairline, palette.borderL2DarkmodeThin, shape)
+                // dsh 的缩略图 cursor: zoom-in：点一下看原图（移除键在它上面，自己消费点击）
+                .dshClickable(interactionSource = dshInteraction()) { ImagePreviewState.open(path) },
             contentAlignment = Alignment.Center,
         ) {
             val image = thumbnail
@@ -1062,36 +1413,38 @@ private fun ImageAttachment(path: String, onRemove: (String) -> Unit) {
                 )
             }
         }
-        RemoveBadge(
+        AttachmentRemoveButton(
             onRemove = { onRemove(path) },
-            modifier = Modifier.align(Alignment.TopEnd),
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 4.dp),
         )
     }
 }
 
-/** 文件附件：类型图标 + 文件名 + 大小（右上角同样是那枚叉徽标） */
+/** 文件附件（dsh 的 FileCard 就绪态）：240×64、radius-lg=16、.5 描边、input-major 底 */
 @Composable
 private fun FileAttachment(path: String, onRemove: (String) -> Unit) {
     val palette = LocalDshPalette.current
     val file = remember(path) { File(path) }
     val size = remember(path) { runCatching { file.length() }.getOrDefault(0L) }
-    Box(Modifier.widthIn(max = 240.dp).height(64.dp)) {
+    val shape = RoundedCornerShape(16.dp)
+    Box(Modifier.width(240.dp).height(64.dp)) {
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(RoundedCornerShape(16.dp))
+                .clip(shape)
                 .background(palette.inputMajor)
+                .border(DshSpacing.Hairline, palette.borderL2, shape)
                 .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // 与工作区文件浏览同一个图标（按类型给角标：PDF / MD / PY …）
-            FileTypeIcon(name = file.name, size = 40.dp)
-            Column(modifier = Modifier.weight(1f, fill = false)) {
+            FileTypeIcon(name = file.name, size = 28.dp)
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = file.name,
                     fontSize = 14.sp,
-                    lineHeight = 20.sp,
+                    lineHeight = 22.sp,
                     fontWeight = FontWeight.Medium,
                     color = palette.labelPrimary,
                     maxLines = 1,
@@ -1100,47 +1453,44 @@ private fun FileAttachment(path: String, onRemove: (String) -> Unit) {
                 Text(
                     text = fileSizeText(size),
                     fontSize = 12.sp,
-                    lineHeight = 18.sp,
+                    lineHeight = 15.sp,
                     color = palette.labelTertiary,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
-        RemoveBadge(
+        AttachmentRemoveButton(
             onRemove = { onRemove(path) },
-            modifier = Modifier.align(Alignment.TopEnd),
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 6.dp),
         )
     }
 }
 
 /**
- * 移除徽标：一枚深色圆底 + 白色叉，压在卡片的右上角上（DeepSeek app 的附件卡片就这么画的）。
+ * 移除键（dsh 的 `.remove`）：18dp 圆、contrast-fill 底、inverted 图标。
  *
- * 深色用「黑 55%」而不是某个主题令牌：它在浅色卡片和深色卡片上都得是**深底白叉**
- * （用 labelPrimary 这类跟着主题反转的令牌，深色主题下会变成白圆底）。
+ * dsh 在指针设备上默认透明、hover 才显形；`@media (pointer: coarse)` 恒显 —— 手机恒显。
  */
 @Composable
-private fun RemoveBadge(onRemove: () -> Unit, modifier: Modifier = Modifier) {
+private fun AttachmentRemoveButton(onRemove: () -> Unit, modifier: Modifier = Modifier) {
+    val palette = LocalDshPalette.current
     Box(
         modifier = modifier
-            .offset(x = 5.dp, y = (-5).dp)
-            .size(20.dp)
+            .size(18.dp)
             .clip(CircleShape)
-            .background(REMOVE_BADGE_BACKGROUND)
-            .dshClickable(interactionSource = dshInteraction()) { onRemove() },
+            .background(palette.buttonContrastFill)
+            .dshClickable(interactionSource = dshInteraction(), onClick = onRemove),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             DshIcons.CloseFill,
             contentDescription = "移除附件",
-            tint = Color.White,
+            tint = palette.labelPrimaryInverted,
             modifier = Modifier.size(12.dp),
         )
     }
 }
-
-/** 移除徽标的底色：黑 55%（深浅两套主题下都是「深底白叉」） */
-private val REMOVE_BADGE_BACKGROUND = Color(0x8C000000)
 
 /** 待发附件缩略图的目标长边（解码与缓存只有 ui/ImageDecode.kt 那一份实现） */
 private const val THUMB_TARGET_PX = 144
@@ -1151,6 +1501,8 @@ private fun CircleIconButton(
     icon: ImageVector,
     contentDescription: String,
     active: Boolean = false,
+    /** 禁用态（dsh 的 .add:disabled）：不接点击、整颗降到 0.5 不透明度 */
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val palette = LocalDshPalette.current
@@ -1160,8 +1512,9 @@ private fun CircleIconButton(
         modifier = Modifier
             .size(28.dp)
             .clip(CircleShape)
+            .alpha(if (enabled) 1f else 0.5f)
             .background(if (pressed || active) palette.hoverSolid else palette.selector)
-            .dshClickable(interactionSource = interaction, onClick = onClick),
+            .dshClickable(interactionSource = interaction, enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -1380,7 +1733,7 @@ fun CommandPalette(
             },
         )
         DshMenuCard(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().lightCardShadow(RoundedCornerShape(16.dp)),
             padding = 3.dp,
         ) {
             BoxWithConstraints {
@@ -1388,13 +1741,21 @@ fun CommandPalette(
                 // 免得每一行各做一次子组合
                 val nameMax = maxWidth * 0.4f
                 val aliasMax = maxWidth * 0.2f
+                val paletteScroll = rememberScrollState()
                 Column(
                     Modifier
                         .fillMaxWidth()
                         // 卡片自己的高度上限是「窗口高度减去卡片内边距」：超出就在卡片内部滚，
                         // 绝不让卡片长过窗口（长过去就会被窗口裁掉，也会把底边顶离锚点）
                         .heightIn(max = height - 6.dp)
-                        .verticalScroll(rememberScrollState()),
+                        // 菜单卡圆角 16 + 内边距 3：thumb 端点会落进圆角被裁，轨道上下各让开 3dp
+                        .dshVerticalScrollbar(
+                            paletteScroll,
+                            elevated = true,
+                            topInset = 3.dp,
+                            bottomInset = 3.dp,
+                        )
+                        .verticalScroll(paletteScroll),
                 ) {
                     var lastSection: String? = null
                     commands.forEach { command ->
@@ -1514,7 +1875,7 @@ internal fun rememberAttachmentPicker(onImport: (List<android.net.Uri>) -> Impor
     ) { uris ->
         val result = onImport(uris)
         if (result.failures.isNotEmpty()) {
-            android.widget.Toast.makeText(context, "导入失败：" + result.failures.first(), android.widget.Toast.LENGTH_LONG).show()
+            android.widget.Toast.makeText(context, "import failed: " + result.failures.first(), android.widget.Toast.LENGTH_LONG).show()
         }
     }
     return { launcher.launch(arrayOf("*/*")) }

@@ -40,8 +40,11 @@ data class UserAttachment(
 /** 装配请求时的一张图片：可放进 wire 的 data URL 与它的实际像素尺寸 */
 data class RequestImage(val dataUrl: String, val width: Int, val height: Int)
 
-/** dsh 的 requestImagePixels 默认值（DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET = 64e4） */
-const val REQUEST_IMAGE_MAX_PIXELS = 640_000
+/**
+ * 请求图片的像素预算：dsh 的 pi-ai 路由默认 `requestImagePixelBudget = 2048*2048`
+ * （packages/llm/llm-pi-ai/src/config.ts:59-60；ADSH 走 OpenAI 兼容路由，用同一档）。
+ */
+const val REQUEST_IMAGE_MAX_PIXELS = 2048 * 2048
 
 val attachmentJson = Json { ignoreUnknownKeys = true; isLenient = true }   // 附件清单与工具图片共用同一份 Json 配置
 
@@ -71,8 +74,8 @@ fun hasImageAttachment(raw: String?): Boolean = decodeAttachments(raw).any { it.
  * @param modelLabel 设置页里显示的模型名（设置 → 模型 → 这一条 → 展开）
  */
 fun imageRouteHintText(modelLabel: String): String =
-    "如果这个模型不能识图：请到「设置 → 模型 → " + modelLabel +
-        " → 展开」取消勾选「可识别图片」，再重新发送。"
+    "If this model cannot read images: open Settings > Models > " + modelLabel +
+        " > expand, uncheck \"Accepts images\", and send again."
 
 /**
  * 把「待发附件的路径」变成可落库的附件引用（dsh 的 admitPromptContent）：

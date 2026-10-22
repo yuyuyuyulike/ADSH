@@ -58,7 +58,7 @@ object BalanceApi {
      */
     fun fetch(provider: ProviderDef, connectTimeoutMs: Int = 15_000, readTimeoutMs: Int = 20_000): AccountBalance {
         val key = provider.apiKey.trim()
-        require(key.isNotEmpty()) { "未配置 API Key" }
+        require(key.isNotEmpty()) { "API key is not configured" }
         val base = provider.baseUrl.trim().trimEnd('/').ifEmpty { DEEPSEEK_BASE_URL }
         val url = URL(base + "/user/balance")
         val connection = (url.openConnection() as HttpURLConnection).apply {
@@ -77,11 +77,11 @@ object BalanceApi {
                 throw IllegalStateException("HTTP " + code + "：" + detailOf(body).take(200))
             }
             val root = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
-                ?: throw IllegalStateException("返回不是 JSON 对象")
+                ?: throw IllegalStateException("response is not a JSON object")
             val infos = (root["balance_infos"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
-            val first = infos.firstOrNull() ?: throw IllegalStateException("返回里没有 balance_infos")
+            val first = infos.firstOrNull() ?: throw IllegalStateException("response has no balance_infos")
             val total = first["total_balance"]?.jsonPrimitive?.contentOrNull
-                ?: throw IllegalStateException("返回里没有 total_balance")
+                ?: throw IllegalStateException("response has no total_balance")
             return AccountBalance(
                 currency = first["currency"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                 total = total,

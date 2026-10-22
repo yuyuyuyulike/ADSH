@@ -1,20 +1,4 @@
 {
-  "note": "解耦未完成前的已知包环（ROADMAP 阶段 2）。门禁只卡「新增」；等循环归零后把 cycles 清空，翻成「一个都不许有」。",
-  "cycles": [
-    [
-      "com.adsh.app.core.agent",
-      "com.adsh.app.core.data",
-      "com.adsh.app.core.llm",
-      "com.adsh.app.core.ptc",
-      "com.adsh.app.core.session",
-      "com.adsh.app.core.tools",
-      "com.adsh.app.core.workspace",
-      "com.adsh.app.runtime.termux"
-    ],
-    [
-      "com.adsh.app.island",
-      "com.adsh.app.ui",
-      "com.adsh.app.ui.panels"
-    ]
-  ]
+  "note": "已知包环基线：2026-10 已归零（见 docs/ARCHITECTURE.md 的「0 环」）。门禁跑 --strict；这份基线只在 --baseline 模式下卡「新增」，空表表示一个环都不许再出现。",
+  "cycles": []
 }

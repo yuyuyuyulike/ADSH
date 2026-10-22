@@ -16,12 +16,13 @@ import com.adsh.app.core.data.MessageEntity
  * 现在只算**真的会上 wire 的行**，与 AgentLoop 那一段的分支一一对应：
  *  - `sysprompt`：跳过（内容在 system 那一条里，已经算在「系统提示词」那一栏）；
  *  - `command`：跳过（用户敲的斜杠命令行，不进模型）；
+ *  - `retry`：跳过（模型请求重试行，log-only，不进模型请求）；
  *  - `context`：form = snapshot（dsh 的 RuntimeContextProjection）与 form = instructions
  *    （dsh 的 agent-instructions）都作为 user 消息发出去；自定义后缀那种 DISPLAY 行不发；
  *  - `tool` / 其它：发（孤儿工具结果由装配阶段丢弃，属于残局，不在这里纠）。
  */
 internal fun countsTowardContext(message: MessageEntity): Boolean = when (message.role) {
-    "sysprompt", "command" -> false
+    "sysprompt", "command", "retry" -> false
     "context" -> (message.subCallsJson == PromptAssembler.FORM_SNAPSHOT ||
         message.subCallsJson == PromptAssembler.FORM_INSTRUCTIONS) && message.content.isNotBlank()
     else -> true

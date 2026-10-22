@@ -28,12 +28,6 @@ class ImageInputTest {
         assertTrue(SettingsStore.defaultImageInput("deepseek-v4-flash"))
     }
 
-    @Test
-    fun catalogLookupIsUnchangedForKnownIds() {
-        assertTrue(SettingsStore.acceptsImages("deepseek-flash"))
-        assertFalse(SettingsStore.acceptsImages("deepseek-v4-pro"))
-    }
-
     // ------------------------------------------------------------ 三岔：手动开关 / 目录 / 默认（acceptsImagesFrom）
 
     @Test

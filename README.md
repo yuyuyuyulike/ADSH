@@ -6,9 +6,9 @@ ADSH 是把 DeepSeek Harness（dsh）搬到 Android 上的原生实现：沿用 
 
 ## 它是什么
 
-界面是 Kotlin + Jetpack Compose 的单 Activity。对话流、输入区、抽屉、文件预览和设置都照着 dsh 与 DeepSeek App 的样子做，同时补了一些手机上更趁手的东西：右侧可拖的滚动条、双击刘海回到会话开头、docx / xlsx / pptx / pdf / 图片的本地预览，以及面向长会话的流式渲染与行级绘制裁剪。
+界面是 Kotlin + Jetpack Compose 的单 Activity。对话流、输入区、抽屉、文件预览和设置都照着 dsh 与 DeepSeek App 的样子做，同时补了一些手机上更趁手的东西：右侧滚动条（停止滚动一秒后隐去）、双击刘海回到会话开头、输入框里打 `@` 直接补全工作区文件路径、docx / xlsx / pptx / pdf / 图片的本地预览，以及面向长会话的流式渲染与行级绘制裁剪。
 
-工具层是 dsh 原版那一套：`bash`、`read`、`read_image`、`write`、`edit`、`glob`、`grep`、`todo_write`、`present`、`web_search`、`web_fetch`、`ask_user_question`、`exit_plan_mode` 共 13 个，加上 `run_code` 一共 14 个。模型能直接调用的只有 `run_code` —— 其余工具在系统提示词的 `tools:sdk` 段里声明，由程序用 `await tools.<name>(args)` 组合调用（PTC / QuickJS）。`ToolCallError` 与输出 schema 都对着 dsh 源码核过。
+工具层是 dsh 原版那一套：`bash`、`read`、`read_image`、`write`、`edit`、`glob`、`grep`、`todo_write`、`present`、`web_search`、`web_fetch`、`ask_user_question`、`exit_plan_mode` 共 13 个，另有 `job_output`、`job_list`、`job_kill` 三个后台任务工具，加上 `run_code` 一共 17 个。模型能直接调用的只有 `run_code` —— 其余工具在系统提示词的 `tools:sdk` 段里声明，由程序用 `await tools.<name>(args)` 组合调用（PTC / QuickJS）。`ToolCallError` 与输出 schema 都对着 dsh 源码核过。长会话会按 dsh 的压缩机制自动收拢上下文：接近窗口上限先剪旧工具结果、仍超才摘要，上下文超限报错时压缩后重试；输入框上方会显示压缩状态。
 
 运行环境是内嵌的 Termux 用户态：bootstrap 静态打进 APK，前缀就是官方前缀 `/data/data/com.termux/files/usr`，所以 `bash` 和随包分发的 CLI 直接就能跑，不需要 root 或 proot。工作区用 SAF 选目录，重活可以放到 `$ADSH_SCRATCH`。模型侧支持官方 DeepSeek（含原生多模态）和常见供应方目录，填个密钥即可。
 
@@ -23,7 +23,7 @@ ADSH 是把 DeepSeek Harness（dsh）搬到 Android 上的原生实现：沿用 
 
 ## 安装
 
-下载 [`ADSH-0.2.4-release.apk`](https://github.com/yuyuyuyulike/ADSH/releases/download/v0.2.4-20261018/ADSH-0.2.4-release.apk)：arm64-v8a，Android 8.0（API 26）以上；release 已开 R8（minify + shrink）。新版本都发在 [Releases](https://github.com/yuyuyuyulike/ADSH/releases) 页，那里始终是最新那一份。
+下载 [`ADSH-0.2.6-release.apk`](https://github.com/yuyuyuyulike/ADSH/releases/download/v0.2.6-20261022/ADSH-0.2.6-release.apk)：arm64-v8a，Android 8.0（API 26）以上；release 已开 R8（minify + shrink）。新版本都发在 [Releases](https://github.com/yuyuyuyulike/ADSH/releases) 页，那里始终是最新那一份。
 
 > **不能与官方 Termux 共存**：本应用的包名就是 `com.termux`（Termux 的前缀路径编译死在二进制里，官方明确「安装后不可重定位」）。装之前要先卸载官方 Termux，反之亦然；两者共用同一个数据目录，卸载本应用等于清空内置用户态。
 
@@ -31,6 +31,7 @@ ADSH 是把 DeepSeek Harness（dsh）搬到 Android 上的原生实现：沿用 
 
 - **工作区**（你绑定的文件夹）在 Android 外部存储上：只能读写普通文件 —— 建不了软链、置不了执行位、不能执行里面的文件，适合放素材与最终产物。
 - **重活**（`npm install` / 构建 / git）放到 `$ADSH_SCRATCH`（= `$HOME/scratch`），做完把产物拷回工作区；`$ADSH_WORKSPACE` 始终指向当前工作区，`/tmp` 就是 `$TMPDIR`。
+- 外部 Linux（glibc）二进制用 `grun ./tool` 跑：随包带了 Termux glibc 与加载器，直接 `./tool` 会因缺 `/lib/ld-linux-aarch64.so.1` 起不来。
 - `targetSdk` 有意钉在 28（与官方 Termux 一样，见 [HANDOFF.md](HANDOFF.md)）：代价是上不了 Google Play，本项目只走 GitHub Release 侧载。
 
 ## 构建

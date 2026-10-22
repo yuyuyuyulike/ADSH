@@ -111,16 +111,16 @@ class SessionLog {
             val closedCalls = HashSet<Long>()
             for ((index, event) in events.withIndex()) {
                 if (event.seq != index.toLong()) {
-                    bad += "seq 不连续：第 " + index + " 条的 seq 是 " + event.seq
+                    bad += "non-contiguous seq: event " + index + " has seq " + event.seq
                     break
                 }
                 when (val body = event.body) {
                     is SessionBody.ToolCall -> {
-                        if (!openCalls.add(body.harnessId)) bad += "同一次调用开始了两次：" + body.harnessId
+                        if (!openCalls.add(body.harnessId)) bad += "tool call started twice: " + body.harnessId
                     }
                     is SessionBody.ToolResult -> {
-                        if (body.harnessId !in openCalls) bad += "结果没有对应的调用：" + body.harnessId
-                        if (!closedCalls.add(body.harnessId)) bad += "同一次调用结算了两次：" + body.harnessId
+                        if (body.harnessId !in openCalls) bad += "tool result without a call: " + body.harnessId
+                        if (!closedCalls.add(body.harnessId)) bad += "tool call settled twice: " + body.harnessId
                     }
                     // 一步定稿没有跨事件的不变量（它的正文/思考就是那一步自己的内容）
                     is SessionBody.Step -> Unit
@@ -128,7 +128,7 @@ class SessionLog {
                         val sub = if (body is SessionBody.PtcDispatchStart) body.sub else (body as SessionBody.PtcDispatch).sub
                         val parent = sub.id.substringBefore(":ptc:").toLongOrNull()
                         if (parent == null || parent !in openCalls) {
-                            bad += "子调用 " + sub.id + " 找不到父调用（id 前缀必须是父的 harnessId）"
+                            bad += "sub-call " + sub.id + " has no parent call (its id prefix must be the parent harnessId)"
                         }
                     }
                 }

@@ -16,6 +16,7 @@ captures/
 
 # 大文件：由 scripts/fetch-tools.sh / fetch-bash.sh / fetch-bootstrap.sh 按 SHA 拉取
 assets-src/bootstrap/*.zip
+assets-src/glibc/*.deb
 app/src/main/execLibs/
 
 # IDE

@@ -183,10 +183,10 @@ internal fun firstInvalidModel(models: List<ModelDef>): InvalidModel? {
  */
 internal fun modelProblemText(invalid: InvalidModel): String {
     val reason = when (invalid.problem) {
-        ModelProblem.ID_REQUIRED -> "模型 ID 不能为空。"
-        ModelProblem.ID_DUPLICATE -> "模型 ID 不能重复。"
+        ModelProblem.ID_REQUIRED -> "Model ID cannot be empty."
+        ModelProblem.ID_DUPLICATE -> "Model ID must be unique."
     }
-    return "模型 " + (invalid.index + 1) + ": " + reason
+    return "Model " + (invalid.index + 1) + ": " + reason
 }
 
 // ------------------------------------------------------------------ 编辑提供方卡片

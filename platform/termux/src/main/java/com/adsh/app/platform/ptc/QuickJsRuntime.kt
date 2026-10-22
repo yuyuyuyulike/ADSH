@@ -59,6 +59,12 @@ class QuickJsRuntime {
         postCall: (id: Int, name: String, argsJson: String) -> Unit,
         /** 取走**已经到达**的回执（id → wire），非阻塞；没有就返回空表 */
         takeReplies: () -> List<Pair<Int, String>>,
+        /**
+         * 等一条回执（最多 given ms）；null = 超时。有在途调用时泵循环靠它**睡在队列上**
+         * 而不是每 1ms 求值一次空表达式（dsh 的 Node 运行时在 await 上是真事件循环）。
+         * null = 不支持阻塞等待：退回旧的轮询形状（测试/其它宿主用）。
+         */
+        awaitReply: ((timeoutMs: Long) -> Pair<Int, String>?)? = null,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
         maxLogLines: Int = MAX_LOG_LINES,
         /**
@@ -72,6 +78,8 @@ class QuickJsRuntime {
         val started = System.currentTimeMillis()
         val logs = ArrayList<String>(16)
         val calls = java.util.concurrent.atomic.AtomicInteger(0)
+        // 还没拿到回执的调用数：只有它 > 0 时泵循环才值得阻塞等回执
+        val openCalls = java.util.concurrent.atomic.AtomicInteger(0)
         // dsh 的 OutputLedger：logs + 返回值 + 诊断合起来 64MiB（maxOutputBytes 默认值）。
         // 超了这一条预算，dsh 让整次运行以 kind = output-limit 失败，而不是把输出交给调用方 ——
         // 手机主进程的 Java 堆只有 256MB，一条几百 MB 的日志/返回值会直接把它打爆。
@@ -104,6 +112,7 @@ class QuickJsRuntime {
                 val name = args.getOrNull(1) as? String ?: return@JSCallFunction null
                 val rawArgs = args.getOrNull(2) as? String ?: "{}"
                 calls.incrementAndGet()
+                openCalls.incrementAndGet()
                 postCall(id, name, rawArgs)
                 null
             })
@@ -141,22 +150,34 @@ class QuickJsRuntime {
                 pumps < MAX_PUMPS &&
                 cancel?.invoke() != true
             ) {
-                engine.evaluate("0", "pump.js")
                 // 到了的回执先兑现（同一个泵 tick 里）：JS 侧那些 Promise 就是在这里被 resolve 的
-                val arrived = takeReplies()
+                var arrived = takeReplies()
+                if (arrived.isEmpty() && openCalls.get() > 0 && awaitReply != null) {
+                    // 有在途调用：睡在回执队列上。以前这里是「每 1ms 求值一次 0」的空转 ——
+                    // 一次等几十秒的 tools.bash 就是每秒一千次 QuickJS 求值 + 一千次线程唤醒。
+                    // 来一条回执立刻醒（延迟不变），没有回执就每 [PUMP_IDLE_MS] 醒来查一次
+                    // 「结算了吗 / 到点了吗 / 用户停了吗」。
+                    val first = awaitReply.invoke(PUMP_IDLE_MS)
+                    if (first != null) arrived = listOf(first) + takeReplies()
+                }
                 if (arrived.isNotEmpty()) {
                     engine.evaluate("globalThis.__adsh_settleAll__(" + replyPayload(arrived) + ")", "settle.js")
+                    openCalls.addAndGet(-arrived.size)
                 }
+                // 泵一次：settle 里 resolve 的 Promise 的续体要下一次 evaluate 才会跑
+                engine.evaluate("0", "pump.js")
                 settled = (engine.evaluate("globalThis.__adsh_state.settled === true", "check.js") as? Boolean) ?: false
                 pumps++
-                if (!settled) Thread.sleep(1)
+                // 没有在途调用（程序在等一个与工具无关的 Promise）时仍然按 1ms 节流：
+                // 永远不回执的 await 不能让泵循环空转到超时。
+                if (!settled && arrived.isEmpty() && (awaitReply == null || openCalls.get() == 0)) Thread.sleep(1)
             }
 
             if (cancel?.invoke() == true) {
                 return CodeRunResult(
                     valueJson = null,
                     logs = logLinesForResult(logs, omittedLogs.get()),
-                    error = "已停止",
+                    error = "aborted",
                     durationMs = System.currentTimeMillis() - started,
                     toolCalls = calls.get(),
                     failureKind = "abort",
@@ -188,7 +209,7 @@ class QuickJsRuntime {
             // （用户点名的第 2 项）。工具名保留：没有它，模型只能从错误文案猜是哪个调用失败的。
             val failedTool = engine.evaluate("globalThis.__adsh_state.errorTool", "errorTool.js") as? String
             val errorValue = if (failedTool != null) {
-                "工具 " + failedTool + " 调用失败\n原始错误：" + (rawError ?: "(无)")
+                "tool " + failedTool + " failed\noriginal error: " + (rawError ?: "(none)")
             } else {
                 rawError
             }
@@ -200,10 +221,35 @@ class QuickJsRuntime {
             // **undefined（没有 return）与显式 return null 不是一回事**：前者 JSON.stringify 得到
             // undefined（这里就是 null，wire 上缺席 value），后者得到字面量 "null"，是模型要的结果
             // （dsh 同义：value.result === undefined ? '' : renderValue(value.result)）。
-            val valueJson = engine.evaluate(
-                "JSON.stringify(globalThis.__adsh_state.value)",
-                "value.js",
+            //
+            // 非 undefined 的返回值必须是**无损 JSON**（dsh 的 snapshotPtcJsonValue / prepareCompletion）：
+            // Map/Set/class 实例、NaN/Infinity/-0、函数/Symbol/BigInt、稀疏数组、循环引用都会让
+            // JSON.stringify 静默丢数据或改值 —— 那会把「程序结果」变成一个模型没写过的东西。
+            val valueKind = engine.evaluate(
+                "globalThis.__adsh_state.value === undefined ? 'undefined' : " +
+                    "(function () { try { return globalThis.__adsh_isLossless(globalThis.__adsh_state.value) ? " +
+                    "'lossless' : 'invalid'; } catch (e) { return 'invalid'; } })()",
+                "value-lossless.js",
             ) as? String
+            if (errorValue == null && valueKind == "invalid") {
+                // dsh 的失败信封逐字：kind = invalid-output
+                return CodeRunResult(
+                    valueJson = null,
+                    logs = logLinesForResult(logs, omittedLogs.get()),
+                    error = "program completion must be lossless JSON",
+                    durationMs = System.currentTimeMillis() - started,
+                    toolCalls = calls.get(),
+                    failureKind = "invalid-output",
+                )
+            }
+            val valueJson = if (valueKind == "undefined") {
+                null
+            } else {
+                engine.evaluate(
+                    "JSON.stringify(globalThis.__adsh_state.value)",
+                    "value.js",
+                ) as? String
+            }
             // 返回值同样吃那条 64MiB 预算（dsh 的 ledger 把 logs + completion 一起计）
             if (valueJson != null && outputBytes.addAndGet(valueJson.toByteArray(Charsets.UTF_8).size.toLong()) > MAX_OUTPUT_BYTES) {
                 outputOverflow.set(true)
@@ -302,6 +348,11 @@ class QuickJsRuntime {
 
         /** dsh 的 ptc-runtime-node config：maxOutputBytes 默认 67108864（logs + 返回值 + 诊断） */
         const val MAX_OUTPUT_BYTES = 67_108_864L
+        /**
+         * 有在途调用时泵循环等待回执的最长时间。回执到达会提前唤醒（队列），
+         * 这个值只决定「没有回执时多久醒来查一次结算/超时/停止」，也是取消响应的上限。
+         */
+        private const val PUMP_IDLE_MS = 20L
         private const val MAX_PUMPS = 200_000
 
         /**

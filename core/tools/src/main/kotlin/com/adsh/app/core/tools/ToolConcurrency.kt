@@ -32,7 +32,11 @@ import kotlin.coroutines.coroutineContext
  * 工具内部做什么是工具自己的事（dsh 的口径）。没有这个标记，上限是 1 时外层那一下就把名额拿光了，
  * 内层永远等不到。协程上下文里的标记识别「这次调用已经在许可里」。
  */
-class ToolConcurrency(maxParallel: Int = DEFAULT_LIMIT) {
+class ToolConcurrency(
+    maxParallel: Int = DEFAULT_LIMIT,
+    /** 能与其它调用重叠执行的工具名：来自各 Tool 的 `parallelSafe`（未登记 = exclusive） */
+    private val parallelSafe: Set<String>,
+) {
 
     /** 一次子调用的调度位（dsh 的 PendingDispatch）：等 [granted] 被调度器兑现后才开跑。 */
     private class Ticket(val exclusive: Boolean) {
@@ -82,9 +86,12 @@ class ToolConcurrency(maxParallel: Int = DEFAULT_LIMIT) {
      * 取一次子调用许可，按**工具名**分类：并行安全的走读类（可与其它读类重叠、最多 [configure] 个），
      * 其余（含未知工具）走写类（等池子排空、独自跑完）。这是生产代码唯一的入口 ——
      * `QuickJsRuntime` 的每一次 `tools.x()` 都从这里过闸。
+     *
+     * 分类只认构造时传入的集合（由 [PtcToolRunner] 从 `Tool.parallelSafe` 投影）：
+     * 未登记的工具一律 exclusive —— 宁严勿松，漏登记只是少一点并行，错登记就是并发写坏文件。
      */
     suspend fun <T> withToolPermit(toolName: String, block: suspend () -> T): T =
-        schedule(exclusive = !isSafe(toolName), block)
+        schedule(exclusive = toolName !in parallelSafe, block)
 
     private suspend fun <T> schedule(exclusive: Boolean, block: suspend () -> T): T {
         // 嵌套调用（工具内部的并发）不占新的名额 —— 判据必须在**入队之前**，
@@ -174,31 +181,5 @@ class ToolConcurrency(maxParallel: Int = DEFAULT_LIMIT) {
         private const val STATE_QUEUED = 0
         private const val STATE_GRANTED = 1
         private const val STATE_RELEASED = 2
-
-        /**
-         * 「并行安全」的工具（dsh 把子调用分成 parallel / exclusive 两类）：只有它们能彼此重叠。
-         *
-         * 其余（bash / write / edit / 以及**将来新增的、这里没登记的工具**）一律按写类处理 ——
-         * 宁严勿松：漏登记只是少一点并行，错登记就是并发写坏文件。
-         */
-        private val SAFE_TOOLS = setOf(
-            "read", "read_image", "glob", "grep", "web_fetch", "web_search",
-            "present", "ask_user_question", "todo_write",
-            // 后台任务的读侧（job_output / job_list）：只读注册表，可以与其他读类重叠。
-            // **job_kill 不在这里**：它要杀进程，按写类独占处理（与 bash 同档）。
-            "job_output", "job_list",
-        )
-
-        /** 这条工具调用能不能和别的调用重叠执行（见 [SAFE_TOOLS]） */
-        fun isSafe(name: String): Boolean = name in SAFE_TOOLS
-
-        /**
-         * 「可并行」工具名的**排序副本**：系统提示词的 tools:sdk 段直接读它。
-         *
-         * **不要让提示词只写「safe calls run concurrently」**：哪些工具算 safe 得自己猜 ——
-         * 而 `bash` 与只读工具在 schema 上完全同形，猜错就是把写操作塞进 `Promise.all`。清单从实现里
-         * 生成、再用一条单测钉住，就不会出现「提示词说 A、调度器按 B」的漂移。
-         */
-        val safeToolList: List<String> = SAFE_TOOLS.sorted()
     }
 }

@@ -7,9 +7,9 @@ package com.adsh.app.core.tools
  * agent 只能靠自觉去 `sed` 过滤；一次疏忽就把密钥写进会话记录（还会跟着下一轮请求发给模型）。
  * 这里在**工具结果离开工具的那一刻**做一次兜底：命中的片段换成「前缀 + ***redacted***」。
  *
- * 覆盖范围（两个漏斗，所有工具输出都从这里出去）：
- *  - [com.adsh.app.core.agent.AgentLoop.execute]：顶层调用的正文 / 报错；
- *  - [com.adsh.app.platform.ptc.QuickJsRuntime] 的子调用结果正文（界面、子调用轨迹、落库都读它）。
+ * 覆盖范围（一个漏斗，所有工具输出都从这里出去）：
+ *  - [ToolExecutor]：模型直调（只有 run_code）与 PTC 程序内子调用的正文 / 报错 ——
+ *    界面、子调用轨迹、落库都读它产出的 text。
  *
  * **不脱敏的**是有意为之：
  *  - PTC 的 wire（结构化返回值）—— 程序自己还要用它（例如读出 key 再发请求），那条通道不进会话记录；

@@ -31,6 +31,8 @@ class ComposerSpecTest {
         assertEquals(2.dp, ComposerSpec.SendLift)
         // --dsh-composer-side-clearance
         assertEquals(16.dp, ComposerSpec.SideClearance)
+        // 触发滚动的高度 = dsh 的 14 行的一半（用户口径）
+        assertEquals(7, ComposerSpec.InputMaxLines)
     }
 
     @Test

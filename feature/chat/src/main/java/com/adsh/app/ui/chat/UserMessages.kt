@@ -17,10 +17,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,10 +30,12 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.adsh.app.ui.blocks.DshIcons
 import com.adsh.app.ui.blocks.DshToolIcons
+import com.adsh.app.ui.blocks.FileTypeIcon
 import com.adsh.app.ui.blocks.ImagePreviewState
 import com.adsh.app.ui.blocks.MarkdownBody
 import com.adsh.app.ui.blocks.copyToClipboard
@@ -152,27 +150,62 @@ private fun UserAttachmentRow(attachments: List<com.adsh.app.seam.model.UserAtta
 }
 
 /**
- * 单张图片的最大显示尺寸。
+ * 单图显示尺寸 + 裁剪锚点（dsh 的 MessageImage.singleFit）：
  *
- * dsh 的 `.fNh4Da_image` 是 `max-width: min(100%, 1600px); max-height: calc(100vh - 80px)`，
- * 元素跟着图片自己的宽高比走、**不放大**（max-width 只是上限）。**不能写成
- * `fillMaxWidth().heightIn(max = 320.dp)` + `ContentScale.Fit`** —— 那个 Box 永远占满整行、
- * 高度永远顶到 320dp，横图上下留一大片空白、小图也被撑成一张大卡片，就是「面积太大」的来源。
- * 这里按 dsh 的语义来：宽度给到这一列的宽度、高度上限 320dp（手机上的合理值），
- * 按宽高比反推实际尺寸，小图保持原始大小。
+ *  - 盒子长边 240px，**渲染宽高比夹在 [0.25, 4]**（超出部分由 `object-fit: cover` 裁掉，
+ *    锚点放在对象真实内容常常开始的边：极高的图锚顶部、极宽的图锚左侧）；
+ *  - 只缩不放：不超过原图像素，也不超过消息列能给的宽度（dsh 的 `gallery{max-width:100%}`）。
+ *
+ * 尺寸未知时按 dsh 的 intake 未完成态给一个 240 方块（也受列宽限制）。
  */
-private val MESSAGE_IMAGE_MAX_HEIGHT = 320.dp
+internal data class MessageImageFit(
+    val width: Dp,
+    val height: Dp,
+    /** 裁剪锚点（dsh 的 object-position） */
+    val alignment: Alignment,
+)
+
+internal fun messageImageFit(
+    naturalWidthPx: Int,
+    naturalHeightPx: Int,
+    maxWidth: Dp,
+): MessageImageFit {
+    if (naturalWidthPx <= 0 || naturalHeightPx <= 0) {
+        val side = minOf(240f, maxWidth.value).dp
+        return MessageImageFit(side, side, Alignment.Center)
+    }
+    val natural = naturalWidthPx.toFloat() / naturalHeightPx.toFloat()
+    val ratio = natural.coerceIn(0.25f, 4f)
+    val boxWidth = if (ratio >= 1f) 240f else 240f * ratio
+    val boxHeight = if (ratio >= 1f) 240f / ratio else 240f
+    val scale = minOf(
+        1f,
+        naturalWidthPx / boxWidth,
+        naturalHeightPx / boxHeight,
+        maxWidth.value / boxWidth,
+    )
+    return MessageImageFit(
+        width = (boxWidth * scale).dp.coerceAtLeast(1.dp),
+        height = (boxHeight * scale).dp.coerceAtLeast(1.dp),
+        alignment = when {
+            natural < 0.25f -> Alignment.TopCenter
+            natural > 4f -> Alignment.CenterStart
+            else -> Alignment.Center
+        },
+    )
+}
 
 /**
  * 按原始像素尺寸算展示尺寸：只缩不放。
  * 图片的原始像素直接当 dp 用（dsh 的 <img> 不带 width/height，就是按自然像素渲染）。
+ * 工具行（read_image 画廊）用它；用户消息单图走 [messageImageFit]。
  */
 internal fun fitImageSize(
     naturalWidthPx: Int,
     naturalHeightPx: Int,
-    maxWidth: androidx.compose.ui.unit.Dp,
-    maxHeight: androidx.compose.ui.unit.Dp,
-): Pair<androidx.compose.ui.unit.Dp, androidx.compose.ui.unit.Dp> {
+    maxWidth: Dp,
+    maxHeight: Dp,
+): Pair<Dp, Dp> {
     if (naturalWidthPx <= 0 || naturalHeightPx <= 0) {
         return maxWidth to maxHeight
     }
@@ -184,7 +217,7 @@ internal fun fitImageSize(
     return (naturalWidthPx * scale).dp to (naturalHeightPx * scale).dp
 }
 
-/** dsh 的 MessageImage：单图按宽高比铺开（不放大），多图 64×64 方格 */
+/** dsh 的 MessageImage：单图按 [messageImageFit] 铺开（长边 240、夹比例、cover 裁剪），多图 64×64 方格 */
 @Composable
 private fun UserImageAttachment(
     attachment: com.adsh.app.seam.model.UserAttachment,
@@ -193,41 +226,44 @@ private fun UserImageAttachment(
     val palette = LocalDshPalette.current
     val targetPx = if (compact) 160 else 960
     val bitmap by rememberImage(attachment.path, targetPx)
+    val shape = RoundedCornerShape(20.dp)
     val frame = Modifier
-        .clip(RoundedCornerShape(16.dp))
-        .border(DshSpacing.Hairline, palette.borderL2, RoundedCornerShape(16.dp))
-        .background(palette.selector)
+        .clip(shape)
+        .border(DshSpacing.Hairline, palette.borderL2DarkmodeThin, shape)
+        .background(palette.hover)
         // 点一下打开原图预览（dsh 的 lightbox：缩略图 → 原图）
         .dshClickable(interactionSource = dshInteraction()) { ImagePreviewState.open(attachment.path) }
     if (compact) {
         Box(frame.size(64.dp), contentAlignment = Alignment.Center) {
-            AttachmentImageContent(bitmap, attachment, compact)
+            AttachmentImageContent(bitmap, attachment, compact = true)
         }
         return
     }
-    // 单图：先量出这一列能给的宽度，再按图片自己的宽高比算出实际尺寸
+    // 单图：先量出这一列能给的宽度，再按 dsh 的 singleFit 算盒子与锚点
     androidx.compose.foundation.layout.BoxWithConstraints(frame) {
-        val size = fitImageSize(
+        val fit = messageImageFit(
             naturalWidthPx = attachment.width.takeIf { it > 0 } ?: (bitmap?.width ?: 0),
             naturalHeightPx = attachment.height.takeIf { it > 0 } ?: (bitmap?.height ?: 0),
             maxWidth = maxWidth,
-            maxHeight = MESSAGE_IMAGE_MAX_HEIGHT,
         )
-        Box(Modifier.size(size.first, size.second), contentAlignment = Alignment.Center) {
-            AttachmentImageContent(bitmap, attachment, compact)
+        Box(Modifier.size(fit.width, fit.height), contentAlignment = Alignment.Center) {
+            AttachmentImageContent(bitmap, attachment, compact = false, cropAlignment = fit.alignment)
         }
     }
 }
 
 /**
- * 图片本体（或加载失败时的文件名兜底）。
- * 尺寸已经由外层的 Box 定好，这里只负责「填满并等比内嵌」。
+ * 图片本体（或加载失败时的文件名兜底）。尺寸已经由外层 Box 定好，这里只负责填满。
+ *
+ * [cropAlignment] 非空 = 按 dsh 的 `object-fit: cover` 裁剪并锚在这个位置（单图）；
+ * 为空时保持旧口径：方格裁、单图内嵌（工具行那边用）。
  */
 @Composable
 internal fun AttachmentImageContent(
     bitmap: ImageBitmap?,
     attachment: com.adsh.app.seam.model.UserAttachment,
     compact: Boolean,
+    cropAlignment: Alignment? = null,
 ) {
     val palette = LocalDshPalette.current
     Box(contentAlignment = Alignment.Center) {
@@ -235,7 +271,8 @@ internal fun AttachmentImageContent(
             Image(
                 bitmap = bitmap,
                 contentDescription = attachment.name,
-                contentScale = if (compact) ContentScale.Crop else ContentScale.Fit,
+                contentScale = if (compact || cropAlignment != null) ContentScale.Crop else ContentScale.Fit,
+                alignment = cropAlignment ?: Alignment.Center,
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
@@ -267,12 +304,8 @@ private fun UserFileCard(attachment: com.adsh.app.seam.model.UserAttachment) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(DshSpacing.Xxl),
     ) {
-        Icon(
-            Icons.Outlined.Description,
-            contentDescription = null,
-            tint = palette.labelSecondary,
-            modifier = Modifier.size(28.dp),
-        )
+        // dsh 的 FileTypeIcon：按类型着色（PDF 红 / Excel 绿 / Word 深蓝 …），不是通用文件图标
+        FileTypeIcon(name = attachment.name, size = 28.dp)
         Column(Modifier.weight(1f)) {
             Text(
                 text = attachment.name,
@@ -379,6 +412,8 @@ internal fun AssistantText(
     hasPreceding: Boolean = false,
     /** 下面还有内容（末块保留自己的下边距） */
     hasFollowing: Boolean = false,
+    /** 这条正文还在流式生成：MarkdownBody 走增量解析（见 MarkdownBody 的 streaming） */
+    streaming: Boolean = false,
 ) {
     // 不再用「流式走一条分支、定稿走另一条分支」的写法 —— 那样一段正文在定稿的瞬间会被整棵树
     // 重建（SelectionContainer 与 MarkdownBody 的层级变了），视觉上就是正文闪一下、行高重排一次。
@@ -389,6 +424,7 @@ internal fun AssistantText(
             modifier = Modifier.fillMaxWidth(),
             hasPreceding = hasPreceding,
             hasFollowing = hasFollowing,
+            streaming = streaming,
         )
     }
 }

@@ -248,12 +248,12 @@ private fun mergePara(base: WordParaProps?, next: WordParaProps?): WordParaProps
 
 internal fun readWordDoc(file: File): WordDocument = ZipFile(file).use { zip ->
     val xml = zip.partText("word/document.xml")
-        ?: throw IllegalStateException("不是 Word 文档：缺 word/document.xml")
+        ?: throw IllegalStateException("not a Word document: word/document.xml is missing")
     val styles = zip.partText("word/styles.xml")?.let(::parseWordStyles) ?: WordStyles.EMPTY
     val numbering = zip.partText("word/numbering.xml")?.let(::parseWordNumbering)
     val media = readWordMedia(zip)
     val body = parseXml(xml).documentElement.descendants("w:body").firstOrNull()
-        ?: throw IllegalStateException("文档结构不完整：缺 w:body")
+        ?: throw IllegalStateException("document structure is incomplete: w:body is missing")
     val out = ArrayList<WordBlock>()
     collectWordBlocks(body, styles, WordNumberingState(numbering), media, out)
     WordDocument(out, wordPage(body))

@@ -119,6 +119,8 @@ sealed interface ChatItem {
         val before: ReasoningBoundary,
         /** 这一块的下边界（与下一块之间的切点；末块是 [ReasoningBoundary.NONE]） */
         val after: ReasoningBoundary,
+        /** 这一块还在流式生成（思考行 running 且这是最后一块）：MarkdownBody 走增量解析 */
+        val streaming: Boolean = false,
         override val gap: Dp = 0.dp,
     ) : ChatItem
 
@@ -148,8 +150,15 @@ data class TurnView(
     /** 本轮是否已结束（dsh 的 turn closed） */
     val closed: Boolean = false,
     val runMillis: Long? = null,
-    /** 轮尾「在新对话中分支」用的分叉点：这一轮最后一条消息的 id（dsh 的 closing.finalNode.seq） */
+    /** 这一轮最后一条消息行的 id（assistant / steering / notice / tool result 都会推进它） */
     val lastMessageId: Long? = null,
+    /**
+     * 本轮最后一条**带正文**的 assistant 消息 id（dsh 的 closing.finalNode.messageId）。
+     * 分支按钮的可见判据：null = 这一轮没有可收尾的回答，dsh 连动作行都不画。
+     */
+    val closingMessageId: Long? = null,
+    /** 最后一步 assistant 是否还带 tool_calls（同一行里 text + tool_calls 时不算收尾回答） */
+    val lastStepHasCalls: Boolean = false,
     /** 本轮用量（dsh 的 turn tokenUsage）：轮尾「用量」按钮展开的明细 */
     val usage: TurnUsage? = null,
     /**
@@ -169,6 +178,23 @@ data class TurnView(
 
     /** 最终回答的正文（dsh 的 latestAnswer） */
     val answer: String? get() = (entries.getOrNull(answerIndex) as? ProcessEntry.Text)?.text
+
+    /**
+     * 轮尾分支按钮的可见性（dsh 的 TurnTailNodeView：closing === null 时整行 actions 不画）。
+     * 只有已结束、且本轮存在一条带正文的 assistant 收尾回答时才可见。
+     */
+    val branchVisible: Boolean get() = closed && closingMessageId != null
+
+    /**
+     * 分支是否可用 —— dsh 的 `branchUnavailable` 取反再加上视图层的 `hasLaterChatNode`：
+     * closing 必须**同时是本轮 transcript 的最后一条内容**。回答之后还有工具结果 / 插话 /
+     * 通知行（[lastMessageId] 被推后），或最后一步还带 tool_calls，都不允许从这个轮尾分叉。
+     */
+    val branchEnabled: Boolean
+        get() = branchVisible && closingMessageId == lastMessageId && !lastStepHasCalls
+
+    /** 分叉点：收尾回答那一行（dsh 传 turn/end 的 seq；ADSH 没有事件日志，只能按消息行截断） */
+    val branchMessageId: Long? get() = closingMessageId?.takeIf { branchEnabled }
 
     val toolCount: Int get() = entries.count { it is ProcessEntry.Call }
 
@@ -195,9 +221,10 @@ sealed interface ProcessEntry {
 
     /**
      * 过程里的一段正文。正在流式生成的那一段，正文已经由 ChatScreen 的
-     * `rememberSampledStreaming` 在**列表外面**采样过（见那里的注释），所以这里不再带 streaming 标记。
+     * `rememberSampledStreaming` 在**列表外面**采样过（见那里的注释）；[streaming] 只表示
+     * 「这条尾巴还在长」—— MarkdownBody 据此走增量块解析（定稿的库行是 false、走一次全量解析）。
      */
-    data class Text(val text: String) : ProcessEntry
+    data class Text(val text: String, val streaming: Boolean = false) : ProcessEntry
 
     /**
      * 插话进来的用户消息（dsh 的 `steering` 节点）。
@@ -218,6 +245,12 @@ sealed interface ProcessEntry {
      * dsh 里它本来就是 owner 的 next-step inbox 里一条消息、属于当前轨迹；不单独开一轮、也不关轮。
      */
     data class Notice(val text: String, val time: Long) : ProcessEntry
+
+    /**
+     * 一条模型请求重试行（dsh 的 model-retry 节点）：它也是本轮过程里的一条，
+     * 位置由落库顺序决定 —— 在失败的那一步之后、重试成功的那一步之前。
+     */
+    data class Retry(val info: RetryInfo) : ProcessEntry
 
     data class Call(
         val id: String?,

@@ -46,7 +46,7 @@ internal fun ooxmlKindOf(file: File): String? = runCatching {
 /** .xlsx：工作簿里的每张工作表（顺序按 xl/workbook.xml，部件路径走关系表） */
 internal fun readWorkbook(file: File): List<SheetTable> = ZipFile(file).use { zip ->
     val workbook = parseXml(
-        zip.partText("xl/workbook.xml") ?: throw IllegalStateException("不是 Excel 工作簿：缺 xl/workbook.xml"),
+        zip.partText("xl/workbook.xml") ?: throw IllegalStateException("not an Excel workbook: xl/workbook.xml is missing"),
     )
     val rels = zip.partText("xl/_rels/workbook.xml.rels")
         ?.let { parseXml(it).documentElement.descendants("Relationship") }
@@ -90,7 +90,7 @@ private fun ZipFile.slideParts(): List<String> = entries()
 /** ZIP 里的一个部件读成文本（不存在返回 null；超上限直接抛，由调用方给说明） */
 internal fun ZipFile.partText(name: String): String? {
     val entry = getEntry(name) ?: return null
-    if (entry.size > MAX_PART_BYTES) throw IllegalStateException("文档太大，无法预览")
+    if (entry.size > MAX_PART_BYTES) throw IllegalStateException("document is too large to preview")
     return getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
 }
 

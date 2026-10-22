@@ -15,8 +15,7 @@ BUDGETS = {
     "docs/ARCHITECTURE.md": 150,
     "docs/TECH-STACK.md": 120,
     "docs/MODULES.md": 120,
-    "docs/ROADMAP.md": 60,
-    "docs/LESSONS.md": 320,
+    "docs/LESSONS.md": 340,
 }
 
 

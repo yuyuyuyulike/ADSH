@@ -46,13 +46,24 @@ class BootstrapInstaller(private val context: Context) {
          *    官方前缀真实存在，再「建别名」只会造出自指符号链接，安装必挂在 ELOOP。
          *    第 22 节把 4/5 那套死代码删掉了，磁盘产物一个字节没变，所以版本号不 +1
          *    （+1 会强制重解压并重跑 184 个 postinst，对已装好的设备纯属浪费）。
+         * 7：随包预置 Termux glibc 运行时（$PREFIX/glibc + $PREFIX/bin/grun），让 glibc 动态
+         *    链接的外部二进制能通过 grun 跑；全量安装遇到已存在的前缀仍是合并且只补缺。
          */
-        const val INSTALLER_VERSION = 6
+        const val INSTALLER_VERSION = 7
 
         private const val MANIFEST = "MANIFEST.properties"
 
         /** 安装是「删暂存目录 → 解压 → 改名」的多步操作，两个调用者同时进来会互相删文件 */
         private val INSTALL_LOCK = Any()
+
+        /**
+         * in-prefix manifest 的副本（放在 `filesDir`，与 `usr` 分开）。
+         *
+         * 前缀里的那份可能因为进程被杀 / 磁盘故障而读不出；读不出时 [installPlan] 会判「全量安装」，
+         * 而全量安装要 removeTree(prefix) —— 用户 apt 装的包会一起没。副本只要版本与 nativeLibraryDir
+         * 对得上就能把这次安装救回来（见 [useFallbackManifest]）。
+         */
+        private const val EXTERNAL_MANIFEST = "bootstrap-manifest.properties"
 
         /** bootstrap second stage（184 个 postinst）的墙钟上限：超时就杀掉，不让它拖住首启 */
         private const val SECOND_STAGE_TIMEOUT_SEC = 300L
@@ -67,11 +78,25 @@ class BootstrapInstaller(private val context: Context) {
         private const val SECOND_STAGE_LOG_LINES = 40
 
         /**
+         * 全量安装前要求的最小剩余空间（约 2 × bootstrap 解压体积 + glibc 运行时）。
+         *
+         * bootstrap 解压后约 90 MB（3773 个文件），随包的 glibc 运行时再占约 10 MB；安装期间
+         * staging 与旧前缀同时存在，峰值约 201 MB。低于这个数就在解压**之前**报一句能读懂的错误，
+         * 而不是写到一半 ENOSPC。
+         */
+        private const val MIN_FREE_BYTES = 220L * 1024 * 1024
+
+        /**
          * 需要执行位的路径前缀 —— 逐字照抄官方 TermuxInstaller 的判定
          * （bin/、libexec、lib/apt/apt-helper、lib/apt/methods）。
          * 官方是用 FileOutputStream 写文件后 chmod 0700，因为 zip 里的权限位它也不读。
          */
-        private val EXEC_PREFIXES = listOf("bin/", "libexec", "lib/apt/apt-helper", "lib/apt/methods")
+        private val EXEC_PREFIXES = listOf(
+            "bin/", "libexec", "lib/apt/apt-helper", "lib/apt/methods",
+            // glibc 预置：加载器要能被 exec（PT_INTERP 指回它），grun 在 bin/ 下已覆盖；
+            // 其余 glibc 文件只被 mmap / 读，逐个 chmod 会拖慢首装。
+            "glibc/bin/", "glibc/lib/ld-linux-aarch64.so.1",
+        )
     }
 
     private val filesDir = context.filesDir
@@ -153,7 +178,43 @@ class BootstrapInstaller(private val context: Context) {
                 }
                 CopyEntry.Directory -> copyTree(child, out)
                 CopyEntry.File -> {
+                    // 目标可能是上一版的符号链接（例如 $PREFIX/bin 里的 exec 链接）：
+                    // 不先删掉的话 FileOutputStream 会顺着链接写进 nativeLibraryDir 里的真实文件
+                    if (readLink(out) != null) out.delete()
                     child.copyTo(out, overwrite = true)
+                    // copyTo 不带权限位：执行位在 bin/ 与 libexec 下是有意义的（脚本、apt 方法）
+                    runCatching {
+                        val mode = Os.stat(child.absolutePath).st_mode and 0x1FF
+                        if (mode != 0) Os.chmod(out.absolutePath, mode)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 合并安装用的递归拷贝：只创建**缺失**的目录项，已存在的一律不动。
+     *
+     * 为什么不是覆盖：前缀里可能有用户 apt 升级过的库 / 程序（dpkg 的版本比 bootstrap 新）。
+     * 覆盖会把 libc++ 这类共享库打回 bootstrap 版本，用户装的 chromium 等程序当场链接失败
+     * （真机实测：全量覆盖后 `CANNOT LINK EXECUTABLE … libc++_shared.so`）。缺的东西照建；
+     * 已存在的东西归 dpkg / 用户，bootstrap 只负责「这棵树完整」。
+     *
+     * 符号链接同 [copyTree]：按链接原样重建，绝不顺着读内容。
+     */
+    private fun copyMissingTree(source: File, target: File) {
+        target.mkdirs()
+        source.listFiles()?.forEach { child ->
+            val out = File(target, child.name)
+            when (val entry = copyEntryKind(readLink(child), child.isDirectory)) {
+                is CopyEntry.Symlink -> {
+                    if (exists(out)) return@forEach
+                    runCatching { Os.symlink(entry.target, out.absolutePath) }
+                }
+                CopyEntry.Directory -> copyMissingTree(child, out)
+                CopyEntry.File -> {
+                    if (exists(out)) return@forEach
+                    runCatching { child.copyTo(out, overwrite = false) }
                     // copyTo 不带权限位：执行位在 bin/ 与 libexec 下是有意义的（脚本、apt 方法）
                     runCatching {
                         val mode = Os.stat(child.absolutePath).st_mode and 0x1FF
@@ -168,22 +229,31 @@ class BootstrapInstaller(private val context: Context) {
         val nativeDir = context.applicationInfo.nativeLibraryDir
         val manifest = File(prefix, MANIFEST)
 
-        // manifest 不存在与读不出是同一件事（见 installPlan 的 KDoc）：都当「不知道装的是什么」→ 全量
-        val props = if (manifest.isFile) {
-            Properties().also { loaded -> runCatching { manifest.inputStream().use { loaded.load(it) } } }
-        } else {
-            null
-        }
+        // manifest 不存在与读不出是同一件事（见 installPlan 的 KDoc）：都当「不知道装的是什么」；
+        // 但先看前缀外的副本 —— 它存在且前缀像装好的树时，副本就是这次安装的真相（见 [useFallbackManifest]）
+        val props = readManifest(manifest)
+        val external = readManifest(File(filesDir, EXTERNAL_MANIFEST))
+        val recovered = useFallbackManifest(
+            prefixManifestReadable = props?.getProperty("installerVersion") != null,
+            prefixLooksInstalled = File(prefix, "bin/bash").isFile,
+            fallbackReadable = external?.getProperty("installerVersion") != null,
+        )
+        if (recovered) log("prefix manifest is unreadable; recovered the copy outside the prefix")
+        val effective = if (recovered) external else props
         return when (
             installPlan(
                 INSTALLER_VERSION,
-                props?.getProperty("installerVersion"),
-                props?.getProperty("nativeLibraryDir"),
+                effective?.getProperty("installerVersion"),
+                effective?.getProperty("nativeLibraryDir"),
                 nativeDir,
             )
         ) {
             InstallPlan.Installed -> {
                 ensureHome()
+                if (recovered) {
+                    // 把前缀里的那份补回来，下一次启动就不用再走副本
+                    writeManifest(nativeDir, effective?.getProperty("entries") ?: "?", effective?.getProperty("secondStage") ?: "?")
+                }
                 // 上次死在 second stage 开跑之前（被系统杀掉 / 崩溃）：脚本的 lock 还没建，
                 // 说明 postinst 一个都没跑完，这里补一次。跑过之后 lock 一直在，
                 // 逻辑与官方一致（官方也从不删这个 lock）。
@@ -191,7 +261,7 @@ class BootstrapInstaller(private val context: Context) {
                     log("bootstrap second stage missing its lock; running it now")
                     val status = runSecondStage(log)
                     log("re-linked executables after second stage: " + linkExecutables(prefix, log, relink = true))
-                    writeManifest(nativeDir, props?.getProperty("entries") ?: "?", status)
+                    writeManifest(nativeDir, effective?.getProperty("entries") ?: "?", status)
                 }
                 log("already installed: " + prefix.absolutePath)
                 prefix
@@ -206,8 +276,8 @@ class BootstrapInstaller(private val context: Context) {
                 val exes = linkExecutables(prefix, log, relink = true)
                 writeManifest(
                     nativeDir,
-                    props?.getProperty("entries") ?: "?",
-                    props?.getProperty("secondStage") ?: "?",
+                    effective?.getProperty("entries") ?: "?",
+                    effective?.getProperty("secondStage") ?: "?",
                 )
                 log("relinked after app update: symlinks=" + links + ", executables=" + exes +
                     " in " + (System.currentTimeMillis() - started) + "ms")
@@ -220,12 +290,16 @@ class BootstrapInstaller(private val context: Context) {
     /**
      * 全量安装：解压 → 建链 → 换前缀 → second stage → 写 manifest。
      *
-     * 顺序不能改（解压 → 建链 → removeTree → rename）：链接的目标要等这棵树搬到 usr 之后才存在，
+     * 顺序不能改（解压 → 建链 → 落前缀）：链接的目标要等这棵树搬到 usr 之后才存在，
      * 所以链接建在 staging 里、跟着树一起搬。second stage 放在写 manifest **之前** ——
      * 中途被杀掉的话下次启动会重来一遍（解压只要 0.6s）。
+     *
+     * 旧前缀的处置见 [prefixInstallPlan]：真实目录是**合并**（用户 apt 装的东西保留），
+     * 只有不存在 / 是符号链接时才清掉重建。
      */
     private fun fullInstall(nativeDir: String, log: (String) -> Unit): File {
         val started = System.currentTimeMillis()
+        ensureFreeSpace(log)
         removeTree(staging)
         staging.mkdirs()
 
@@ -241,13 +315,26 @@ class BootstrapInstaller(private val context: Context) {
         val executables = linkExecutables(staging, log)
         log("linked executables to nativeLibraryDir: " + executables)
 
-        removeTree(prefix)
-        // rename 失败最常见的两个原因：目标还在（删不干净）或者跨挂载点。前者先自己说清楚
-        if (prefix.exists()) log("prefix still exists after removeTree: " + prefix.absolutePath)
-        if (!moveTree(staging, prefix, log)) {
-            log("rename failed; falling back to copy")
-            copyTree(staging, prefix)
+        val strategy = prefixInstallPlan(prefix.isDirectory && readLink(prefix) == null)
+        if (strategy == PrefixInstall.Merge) {
+            // 只补缺：已存在的文件一律不动。用户 apt 升级过的库/程序优先于 bootstrap 里的旧版本；
+            // 覆盖会把 libc++ 这类库打回 bootstrap 版本，用户装的 chromium 之类当场链接失败。
+            log("prefix exists; merging the missing bootstrap files (installed files are kept)")
+            // SYMLINKS 表要跟着新 bootstrap 更新：它的用途只是「补缺时建哪些链接」
+            runCatching { File(staging, "SYMLINKS.txt").takeIf { it.isFile }?.copyTo(File(prefix, "SYMLINKS.txt"), overwrite = true) }
+            copyMissingTree(staging, prefix)
             removeTree(staging)
+            log("merged symlinks: " + createSymlinks(prefix, log, relink = true))
+            log("re-linked merged executables: " + linkExecutables(prefix, log, relink = true))
+        } else {
+            removeTree(prefix)
+            // rename 失败最常见的两个原因：目标还在（删不干净）或者跨挂载点。前者先自己说清楚
+            if (prefix.exists()) log("prefix still exists after removeTree: " + prefix.absolutePath)
+            if (!moveTree(staging, prefix, log)) {
+                log("rename failed; falling back to copy")
+                copyTree(staging, prefix)
+                removeTree(staging)
+            }
         }
         // 官方首次安装的收尾：跑 bootstrap second stage（也就是那 184 个包的 postinst）。
         // Termux 应用是「解压 → 跑 second stage」两步，少了第二步就只是「文件都在、
@@ -259,6 +346,27 @@ class BootstrapInstaller(private val context: Context) {
         writeManifest(nativeDir, entries.toString(), secondStage)
         log("install finished in " + (System.currentTimeMillis() - started) + "ms")
         return prefix
+    }
+
+    /**
+     * 全量安装前的空间预检（见 [MIN_FREE_BYTES]）。
+     *
+     * 拿不到 statvfs（极少数定制内核）就跳过 —— 空间不足最终仍会由写失败兜住，
+     * 预检只是把「写到一半 ENOSPC」换成一句带数字的报错。
+     */
+    private fun ensureFreeSpace(log: (String) -> Unit) {
+        val stats = runCatching { Os.statvfs(filesDir.absolutePath) }.getOrNull() ?: return
+        val blockSize = stats.f_frsize.takeIf { it > 0 } ?: stats.f_bsize
+        val available = stats.f_bavail * blockSize
+        val needMb = (MIN_FREE_BYTES / (1024 * 1024)).toString()
+        val haveMb = (available / (1024 * 1024)).toString()
+        log("free space: " + haveMb + " MB available, " + needMb + " MB required")
+        if (available < MIN_FREE_BYTES) {
+            throw java.io.IOException(
+                "not enough free space to install the embedded Termux bootstrap: need about " +
+                    needMb + " MB, only " + haveMb + " MB available",
+            )
+        }
     }
 
     /**
@@ -278,17 +386,24 @@ class BootstrapInstaller(private val context: Context) {
         entries: String,
         secondStage: String,
     ) {
-        File(prefix, MANIFEST).writeText(
-            buildString {
-                appendLine("installerVersion=" + INSTALLER_VERSION)
-                appendLine("bootstrapVersion=bootstrap-2026.09.13-r1")
-                appendLine("nativeLibraryDir=" + nativeLibraryDir)
-                appendLine("prefix=" + prefix.absolutePath)
-                appendLine("entries=" + entries)
-                // second stage 的结果：ok / exit:<code> / timeout / missing
-                appendLine("secondStage=" + secondStage)
-            }
-        )
+        val text = buildString {
+            appendLine("installerVersion=" + INSTALLER_VERSION)
+            appendLine("bootstrapVersion=bootstrap-2026.09.13-r1")
+            appendLine("nativeLibraryDir=" + nativeLibraryDir)
+            appendLine("prefix=" + prefix.absolutePath)
+            appendLine("entries=" + entries)
+            // second stage 的结果：ok / exit:<code> / timeout / missing
+            appendLine("secondStage=" + secondStage)
+        }
+        // 两份同一时刻写：前缀里的那份给 apt 看到，前缀外的副本用来从「前缀 manifest 损坏」里恢复
+        writeTextAtomically(File(prefix, MANIFEST), text)
+        writeTextAtomically(File(filesDir, EXTERNAL_MANIFEST), text)
+    }
+
+    /** 读 manifest；文件不在返回 null（Properties 解析失败得到空表，由 [useFallbackManifest] 兜底） */
+    private fun readManifest(file: File): Properties? {
+        if (!file.isFile) return null
+        return Properties().also { loaded -> runCatching { file.inputStream().use { loaded.load(it) } } }
     }
 
     /** second stage 的 lock：脚本在开跑前建的符号链接，跑过一次就一直在 */
@@ -400,42 +515,42 @@ class BootstrapInstaller(private val context: Context) {
     }
 
     /**
-     * second stage 的运行环境。
+     * second stage 的运行环境：**与运行期共用同一份装配**（[shellEnvironment]），
+     * 只把 LD_PRELOAD 换成「只有 termux-exec、没有写围栏」。
      *
-     * 与 TermuxRuntime.environment 同一套约定（前缀用官方路径、**不带尾斜杠**，
-     * DATA_DIR 与 LEGACY_DATA_DIR 分开给 —— termux-exec 靠这两个判断要不要做 linker 改写），
-     * 区别只有一个：这里挂的 LD_PRELOAD 只有 termux-exec，没有写围栏。
+     * 以前这里是手写的 18 条变量，与 [TermuxEnv] 各存一份真值 —— 漏掉
+     * `ANDROID__BUILD_VERSION_SDK`（termux-exec 的 postinst 需要）、`TERMUX_APP__TARGET_SDK`、
+     * `TERMUX_APP__UID` 这类变量正是两份清单漂移的典型结果。
      */
     private fun secondStageEnv(): Map<String, String> {
-        val p = TERMUX_PREFIX
-        val home = TERMUX_HOME
-        val legacyDataDir = legacyDataDirOf(context.packageName)
-        val env = linkedMapOf(
-            "PREFIX" to p,
-            "HOME" to home,
-            "PATH" to p + "/bin",
-            "LD_LIBRARY_PATH" to p + "/lib",
-            "TMPDIR" to p + "/tmp",
-            "TERM" to "xterm-256color",
-            "LANG" to "C.UTF-8",
-            "SHELL" to p + "/bin/bash",
-            "TERMUX_VERSION" to TermuxRuntime.TERMUX_VERSION,
-            "TERMUX_MAIN_PACKAGE_FORMAT" to "debian",
-            "TERMUX_APP_PACKAGE_MANAGER" to "apt",
-            "TERMUX_APP__PACKAGE_NAME" to context.packageName,
-            "TERMUX_APP__DATA_DIR" to context.applicationInfo.dataDir,
-            "TERMUX_APP__LEGACY_DATA_DIR" to legacyDataDir,
-            "TERMUX__PREFIX" to p,
-            "TERMUX__HOME" to home,
-            "TERMUX__ROOTFS" to legacyDataDir + "/files",
-            "DPKG_ADMINDIR" to p + "/var/lib/dpkg",
-        )
         // 候选与顺序见 TERMUX_EXEC_LIBS（运行期的 preloadValue 用的是同一份）
-        TERMUX_EXEC_LIBS
+        val preload = TERMUX_EXEC_LIBS
             .map { File(prefix, "lib/" + it) }
             .firstOrNull { it.isFile }
-            ?.let { env["LD_PRELOAD"] = it.absolutePath }
-        return env
+            ?.absolutePath
+            .orEmpty()
+        return shellEnvironment(
+            ShellFacts(
+                prefix = TERMUX_PREFIX,
+                home = TERMUX_HOME,
+                packageName = context.packageName,
+                dataDir = context.applicationInfo.dataDir,
+                filesDir = context.filesDir.absolutePath,
+                uid = android.os.Process.myUid(),
+                pid = android.os.Process.myPid(),
+                termuxVersion = TermuxRuntime.TERMUX_VERSION,
+                appVersionCode = appVersionCode(context),
+                targetSdk = context.applicationInfo.targetSdkVersion,
+                sdkInt = android.os.Build.VERSION.SDK_INT,
+                apkRelease = TermuxRuntime.APK_RELEASE,
+                debuggable = appDebuggable(context),
+                preload = preload,
+                scratch = TERMUX_HOME + "/scratch",
+                // 安装期不挂写围栏（shim 还没解压），显式给「完全权限」基线
+                fenceMode = com.adsh.app.seam.exec.Escalation.FULL_ACCESS,
+                workspaceRoot = null,
+            ),
+        ).associate { it.substringBefore('=') to it.substringAfter('=') }
     }
 
     /**

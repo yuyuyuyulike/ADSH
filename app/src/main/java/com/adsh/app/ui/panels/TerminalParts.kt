@@ -39,6 +39,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.adsh.app.ui.blocks.dshHorizontalScrollbar
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
 import com.adsh.app.ui.kit.DshSpacing
 import com.adsh.app.ui.kit.DshSettingIcons
 import com.adsh.app.ui.kit.dshClickable
@@ -181,6 +183,7 @@ internal fun ColumnScope.TerminalTranscript(
         modifier = Modifier
             .weight(1f)
             .fillMaxWidth()
+            .dshVerticalScrollbar(listState, elevated = true)
             // 视口尺寸 → PTY 尺寸（见 ptyRows/ptyCols 的注释）。这一层就是转录区的视口：
             // LazyColumn 让它有确定的高度，onSizeChanged 给的正是「终端能显示多少」。
             .onSizeChanged { size ->
@@ -255,10 +258,12 @@ internal fun TerminalExtraKeys(
     foreground: Color,
     onKey: (String) -> Unit,
 ) {
+    val scroll = rememberScrollState()
     Row(
         Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
+            .dshHorizontalScrollbar(scroll)
+            .horizontalScroll(scroll)
             .padding(horizontal = DshSpacing.Xl, vertical = DshSpacing.Lg),
         horizontalArrangement = Arrangement.spacedBy(DshSpacing.Lg),
     ) {

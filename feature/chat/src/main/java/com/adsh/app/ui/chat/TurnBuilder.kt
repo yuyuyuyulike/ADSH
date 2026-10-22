@@ -130,7 +130,8 @@ fun buildChatItems(
                 // 行级绘制剔除因此管得到正文 —— 只有视口里的那几块参与绘制。
                 if (entry is ProcessEntry.Reasoning && reasoningOpen(reasoningKey(view, index))) {
                     var before = ReasoningBoundary.NONE
-                    ReasoningChunkCache.chunks(entry.text).forEachIndexed { chunk, piece ->
+                    val pieces = ReasoningChunkCache.chunks(entry.text)
+                    pieces.forEachIndexed { chunk, piece ->
                         out += ChatItem.ReasoningBody(
                             view = view,
                             index = index,
@@ -138,6 +139,8 @@ fun buildChatItems(
                             text = piece.text,
                             before = before,
                             after = piece.after,
+                            // 只有最后一块可能还在长（dsh 的 running = 本块是最后一块）
+                            streaming = entry.running && chunk == pieces.lastIndex,
                         )
                         before = piece.after
                     }
@@ -258,6 +261,16 @@ fun buildChatItems(
                                 text = message.content,
                                 gap = gap(),
                             )
+                        } else if (message.name == ConversationRepository.PLAN_MODE_NARRATION) {
+                            // dsh plan-mode 的 narration（source = plan-mode、form = notice）：一条独立
+                            // user 消息，界面画成上下文注入的 notice 行；**不开轮**、不算用户发言。
+                            out += ChatItem.Context(
+                                key = message.id,
+                                label = ConversationRepository.PLAN_MODE_NARRATION,
+                                form = "notice",
+                                text = message.content,
+                                gap = gap(),
+                            )
                         } else if (message.name == ConversationRepository.COMPACT_MARKER) {
                             out += ChatItem.Compact(message.id, message.content, gap())
                         } else {
@@ -283,6 +296,8 @@ fun buildChatItems(
                 builder.addAssistant(message)
             }
             "tool" -> turn?.attachResult(message)
+            // 模型请求重试行（dsh 的 model-retry 节点）：只给界面看，不进模型请求
+            "retry" -> turn?.addRetry(message)
             else -> Unit
         }
     }
@@ -353,6 +368,8 @@ private class TurnBuilder(
     private var lastAt = startedAt
     /** 最终回答对应的条目下标（= -1 表示还没有回答） */
     private var answerIndex = -1
+    /** dsh 的 closing：本轮最后一条**带正文**的 assistant 消息 id（分支按钮的可见 / 可用判据） */
+    private var closingMessageId: Long? = null
     /**
      * 本会话**上一次** todo_write 的参数（dsh 的 todoHistory 投影）：每建一条 Call 就把它
      * 当作这一条的基准发下去，再用这条 Call 的子调用里的 todo_write 更新它。
@@ -368,6 +385,7 @@ private class TurnBuilder(
         if (text.isNotBlank()) {
             entries += ProcessEntry.Text(text)
             answerIndex = entries.lastIndex
+            closingMessageId = message.id
         }
         lastStepHasCalls = calls.isNotEmpty()
         lastStepText = text
@@ -428,6 +446,18 @@ private class TurnBuilder(
         lastMessageId = maxOf(lastMessageId, message.id)
     }
 
+    /**
+     * 一条模型请求重试行（dsh 的 llm/retry 是会话日志里的事件，UI 按 seq 排进过程）。
+     *
+     * 它推进 [lastMessageId]：回答之后出现重试行会让「closing 是最后一条内容」不成立 ——
+     * dsh 的 turn-tail 也把 `llm/retry` 的 seq 计入 latestTranscriptSeq（分支因此不可用）。
+     */
+    fun addRetry(message: MessageEntity) {
+        lastAt = maxOf(lastAt, message.createdAt)
+        lastMessageId = maxOf(lastMessageId, message.id)
+        RetryInfoCodec.decode(message.content)?.let { entries += ProcessEntry.Retry(it) }
+    }
+
     fun attachResult(message: MessageEntity) {
         lastAt = maxOf(lastAt, message.createdAt)
         lastMessageId = maxOf(lastMessageId, message.id)
@@ -478,7 +508,7 @@ private class TurnBuilder(
             entries += ProcessEntry.Reasoning(reasoning, running = reasoningRunning)
         }
         if (streamingActive && streaming.isNotBlank()) {
-            entries += ProcessEntry.Text(streaming)
+            entries += ProcessEntry.Text(streaming, streaming = true)
         }
         // 身份 = **顺序**（dsh 的 cell 模型：日志里的顺序就是行的顺序）。落库的 assistant 消息里
         // 那串 tool_calls 与 harness 分配 execToken 的顺序一致（AgentLoop 先落库、再按同一列表执行），
@@ -556,6 +586,8 @@ private class TurnBuilder(
             closed = closed,
             runMillis = if (closed) (lastAt - startedAt).coerceAtLeast(0) else null,
             lastMessageId = lastMessageId,
+            closingMessageId = closingMessageId,
+            lastStepHasCalls = lastStepHasCalls,
             usage = usage,
             changes = changes,
         )

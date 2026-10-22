@@ -60,6 +60,7 @@ import com.adsh.app.core.data.ConversationEntity
 import com.adsh.app.core.data.WorkspaceEntity
 import com.adsh.app.ui.blocks.DshIcons
 import com.adsh.app.ui.blocks.DshSidebarIcons
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
 import com.adsh.app.ui.chat.ChatViewModel
 import com.adsh.app.ui.chat.DshMenuCard
 import com.adsh.app.ui.chat.DshMenuRow
@@ -99,6 +100,8 @@ internal fun Drawer(
     onRenameConversation: (Long, String) -> Unit,
     onForkConversation: (Long) -> Unit,
     onDeleteConversation: (Long) -> Unit,
+    /** 置顶开关：(会话 id, 目标 pinned)。dsh 的 pinSession / unpinSession */
+    onSetPinned: (Long, Boolean) -> Unit = { _, _ -> },
     onAddWorkspace: () -> Unit,
     onDeleteWorkspace: (Long) -> Unit,
     onOpenSettings: () -> Unit,
@@ -115,6 +118,16 @@ internal fun Drawer(
     val palette = LocalDshPalette.current
     // 工作区分组默认展开「当前会话所在的那一个」（dsh 的 groupExpansion）
     val expanded = remember { mutableStateMapOf<Long, Boolean>() }
+    /**
+     * 最近一次「当前会话所在的工作区」。当前会话被删掉后 currentWorkspaceId 变成 null，
+     * 但抽屉不该因此把所有分组一起收起来：默认展开仍落在这一组上（dsh 的 groupExpansion
+     * 与选中态解耦，删掉当前会话不会改动展开状态）。
+     */
+    var lastActiveWorkspaceId by remember { mutableStateOf(currentWorkspaceId) }
+    LaunchedEffect(currentWorkspaceId) {
+        if (currentWorkspaceId != null) lastActiveWorkspaceId = currentWorkspaceId
+    }
+    val defaultExpandedWorkspaceId = currentWorkspaceId ?: lastActiveWorkspaceId
     var menuSession by remember { mutableStateOf<Long?>(null) }
     var renameTarget by remember { mutableStateOf<ConversationEntity?>(null) }
     var deleteTarget by remember { mutableStateOf<WorkspaceEntity?>(null) }
@@ -153,9 +166,11 @@ internal fun Drawer(
             time = relativeTime(session.updatedAt),
             selected = session.id == currentId,
             blank = session.id in blankIds,
+            pinned = session.pinned,
             menuOpen = menuSession == session.id,
             onOpen = { onSelectConversation(session.id) },
             onMenuOpenChange = { open2 -> menuSession = if (open2) session.id else null },
+            onTogglePin = { onSetPinned(session.id, !session.pinned) },
             onRename = { menuSession = null; renameTarget = session },
             onFork = { menuSession = null; onForkConversation(session.id) },
             onDelete = { menuSession = null; onDeleteConversation(session.id) },
@@ -189,7 +204,9 @@ internal fun Drawer(
         // dsh 的 panelList：**新会话那一行下面、工作区那一块上面**的面板入口，样式按 .panelRow。
         // ADSH 里只有「终端会话」一个面板：装不上 bootstrap 时这一行**就是报错**，装好了显示「终端会话」。
         DrawerPanelRow(
-            icon = DshIcons.Terminal,
+            // dsh 的终端窗图标（IconApiOutline14：圆角方框 + >_）；>_ 单独画在面板行里时
+            // 看不出「终端窗口」这一层，也缺方框的边界。
+            icon = DshSettingIcons.Api,
             label = bootstrapError ?: "终端会话",
             error = bootstrapError != null,
             modifier = Modifier.padding(bottom = DshSpacing.Xl),
@@ -216,7 +233,8 @@ internal fun Drawer(
 
         // 搜索态：会话树整块换成搜索结果（dsh 的 searchTree）
         if (search.query.isNotEmpty()) {
-            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
+            val searchScroll = rememberScrollState()
+            Column(Modifier.weight(1f).fillMaxWidth().dshVerticalScrollbar(searchScroll, elevated = true).verticalScroll(searchScroll)) {
                 DrawerSearchResults(
                     search = search,
                     onOpen = { id ->
@@ -229,9 +247,10 @@ internal fun Drawer(
             return@Column
         }
 
-        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
+        val treeScroll = rememberScrollState()
+        Column(Modifier.weight(1f).fillMaxWidth().dshVerticalScrollbar(treeScroll, elevated = true).verticalScroll(treeScroll)) {
             workspaces.forEach { workspace ->
-                val open = expanded[workspace.id] ?: (workspace.id == currentWorkspaceId)
+                val open = expanded[workspace.id] ?: (workspace.id == defaultExpandedWorkspaceId)
                 WorkspaceGroupRow(
                     label = workspace.name,
                     expanded = open,
@@ -361,9 +380,12 @@ private fun SessionRow(
     selected: Boolean,
     /** 空白会话（dsh 的 row.blank）：不显示时间与操作菜单，标题就是「新会话」 */
     blank: Boolean = false,
+    /** 已置顶（dsh 的 row.pinned）：菜单第一项是「取消置顶」，行尾露静态标记 */
+    pinned: Boolean,
     menuOpen: Boolean,
     onOpen: () -> Unit,
     onMenuOpenChange: (Boolean) -> Unit,
+    onTogglePin: () -> Unit,
     onRename: () -> Unit,
     onFork: () -> Unit,
     onDelete: () -> Unit,
@@ -371,6 +393,8 @@ private fun SessionRow(
     val palette = LocalDshPalette.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
+    // 行尾置顶标记自持点击源：按它不点亮整行的按下态
+    val pinInteraction = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -394,6 +418,25 @@ private fun SessionRow(
             Text(time, fontSize = 12.sp, lineHeight = 20.sp, color = palette.labelTertiary)
         }
         if (blank) return@Row
+        // dsh 的 .pinIndicator：时间右侧的静态标记，hover / 菜单打开时隐藏。桌面靠 hover 露出可点的
+        // 置顶按钮；触屏没有 hover，所以这颗标记本身承担「取消置顶」。
+        if (pinned && !menuOpen) {
+            Box(
+                modifier = Modifier
+                    .padding(start = 3.dp)
+                    .width(20.dp)
+                    .height(32.dp)
+                    .dshClickable(interactionSource = pinInteraction, onClick = onTogglePin),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = DshSidebarIcons.PinFill,
+                    contentDescription = "取消置顶",
+                    tint = palette.labelCaption,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+        }
         Box {
             DrawerIconButton(DshSidebarIcons.Ellipsis, "会话“" + title + "”的操作", palette.labelTertiary) {
                 onMenuOpenChange(!menuOpen)
@@ -401,6 +444,12 @@ private fun SessionRow(
             if (menuOpen) {
                 DshPopup(onDismiss = { onMenuOpenChange(false) }, alignStart = true, below = true) {
                     DshMenuCard(Modifier.width(156.dp)) {
+                        // dsh 的菜单槽位 order 100：置顶排第一，先于重命名
+                        DshMenuRow(
+                            label = if (pinned) "取消置顶" else "置顶会话",
+                            icon = if (pinned) DshSidebarIcons.PinFill else DshSidebarIcons.PinOutline,
+                            onClick = { onMenuOpenChange(false); onTogglePin() },
+                        )
                         DshMenuRow(label = "重命名", icon = DshSidebarIcons.Edit, onClick = onRename)
                         DshMenuRow(label = "分叉会话", icon = DshSidebarIcons.Branch, onClick = onFork)
                         DshMenuRow(label = "删除会话", icon = DshSidebarIcons.Trash, onClick = onDelete)
@@ -719,7 +768,13 @@ private fun DrawerEntry(icon: androidx.compose.ui.graphics.vector.ImageVector, l
     }
 }
 
-/** 抽屉顶部：鲸鱼图标 + 「DeepSeek Harness」字标（尺寸取自 dsh 的 SidebarRoot） */
+/**
+ * 抽屉顶部：鲸鱼图标 + 「DeepSeek Harness」词标（尺寸取自 dsh 的 SidebarRoot）。
+ *
+ * 词标是**两层**：`ic_dsh_wordmark` 画 DeepSeek 字与 HARNESS 的药丸底（label-primary），
+ * `ic_dsh_wordmark_badge` 只画药丸内的 HARNESS 字母（label-primary-inverted）——
+ * dsh 的 BrandWordmark 就是这么分色的，单层同色填充在深色下会糊成一块白底。
+ */
 @Composable
 private fun DrawerWordmark() {
     val palette = LocalDshPalette.current
@@ -729,12 +784,20 @@ private fun DrawerWordmark() {
         horizontalArrangement = Arrangement.spacedBy(DshSpacing.Xl),
     ) {
         DshWhale(width = 24.dp, tint = palette.labelPrimary)
-        Image(
-            painter = painterResource(R.drawable.ic_dsh_wordmark),
-            contentDescription = "DeepSeek Harness",
-            colorFilter = ColorFilter.tint(palette.labelPrimary),
-            modifier = Modifier.height(24.dp).width(156.dp),
-        )
+        Box(Modifier.height(24.dp).width(156.dp)) {
+            Image(
+                painter = painterResource(R.drawable.ic_dsh_wordmark),
+                contentDescription = null,
+                colorFilter = ColorFilter.tint(palette.labelPrimary),
+                modifier = Modifier.matchParentSize(),
+            )
+            Image(
+                painter = painterResource(R.drawable.ic_dsh_wordmark_badge),
+                contentDescription = "DeepSeek Harness",
+                colorFilter = ColorFilter.tint(palette.labelPrimaryInverted),
+                modifier = Modifier.matchParentSize(),
+            )
+        }
     }
 }
 

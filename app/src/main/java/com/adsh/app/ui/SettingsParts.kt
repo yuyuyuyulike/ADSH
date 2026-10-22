@@ -376,7 +376,7 @@ internal fun ValueField(
                 invalid = invalid,
             )
             Text(
-                text = if (invalid) "请填数字；留空表示使用默认值。" else hint,
+                text = if (invalid) "Please enter a number; leave it empty to use the default." else hint,
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
                 color = if (invalid) palette.errorLabel else palette.labelTertiary,

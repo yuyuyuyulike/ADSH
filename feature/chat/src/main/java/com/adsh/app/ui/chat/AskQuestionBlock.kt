@@ -17,6 +17,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.adsh.app.ui.blocks.ToolArgs
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
 import com.adsh.app.ui.theme.LocalDshPalette
 import com.adsh.app.ui.kit.DshSpacing
 import kotlinx.serialization.json.JsonArray
@@ -161,6 +162,7 @@ private fun askSummaryQuestion(card: AskCard): String {
 internal fun RailAskQuestionCard(card: AskCard, modifier: Modifier = Modifier) {
     val palette = LocalDshPalette.current
     val shape = RoundedCornerShape(16.dp)
+    val cardScroll = rememberScrollState()
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -169,9 +171,10 @@ internal fun RailAskQuestionCard(card: AskCard, modifier: Modifier = Modifier) {
             .background(palette.codeBlock)
             .border(DshSpacing.Hairline, palette.borderL2, shape)
             // dsh 的 .card{max-height:360px; overflow-y:auto}：题多了在卡片内部滚，
-            // 不去撑会话的滚动条
+            // 不去撑会话的滚动条。滚动体就是卡片本身 → thumb 轨道上下各让开半个圆角，免得被卡片裁掉。
             .heightIn(max = 360.dp)
-            .verticalScroll(rememberScrollState())
+            .dshVerticalScrollbar(cardScroll, elevated = true, topInset = 8.dp, bottomInset = 8.dp)
+            .verticalScroll(cardScroll)
             .padding(horizontal = DshSpacing.Page, vertical = DshSpacing.Card),
         verticalArrangement = Arrangement.spacedBy(DshSpacing.Card),
     ) {

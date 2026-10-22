@@ -1,8 +1,6 @@
 package com.adsh.app.ui.chat
 
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
@@ -33,22 +31,14 @@ internal fun isEdgeTouch(x: Float, width: Float, bandPx: Float): Boolean {
 }
 
 /**
- * 按下点是否落在豁免矩形里（滚动条 thumb 命中区）：是则边缘带不摘这根手指 ——
- * 贴着屏幕边缘拖 thumb 是明确意图，不是误触。矩形为空（滚动条不可见/不可拖）时不豁免。
- */
-internal fun isExemptFromEdgeGuard(position: Offset, exemption: Rect?): Boolean =
-    exemption != null && exemption.contains(position)
-
-/**
  * 边缘防误触：把落在左右边缘带里的手指整根摘掉（详见文件头的说明）。
  *
  * 挂在**根布局**上（[AppRoot]），并且要在抽屉手势之前 ——同一元素上多个 pointerInput
  * 按链序派发，Initial 阶段最外层先跑，先摘掉的手指后面谁都拿不到。
  *
- * [exemption] 每次按下时现读豁免矩形（滚动条 thumb 命中区，见 [TranscriptScrollbarHitRegion]）。
  * [band] <= 0（关闭）时返回原 Modifier：连指针节点都不挂。
  */
-fun Modifier.edgeTouchGuard(band: Dp, exemption: (() -> Rect?)? = null): Modifier {
+fun Modifier.edgeTouchGuard(band: Dp): Modifier {
     if (band <= 0.dp) return this
     return pointerInput(band) {
         val bandPx = band.toPx()
@@ -57,12 +47,9 @@ fun Modifier.edgeTouchGuard(band: Dp, exemption: (() -> Rect?)? = null): Modifie
             val rejected = HashSet<PointerId>()
             while (true) {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
-                val exempt = exemption?.invoke()
                 for (change in event.changes) {
                     if (change.id !in rejected && change.pressed && !change.previousPressed) {
-                        if (!isExemptFromEdgeGuard(change.position, exempt) &&
-                            isEdgeTouch(change.position.x, size.width.toFloat(), bandPx)
-                        ) {
+                        if (isEdgeTouch(change.position.x, size.width.toFloat(), bandPx)) {
                             rejected += change.id
                         }
                     }

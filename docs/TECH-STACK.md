@@ -13,6 +13,7 @@
 | 序列化 | kotlinx.serialization | 1.11.0 | 现状 | — |
 | 并发 | kotlinx.coroutines | 1.11.0 | 现状 | — |
 | 用户程序 | QuickJS（`run_code`） | 3.2.3 | PTC 语义要求进程内沙箱 | 后端可替换性由 `:seam` 的 `seam.ptc` 定义保证 |
+| 外部 glibc 程序 | termux-pacman glibc 运行时 + 自写 `grun` | glibc 2.44 | 安卓 linker 不认 glibc ELF；社区做法是「加载器显式启动」。构建期从 termux-glibc 源精选运行期子集并进 bootstrap，运行期零下载（来源与 SHA 固定在 `scripts/fetch-glibc.sh`） | 上游 glibc-runner 的 shell / patchelf / strace 分支要额外 100 MB+ 依赖闭包，不预置；真需要 `-c` 时再加 bionic patchelf |
 | 格式 | **Spotless**（只做行尾空白 + 末尾换行 + LF，不启用 ktfmt / ktlint 的 Kotlin 重排） | Spotless 8.10.4 | 格式规矩只有一个家（`build-logic` 的约定插件）；**不引入 ktlint**（维护方已退出、2.0 仍 alpha、无官方 Gradle 插件） | — |
 | 静态检查 | **Android Lint 进门禁** | 随 AGP | Android 专有正确性（含 Compose checks） | detekt 等 2.0 稳定后再评估（1.23.8 解析不了 Kotlin 2.4） |
 | 测试 | JUnit4 + **Robolectric 4.17 + Compose UI test + Turbine 1.2.1** | — | 全部用例（含 Compose 界面测试）在 JVM 里跑，不需要模拟器；Robolectric 负责 Android 宿主环境 | 截图测试用 Roborazzi 1.76.0；官方截图测试仍 alpha，不押注 |

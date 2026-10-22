@@ -58,31 +58,103 @@ import com.adsh.app.ui.kit.dshInteraction
 
 /**
  * dsh 的 `--dsw-elevation-prominent`（菜单卡片 / 浮层）：`0 0 0 .5px <stroke>, 0 3px 8px #0000000a,
- * 0 0 20px #0000000d`。描边由调用点用 [androidx.compose.foundation.BorderStroke] + [DshSpacing.Hairline] 画，
- * 这里只负责两层**极淡**光晕：`Modifier.shadow` 的 ambient / spot 填 dsh 的 4% / 5% 黑、elevation 取中间的 10dp。
+ * 0 0 20px #0000000d`。描边由调用点用 [androidx.compose.foundation.BorderStroke] + [DshSpacing.Hairline] 画。
+ *
+ * 深色：单层 10dp / 4–5% 黑（与 dsh 的柔光同量级，深色下由描边负责分离）。
+ * 浅色：dsh 的菜单面是半透明 + backdrop blur，安卓换成实色面之后同一份 4–5% 柔光几乎看不见；
+ * 用「紧贴一层 + 大扩散一层」近似 CSS 的两层投影（Compose 的 shadow 只有一层）。
  */
-fun Modifier.dshProminentShadow(shape: Shape): Modifier =
-    shadow(
-        elevation = 10.dp,
-        shape = shape,
-        clip = false,
-        ambientColor = Color(0x0D000000),
-        spotColor = Color(0x0A000000),
-    )
+@Composable
+fun Modifier.dshProminentShadow(shape: Shape): Modifier {
+    if (LocalDshPalette.current.dark) {
+        return shadow(
+            elevation = 10.dp,
+            shape = shape,
+            clip = false,
+            ambientColor = Color(0x0D000000),
+            spotColor = Color(0x0A000000),
+        )
+    }
+    return this
+        .shadow(
+            elevation = 4.dp,
+            shape = shape,
+            clip = false,
+            ambientColor = Color(0x10000000),
+            spotColor = Color(0x18000000),
+        )
+        .shadow(
+            elevation = 14.dp,
+            shape = shape,
+            clip = false,
+            ambientColor = Color(0x0F000000),
+            spotColor = Color(0x10000000),
+        )
+}
 
 /**
  * dsh 的 `--dsw-elevation-soft`（输入卡片）：`0 0 0 .5px <stroke>` + `0 4px 16px rgba(0,0,0,.03)` +
- * `0 0 24px rgba(0,0,0,.03)`（gradient-shadow-text.css:38）。Compose 的 shadow 只有一层，
- * 这里折成 **12dp / 黑 3%（ambient + spot）** 的近似；0.5px 描边由调用点用 BorderStroke 画。
+ * `0 0 24px rgba(0,0,0,.03)`（gradient-shadow-text.css:38）；0.5px 描边由调用点用 BorderStroke 画。
+ *
+ * 深色：单层 12dp / 3% 黑。浅色：实色面叠两层（紧贴 + 大扩散），量级比 dsh 的 3% 略高一点，
+ * 否则近白卡片落在近白页面上看不出离页面有多高。
  */
-fun Modifier.dshSoftShadow(shape: Shape): Modifier =
-    shadow(
-        elevation = 12.dp,
-        shape = shape,
-        clip = false,
-        ambientColor = Color(0x08000000),
-        spotColor = Color(0x08000000),
-    )
+@Composable
+fun Modifier.dshSoftShadow(shape: Shape): Modifier {
+    if (LocalDshPalette.current.dark) {
+        return shadow(
+            elevation = 12.dp,
+            shape = shape,
+            clip = false,
+            ambientColor = Color(0x08000000),
+            spotColor = Color(0x08000000),
+        )
+    }
+    return this
+        .shadow(
+            elevation = 3.dp,
+            shape = shape,
+            clip = false,
+            ambientColor = Color(0x0F000000),
+            spotColor = Color(0x14000000),
+        )
+        .shadow(
+            elevation = 12.dp,
+            shape = shape,
+            clip = false,
+            ambientColor = Color(0x0A000000),
+            spotColor = Color(0x0C000000),
+        )
+}
+
+/**
+ * 浅色模式下的浮动卡片阴影：轻、软、向外扩散，把输入框 / 命令栏 / 任务栏这类浮在会话上的容器
+ * 与页面底色分开。深色模式不画 —— 深色下的层级由面色与描边负责，加阴影只会发灰。
+ *
+ * 可与 [dshSoftShadow] / [dshProminentShadow] 叠加：那两条是 dsh 令牌的镜像（深色也有），
+ * 这一条只在浅色补足「卡片离页面有多高」。
+ */
+@Composable
+fun Modifier.lightCardShadow(shape: Shape): Modifier {
+    if (LocalDshPalette.current.dark) return this
+    // 与 [dshProminentShadow] / [dshSoftShadow] 同一口径：紧贴一层 + 大扩散一层，
+    // 单层 10dp 在近白页面上几乎看不出卡片是浮起来的。
+    return this
+        .shadow(
+            elevation = 3.dp,
+            shape = shape,
+            clip = false,
+            ambientColor = Color(0x10000000),
+            spotColor = Color(0x16000000),
+        )
+        .shadow(
+            elevation = 12.dp,
+            shape = shape,
+            clip = false,
+            ambientColor = Color(0x0D000000),
+            spotColor = Color(0x10000000),
+        )
+}
 
 /**
  * dsh 的 Button 变体（.primary / .outline / .ghost）
@@ -287,12 +359,14 @@ fun DshModal(
                             color = palette.labelPrimary,
                         )
                     }
+                    val scroll = rememberScrollState()
                     Column(
                         Modifier
                             .fillMaxWidth()
                             .heightIn(max = 420.dp)
                             .padding(top = DshSpacing.Page, start = 24.dp, end = 24.dp)
-                            .verticalScroll(rememberScrollState()),
+                            .dshVerticalScrollbar(scroll, elevated = true)
+                            .verticalScroll(scroll),
                     ) {
                         content()
                     }

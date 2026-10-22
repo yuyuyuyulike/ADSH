@@ -61,7 +61,7 @@ class LlmClient(
      */
     fun listModels(): List<String> {
         val config = configProvider()
-        if (config.apiKey.isBlank()) throw IllegalStateException("未配置 API Key")
+        if (config.apiKey.isBlank()) throw IllegalStateException("API key is not configured")
         val url = URL(config.baseUrl.trimEnd('/') + "/models")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
@@ -74,11 +74,11 @@ class LlmClient(
             val code = connection.responseCode
             val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
                 ?.bufferedReader()?.use { it.readText() } ?: ""
-            if (code !in 200..299) throw IllegalStateException("HTTP " + code + "：" + body.take(300))
+            if (code !in 200..299) throw IllegalStateException("HTTP " + code + ": " + body.take(300))
             val root = json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject
-                ?: throw IllegalStateException("返回不是 JSON 对象")
+                ?: throw IllegalStateException("response is not a JSON object")
             val data = root["data"] as? kotlinx.serialization.json.JsonArray
-                ?: throw IllegalStateException("返回里没有 data 数组")
+                ?: throw IllegalStateException("response has no data array")
             return data.mapNotNull { element ->
                 ((element as? kotlinx.serialization.json.JsonObject)?.get("id")
                     as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
@@ -89,10 +89,10 @@ class LlmClient(
     }
 
     /**
-     * 一次模型请求的流。**掉线自动重连**在这一层（见 [ConnectionRecovery]）：
-     * 传输层断了 / 5xx / 429 / 空响应时按 dsh 的退避重发这一步，并把
-     * [ChatEvent.Reconnecting] / [ChatEvent.Reconnected] / [ChatEvent.StreamReset] 交给上层 ——
-     * 于是 /compact 那条通道也自动获得同样的重连行为（它不用工具循环，但同样是模型请求）。
+     * 一次模型请求的流。**模型请求重试**在这一层（见 [LlmRetry]）：传输层断了 / 5xx / 429 /
+     * 空响应时按 dsh 的 llm-retry 默认策略重发**这一步**（同一步内，不新开一轮），并把
+     * [ChatEvent.RetryScheduled] / [ChatEvent.RetryStarted] / [ChatEvent.StreamReset] 交给上层
+     * —— 于是 /compact 那条通道也自动获得同样的重试行为（它不用工具循环，但同样是模型请求）。
      */
     override fun stream(request: ChatRequest): Flow<ChatEvent> = flow {
         val config = configProvider()
@@ -101,64 +101,47 @@ class LlmClient(
             return@flow
         }
         if (config.apiKey.isBlank()) {
-            emit(ChatEvent.Failed("未配置 API Key（设置 → 模型）"))
+            emit(ChatEvent.Failed("API key is not configured (Settings > Models)"))
             return@flow
         }
 
-        var attempt = 0
+        var retry = 0
         while (true) {
             currentCoroutineContext().ensureActive()
-            val generation = ManualReconnect.generation()
-            when (val outcome = attemptStream(config, request, attempt) { emit(it) }) {
+            when (val outcome = attemptStream(config, request) { emit(it) }) {
                 is Attempt.Done -> return@flow
                 is Attempt.Failed -> {
-                    if (!outcome.retryable) {
-                        emit(ChatEvent.Failed(outcome.message))
+                    // dsh 的预算：每步最多 [LlmRetry.MAX_RETRIES] 次；预算耗尽 / 不可重试的 code
+                    // 都以 Failed 收尾（轮尾的报错行承担最终说明，重试行停在「已重试」）。
+                    if (!LlmRetry.isRetryable(outcome.code) || retry >= LlmRetry.MAX_RETRIES) {
+                        emit(ChatEvent.Failed(outcome.message, outcome.code))
                         return@flow
                     }
-                    attempt++
-                    // 这一次尝试的非持久增量作废（重连 = 重新生成这一步），先把界面上的
-                    // 半截正文清掉，再报「正在重连」。顺序反了会看到「正在重连」和半截正文同框。
+                    retry++
+                    // 重试 = 重新生成这一步：上一次尝试的非持久增量作废（dsh 的 resetForRetry）。
+                    // 先清流式尾巴、再报调度，顺序反了会看到「正在重试」与半截正文同框。
                     emit(ChatEvent.StreamReset)
-                    // 断网：**不盲目退避**（等下去大概率还是失败），挂起等网络回来 —— dsh 的
-                    // `setNetworkAvailable`：网络不可用时连指示器都不一样（静态的「断开」而不是
-                    // 带点动画的「正在重连」）。网络回来、或用户点了重试，都从这里往下走且退避归零。
-                    if (!NetworkAvailability.isAvailable()) {
-                        emit(ChatEvent.Disconnected(outcome.message))
-                        if (logDebug) Log.d(TAG, "offline, waiting for network: " + outcome.message)
-                        ConnectionRecovery.awaitNetwork(generation)
-                        attempt = 0
-                        continue
-                    }
-                    val delayMs = ConnectionRecovery.backoffDelayMs(attempt)
-                    emit(ChatEvent.Reconnecting(attempt, outcome.message, delayMs))
-                    if (logDebug) Log.d(TAG, "reconnect #" + attempt + " in " + delayMs + "ms: " + outcome.message)
-                    // 用户点了「重试」：立刻重发，并把退避序列归零（dsh 的 attempt = 0 + 立即重试）
-                    if (ConnectionRecovery.awaitRetry(delayMs, generation)) {
-                        attempt = 0
-                        if (logDebug) Log.d(TAG, "manual reconnect")
-                    }
+                    val delayMs = LlmRetry.backoffDelayMs(retry)
+                    emit(ChatEvent.RetryScheduled(retry, LlmRetry.MAX_RETRIES, delayMs, outcome.message))
+                    if (logDebug) Log.d(TAG, "retry #" + retry + " in " + delayMs + "ms: " + outcome.message)
+                    // dsh 的 cancellableDelay：等待期间用户停止 / 轮次取消要立刻退出（取消异常向上抛）
+                    kotlinx.coroutines.delay(delayMs)
+                    emit(ChatEvent.RetryStarted(retry))
                 }
             }
         }
     }.flowOn(Dispatchers.IO)
 
-    /** 一次尝试的结果：成功收尾，或带着「还能不能重试」的失败 */
+    /** 一次尝试的结果：成功收尾，或带失败 code（[LlmRetry.RETRYABLE_CODES] 之外都不可重试） */
     private sealed interface Attempt {
         data object Done : Attempt
-        data class Failed(val message: String, val retryable: Boolean) : Attempt
+        data class Failed(val message: String, val code: String?) : Attempt
     }
 
-    /**
-     * 发一次请求并把整条 SSE 读完（[stream] 的一次「尝试」）。
-     *
-     * @param attempt 已经重连过几次（0 = 第一次）：>0 时一拿到 200 就发 [ChatEvent.Reconnected]，
-     *   界面据此把「正在重连」切成「已恢复」（dsh 的 `connected` 状态）
-     */
+    /** 发一次请求并把整条 SSE 读完（[stream] 的一次「尝试」）。 */
     private suspend fun attemptStream(
         config: ProviderConfig,
         request: ChatRequest,
-        attempt: Int,
         emit: suspend (ChatEvent) -> Unit,
     ): Attempt {
         var connection: HttpURLConnection? = null
@@ -198,12 +181,11 @@ class LlmClient(
             if (code !in 200..299) {
                 val body = (connection.errorStream ?: connection.inputStream)
                     ?.bufferedReader()?.use { it.readText() } ?: ""
-                // 4xx（除 429）是「这次请求本身不对」：重发多少次都一样，交给用户看错误条。
-                // 5xx / 429 才是「服务端/链路此刻不行」，按 dsh 的退避重试。
-                return Attempt.Failed("HTTP " + code + "：" + body.take(500), retryable = code >= 500 || code == 429)
+                // 4xx（除 429）是「这次请求本身不对」：重发多少次都一样，code = null 直接终态。
+                // 5xx / 429 才是「服务端/链路此刻不行」，映射成 dsh 的 SERVER / RATE_LIMIT 后重试。
+                // 400 里唯一例外是「上下文超限」：它有恢复路径（压缩后重试），所以单独给一个 code。
+                return Attempt.Failed("HTTP " + code + "：" + body.take(500), code = streamFailureCode(code, body))
             }
-            // 连接回来了（dsh 的 connected）：界面把「正在重连」切成「已恢复」并停留 2 秒
-            if (attempt > 0) emit(ChatEvent.Reconnected)
 
             val parser = SseParser()
             val reader: BufferedReader = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8))
@@ -236,10 +218,10 @@ class LlmClient(
             }
             if (emitted == 0) {
                 // 静默空流是最难查的故障：把原始首行带出来，别让用户看到「什么都没发生」。
-                // 空响应一定是**可重试**的：链路断了读起来就是这个样子。
+                // 空响应按 dsh 的 EMPTY_RESPONSE 重试：链路断了读起来就是这个样子。
                 return Attempt.Failed(
-                    "服务端返回空响应（HTTP " + code + "）。首行：" + firstLine.take(300),
-                    retryable = true,
+                    "the server returned an empty response (HTTP " + code + "). First line: " + firstLine.take(300),
+                    code = "EMPTY_RESPONSE",
                 )
             }
             // 有内容但没等到 [DONE]：**不算失败**。有些兼容网关就是直接关流（不送终止标记），
@@ -247,8 +229,10 @@ class LlmClient(
             return Attempt.Done
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) throw t
-            // 传输层异常（socket 断、超时、TLS 等）一律可重试；取消走上面的 rethrow
-            return Attempt.Failed(t::class.java.simpleName + "：" + (t.message ?: ""), retryable = true)
+            // 传输层异常按 dsh 的 code 分类：超时 = TIMEOUT，其余（socket 断 / TLS 等）= TRANSPORT，
+            // 两类都可重试；取消走上面的 rethrow。
+            val code = if (t is java.net.SocketTimeoutException) "TIMEOUT" else "TRANSPORT"
+            return Attempt.Failed(t::class.java.simpleName + "：" + (t.message ?: ""), code = code)
         } finally {
             cancelHandle?.dispose()
             runCatching { connection?.disconnect() }
@@ -388,6 +372,19 @@ class LlmClient(
         }
         emit(ChatEvent.Usage(promptTokens = lastUser.length / 2, completionTokens = reply.length / 2))
     }
+}
+
+/**
+ * 一次 HTTP 失败 → 规范化 code（dsh 的 LlmError.code）；null = 请求本身不对、不可重试。
+ *
+ * 映射表只在这里：429 → RATE_LIMIT（退避重试）、5xx → SERVER（重试）、
+ * 400 + 上下文超限文案 → [CONTEXT_WINDOW_EXCEEDED]（不重试，交给压缩后的恢复路径）。
+ */
+internal fun streamFailureCode(status: Int, body: String): String? = when {
+    isContextOverflow(status, body) -> CONTEXT_WINDOW_EXCEEDED
+    status == 429 -> "RATE_LIMIT"
+    status >= 500 -> "SERVER"
+    else -> null
 }
 
 /**

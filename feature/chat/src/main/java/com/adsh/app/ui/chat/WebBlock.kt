@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.adsh.app.core.tools.WebOutputText
 import com.adsh.app.ui.blocks.MarkdownBody
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
 import com.adsh.app.ui.theme.LocalDshPalette
 import com.adsh.app.ui.kit.DshSpacing
 import com.adsh.app.ui.kit.dshClickable
@@ -241,11 +242,13 @@ internal fun RailWebSearchBlock(card: WebSearchCard, modifier: Modifier = Modifi
             )
         } else {
             // dsh 的 .sources：max-height 320px + overflow-y auto，条与条之间 10px
+            val sourcesScroll = rememberScrollState()
             Column(
                 Modifier
                     .fillMaxWidth()
                     .heightIn(max = 320.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .dshVerticalScrollbar(sourcesScroll, elevated = true)
+                    .verticalScroll(sourcesScroll),
                 verticalArrangement = Arrangement.spacedBy(DshSpacing.Xxl),
             ) {
                 card.sources.forEachIndexed { index, source -> WebSourceRow(index + 1, source) }
@@ -319,13 +322,21 @@ internal fun RailWebFetchBlock(card: WebFetchCard, modifier: Modifier = Modifier
                 color = palette.labelTertiary,
             )
             if (bodyOpen) {
+                // 滚动体自己带 16 圆角与底色：thumb 贴到卡片边，轨道上下各让开半个圆角
+                val bodyScroll = rememberScrollState()
                 Column(
                     Modifier
                         .fillMaxWidth()
                         .heightIn(max = 320.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .background(palette.codeBlock)
-                        .verticalScroll(rememberScrollState())
+                        .dshVerticalScrollbar(
+                            bodyScroll,
+                            elevated = true,
+                            topInset = 8.dp,
+                            bottomInset = 8.dp,
+                        )
+                        .verticalScroll(bodyScroll)
                         .padding(horizontal = DshSpacing.Section, vertical = DshSpacing.Xxxl),
                 ) {
                     Text(

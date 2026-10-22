@@ -1,6 +1,8 @@
 package com.adsh.app.core.tools
 
 import com.adsh.app.seam.exec.ExecResult
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -107,6 +109,15 @@ class BashRenderTest {
         assertEquals("out\n[exit code: 2]", renderBash(result(2), "out", ""))
         assertEquals("out\n[stopped: user]", renderBash(result(0), "out", "", "user"))
         assertEquals("out\n[timed out after 3000ms]", renderBash(result(0, timedOut = true, timeoutMs = 3000), "out", ""))
+    }
+
+    @Test
+    fun `streamValue：截断元数据只在给出时出现`() {
+        val withOmitted = streamValue("tail", truncated = true, spillPath = "/tmp/s", omittedBytes = 500)
+        assertEquals(500L, withOmitted["omittedBytes"]!!.jsonPrimitive.long)
+        val without = streamValue("tail", truncated = false, spillPath = null)
+        assertNull(without["omittedBytes"])
+        assertNull(without["spillPath"])
     }
 
     // ------------------------------------------------------------------ 读回

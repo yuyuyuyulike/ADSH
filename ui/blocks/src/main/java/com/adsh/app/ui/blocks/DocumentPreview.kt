@@ -25,6 +25,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -104,7 +105,7 @@ private const val MAX_TEXT_BYTES = 512 * 1024
 internal const val PREVIEW_LOADING_TEXT = "文档渲染中..."
 
 /** dsh 的 documentpreview.unviewable：已知二进制容器 / 读不出正文时那一句 */
-internal const val PREVIEW_UNVIEWABLE_TEXT = "该格式文件暂时无法预览"
+internal const val PREVIEW_UNVIEWABLE_TEXT = "This file type cannot be previewed"
 
 /** 预览正文（tags 条与文档头由 FileWorkspacePanel 负责，这里只管渲染当前文件） */
 @Composable
@@ -144,8 +145,7 @@ internal fun previewSupportsWrap(path: String): Boolean = when (
 
 /** 不支持预览时那句说明：老式 Office 二进制格式解释「为什么」，其余类型用默认文案 */
 internal fun unsupportedNoteOf(ext: String): String? = if (ext in LEGACY_OFFICE_EXT) {
-    "这种老式 Office 格式（.doc / .xls / .ppt）需要 Office 引擎才能解析（dsh 用 LibreOffice 转 PDF，" +
-        "Android 上没有它）。请用其他应用打开。"
+    "This legacy Office format (.doc / .xls / .ppt) needs an Office engine (dsh converts it with LibreOffice, which Android does not have). Open it with another app."
 } else {
     null
 }
@@ -268,7 +268,7 @@ private fun TextPreview(path: String, wrap: Boolean, reloadKey: Int) {
     }
 
     when {
-        failure != null -> PreviewEmpty(path, "读取失败：" + failure, retry = { retry++ })
+        failure != null -> PreviewEmpty(path, "failed to read: " + failure, retry = { retry++ })
         text == null -> PreviewLoading()
         else -> {
             val body = text!!
@@ -324,7 +324,12 @@ private fun TextPreviewBody(lines: List<String>, language: String?, wrap: Boolea
     val palette = LocalDshPalette.current
     val gutter = lineNumberGutterWidth(lines.size)
     if (wrap) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 16.dp)) {
+        val listState = rememberLazyListState()
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().dshVerticalScrollbar(listState),
+            state = listState,
+            contentPadding = PaddingValues(vertical = 16.dp),
+        ) {
             itemsIndexed(lines) { index, line ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.Top) {
                     LineNumber(index + 1, gutter)
@@ -344,9 +349,19 @@ private fun TextPreviewBody(lines: List<String>, language: String?, wrap: Boolea
         // 不折行：整块横向滚动。宽度按最长行的近似字宽算，LazyColumn 必须拿到有界宽度（否则无法测量）
         val charWidth = with(LocalDensity.current) { 11.sp.toDp() * 0.62f }
         val contentWidth = gutter + 32.dp + charWidth * ((lines.maxOfOrNull { it.length } ?: 0).coerceAtLeast(1))
-        Box(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
+        val listState = rememberLazyListState()
+        val horizontal = rememberScrollState()
+        // 两条轴都挂外层可视区：LazyColumn 的宽度等于内容宽，竖轴挂在它身上会画到可视区外
+        Box(
+            Modifier
+                .fillMaxSize()
+                .dshVerticalScrollbar(listState)
+                .dshHorizontalScrollbar(horizontal)
+                .horizontalScroll(horizontal),
+        ) {
             LazyColumn(
                 modifier = Modifier.width(contentWidth).fillMaxHeight(),
+                state = listState,
                 contentPadding = PaddingValues(vertical = 16.dp),
             ) {
                 itemsIndexed(lines) { index, line ->
@@ -433,14 +448,16 @@ private fun MarkdownPreview(path: String, reloadKey: Int) {
         failure = result.exceptionOrNull()?.message
     }
     when {
-        failure != null -> PreviewEmpty(path, "读取失败：" + failure, retry = { retry++ })
+        failure != null -> PreviewEmpty(path, "failed to read: " + failure, retry = { retry++ })
         text == null -> PreviewLoading()
         else -> {
             val body = text!!
             val (frontmatter, markdown) = remember(body) { splitFrontmatter(body) }
             SelectionContainer {
+                val listState = rememberLazyListState()
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().dshVerticalScrollbar(listState),
+                    state = listState,
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                 ) {
                     if (frontmatter != null) {
@@ -520,20 +537,27 @@ private fun PdfPreview(path: String, reloadKey: Int) {
     when {
         failure != null -> PreviewEmpty(path, failure!!, retry = { retry++ })
         pageCount == null -> PreviewLoading()
-        pageCount == 0 -> PreviewEmpty(path, "该路径不是普通文件，没有可显示的内容")
-        else -> LazyColumn(
-            modifier = Modifier.fillMaxSize().background(palette.bgDocumentPreview),
-            contentPadding = PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            items(pageCount!!) { index -> PdfPage(path, index, reloadKey) }
+        pageCount == 0 -> PreviewEmpty(path, "This path is not a regular file; there is nothing to preview.")
+        else -> {
+            val listState = rememberLazyListState()
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(palette.bgDocumentPreview)
+                    .dshVerticalScrollbar(listState),
+                state = listState,
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(pageCount!!) { index -> PdfPage(path, index, reloadKey) }
+            }
         }
     }
 }
 
 private fun pdfFailureText(error: Throwable): String = when (error) {
-    is SecurityException -> "此 PDF 需要密码，暂不支持预览"
-    else -> "无法显示 PDF：" + (error.message ?: error::class.java.simpleName)
+    is SecurityException -> "This PDF is password-protected and cannot be previewed."
+    else -> "cannot display the PDF: " + (error.message ?: error::class.java.simpleName)
 }
 
 @Composable
@@ -663,7 +687,7 @@ internal fun UnsupportedPreview(path: String, note: String? = null) {
         message = buildString {
             append(note ?: PREVIEW_UNVIEWABLE_TEXT)
             if (note == null) append("\n").append(fileSizeText(file.length()))
-            append("\n\n可以用其他应用打开这个文件。")
+            append("\n\nYou can open this file with another app.")
         },
         action = { OpenWithOtherAppButton(path) },
     )
@@ -684,7 +708,7 @@ internal fun CenteredNote(text: String) {
  */
 internal fun readTextPreview(path: String): Pair<String, String?> {
     val file = File(path)
-    if (!file.isFile) throw IllegalStateException("文件不存在")
+    if (!file.isFile) throw IllegalStateException("file not found")
     val length = file.length()
     val limit = minOf(length, MAX_TEXT_BYTES.toLong()).toInt()
     val bytes = ByteArray(limit)
@@ -698,7 +722,7 @@ internal fun readTextPreview(path: String): Pair<String, String?> {
     }
     val probe = minOf(read, 8192)
     for (index in 0 until probe) {
-        if (bytes[index].toInt() == 0) throw IllegalStateException("二进制文件，无法按文本预览")
+        if (bytes[index].toInt() == 0) throw IllegalStateException("binary file; cannot preview as text")
     }
     val text = String(bytes, 0, read, Charsets.UTF_8)
     val note = if (length > read) "仅显示前 " + fileSizeText(read.toLong()) + "，文件共 " + fileSizeText(length) else null

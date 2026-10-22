@@ -3,8 +3,8 @@ package com.adsh.app.core.data
 /**
  * Agent 主循环面向会话存储的窄端口（甲方案第 1 步）。
  *
- * 这是 [com.adsh.app.core.agent.AgentLoop] 在整条回合里用到的**全部**读写能力（10 个方法，逐一从
- * 既有调用点量出来的，不多不少）。生产实现就是 [ConversationRepository]（类声明上
+ * 这是 [com.adsh.app.core.agent.AgentLoop] 与压缩器在整条回合里用到的**全部**读写能力（11 个方法，
+ * 逐一从既有调用点量出来的，不多不少）。生产实现就是 [ConversationRepository]（类声明上
  * `class ConversationRepository(...) : TurnStore`），测试里换成内存实现。
  *
  * 参数默认值只在这里声明：Kotlin 不允许 override 重复默认值，而默认值对调用方是按**静态类型**
@@ -54,4 +54,17 @@ interface TurnStore {
 
     /** 取走收件箱里的注入行（取走即消费）。 */
     suspend fun claimInjected(conversationId: Long, openTurn: Boolean = false): List<MessageEntity>
+
+    /**
+     * 把会话历史整体替换成「系统节点前缀 + 一条检查点 + 保留的尾巴」（dsh 的 /compact）。
+     *
+     * 检查点是 role = user、name = [ConversationRepository.COMPACT_MARKER] 的一行；行 id 会重新分配，
+     * 相对顺序不变。**只有摘要已经拿到才许调用**：摘要失败时一行都不能动（调用方保证）。
+     */
+    suspend fun replaceHistory(
+        conversationId: Long,
+        prefix: List<MessageEntity>,
+        keep: List<MessageEntity>,
+        checkpoint: String,
+    )
 }

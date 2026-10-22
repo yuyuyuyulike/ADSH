@@ -725,10 +725,41 @@ internal fun parseSearchQueries(raw: List<String>, maxQueries: Int): SearchArgs 
  *  - 参数：多了 `timeoutMs` / `retries`（dsh 的 schema 没有，见 [fetchAttemptPlan] 与 ToolSdk）。
  */
 object WebFetchTool : Tool {
-    override val name = "web_fetch"
-
-    /** description 的唯一来源是 tools:sdk 段（ToolSdk.specs）：这里只做委托，不另写一份 */
-    override val description: String get() = ToolSdk.description("web_fetch")
+    override val spec = ToolSpec(
+        name = "web_fetch",
+        // dsh 的 schema 里没有 `timeoutMs` / `retries`（超时是宿主配置的 30s、失败不重试）。
+        // 没有它们时「一次超时即失败」，网络一抖这个 safe 工具比手写 curl 更脆；默认值写进
+        // 说明，让模型知道不提也有一次重试。
+        description = "Fetch the content of a specific HTTP(S) URL and return it decoded to text. " +
+            "A timeout or a transport failure is retried once by default (`retries`); a non-2xx " +
+            "response is a result, not a failure, so check `statusCode`.",
+        args = """
+            {
+                /** The HTTP(S) URL to fetch. */
+                url: string;
+                /** Read timeout in milliseconds. Defaults to 30000, capped at 120000; the connect timeout is the smaller of 15000 and this value. A host with several addresses may spend this long per address, so one attempt can exceed the deadline. */
+                timeoutMs?: number;
+                /** Extra attempts after a timeout or transport error. Defaults to 1, capped at 3; responses that returned a body — including 4xx/5xx — are never retried. */
+                retries?: number;
+              }
+        """.trimIndent(),
+        output = """
+            {
+                /** The final URL after redirects. */
+                url: string;
+                /** The HTTP status code. */
+                statusCode: number;
+                /** The decoded body; "html" means the source was HTML. This value keeps the body as decoded — the call's text form carries the Markdown rendering. */
+                body: {
+                  kind: "html" | "text";
+                  content: string;
+                };
+                /** Whether the body was cut at the size cap. */
+                truncated: boolean;
+              }
+        """.trimIndent(),
+    )
+    override val parallelSafe = true
 
 /**
  * `web_fetch` 两个模型侧参数（`timeoutMs` / `retries`）的取值口径（纯函数，单测直接打）：
@@ -1036,11 +1067,35 @@ internal fun fetchAttemptPlan(timeoutArg: Int?, retriesArg: Int?): Pair<Int, Int
  * （**提供方仍然算可用**，schema 始终注册），传输/响应问题一律 WEB_PROVIDER_ERROR。
  */
 object WebSearchTool : Tool {
-
-    override val name = "web_search"
-
-    /** 与 tools:sdk 段里的那一句同源（ToolSdk.specs），避免两处各写一遍后漂移 */
-    override val description: String get() = ToolSdk.description("web_search")
+    override val spec = ToolSpec(
+        name = "web_search",
+        description = "Search the web for current information. Provide 1–4 queries in the required queries " +
+            "array. Returns an optional summary answer and a list of source URLs.",
+        args = """
+            {
+                /** Required search queries; accepts 1–4 items and merges their results. Use a one-item array for a single search. */
+                queries: string[];
+              }
+        """.trimIndent(),
+        output = """
+            {
+                /** The provider's summary answer, when it returns one. */
+                content?: string;
+                /** The deduplicated source list, merged in rank order across queries. */
+                sources: {
+                  url: string;
+                  title?: string;
+                  /** The excerpt the provider cited for this URL. */
+                  snippet?: string;
+                  /** The page's age or publication date, when the provider reports one. */
+                  publishedAt?: string;
+                }[];
+                /** Whether the source cap dropped results. */
+                truncated: boolean;
+              }
+        """.trimIndent(),
+    )
+    override val parallelSafe = true
 
     /** 一条来源（dsh 的 WebSource：url 必有，其余可选） */
     private data class Source(
@@ -1730,16 +1785,16 @@ object WebSearchTool : Tool {
     /** dsh 的 searchEndpointError 提示：把 dsh 的设置路径换成 ADSH 的 */
     private const val ENDPOINT_HINT = "\n\nThe web search request used endpoint "
     private const val ENDPOINT_HINT_TAIL =
-        ". 搜索端点与对话端点是两套配置：如果不该用这个端点，请在 设置 > 功能 > 网页搜索 里改「接口地址」并保存；" +
-            "该端点必须是可信的 Anthropic 兼容 Messages 接口，且只应由用户自己选择或修改。"
+        ". The web-search endpoint and the chat endpoint are configured separately: if this endpoint is wrong, change it under Settings > Features > Web Search and save; " +
+            "the endpoint must be a trusted Anthropic-compatible Messages API, chosen or changed only by the user."
     /** 换成 Exa 后端时的那一句（同样是「设置 > 功能 > 网页搜索」） */
     private const val ENDPOINT_HINT_TAIL_EXA =
-        ". 搜索端点与对话端点是两套配置：如果不该用这个端点，请在 设置 > 功能 > 网页搜索 里改「接口地址」并保存；" +
-            "该端点必须是可信的 Exa 搜索接口（请求时拼 /search），且只应由用户自己选择或修改。"
+        ". The web-search endpoint and the chat endpoint are configured separately: if this endpoint is wrong, change it under Settings > Features > Web Search and save; " +
+            "the endpoint must be a trusted Exa search API (with /search appended), chosen or changed only by the user."
     /** Tavily / 秘塔那一句（同一个设置路径；<name> 换成后端显示名） */
     private const val ENDPOINT_HINT_TAIL_CANDIDATES =
-        ". 搜索端点与对话端点是两套配置：如果不该用这个端点，请在 设置 > 功能 > 网页搜索 里改「接口地址」并保存；" +
-            "该端点必须是可信的 <name> 搜索接口（请求时拼 /search），且只应由用户自己选择或修改。"
+        ". The web-search endpoint and the chat endpoint are configured separately: if this endpoint is wrong, change it under Settings > Features > Web Search and save; " +
+            "the endpoint must be a trusted <name> search API (with /search appended), chosen or changed only by the user."
     /** 秘塔全网检索的 scope 值（开放平台的合法 scope：webpage / document / scholar / …） */
     private const val METASO_SCOPE_WEBPAGE = "webpage"
 }

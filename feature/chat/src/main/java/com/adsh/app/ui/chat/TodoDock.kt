@@ -49,6 +49,8 @@ import com.adsh.app.ui.blocks.DshDockIcons
 import com.adsh.app.ui.blocks.DshIconButton
 import com.adsh.app.ui.blocks.DshSidebarIcons
 import com.adsh.app.ui.blocks.dshProminentShadow
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
+import com.adsh.app.ui.blocks.lightCardShadow
 import com.adsh.app.ui.theme.LocalDshPalette
 import com.adsh.app.ui.kit.DshSpacing
 import com.adsh.app.ui.kit.DshSettingIcons
@@ -66,23 +68,23 @@ private const val TODO_CHECK_PATH =
         "8.60701 6.08997 8.604C6.11259 8.60758 6.13571 8.60758 6.15833 8.604C6.13954 8.60701 6.16232 " +
         "8.61409 6.26941 8.52795C6.38633 8.43389 6.53139 8.28989 6.77356 8.04773L10.0352 4.78613L10.9631 5.71411Z"
 
-/** dsh 的 composer 侧留白 16 + dock inset 8×2：浮岛每侧比输入卡窄 16 */
-internal val TodoDockPageInset = DshSpacing.Card * 2
+/** 与输入卡同一列宽：横向留白取输入卡的侧留白，任务栏不再额外内缩 */
+internal val TodoDockPageInset = ComposerSpec.SideClearance
 
-/** dsh TodoPanel 的 --dsw-radius-lg = 16 */
+/** 任务栏圆角 */
 internal val TodoDockRadius = 16.dp
 
-/** dsh TodoPanel 的 .body padding 6 / 12 与 .header height 36 */
-internal val TodoDockBodyPaddingVertical = 6.dp
+/** 折叠态竖直高度 = 4 + 32 + 4 = 40dp（正文内边距 4 / 标题行 32） */
+internal val TodoDockBodyPaddingVertical = 4.dp
 internal val TodoDockBodyPaddingHorizontal = 12.dp
-internal val TodoDockHeaderHeight = 36.dp
+internal val TodoDockHeaderHeight = 32.dp
 
 /**
  * 输入框上方的任务横窗，dsh 的 TodoPanel（skeleton/TodoPanel）：
  *
- *  - .root 比输入卡每侧窄 16（composer 侧留白 16 + dock inset 8×2）、--dsw-radius-lg=16、
+ *  - 与输入卡同一列宽（左右各留 [TodoDockPageInset]）、圆角 16、
  *    menu 面（弹层取不到身后内容 → 合成色 [com.adsh.app.ui.theme.DshPalette.menuSurface]）、
- *    border-l1 hairline + [dshProminentShadow] 光晕；
+ *    border-l1 hairline + [dshProminentShadow] 光晕 + 浅色模式的 [lightCardShadow]；
  *  - .body padding 6/12、gap 8；.header 高 36、gap 10：清单图标 + 「任务」13/500/24 + 进度 13/400 三级色 + 折叠箭头；
  *  - 进度是「N 已完成 / N 进行中 / N 待处理」中非零项用「 · 」连接（dsh 的 progressLabel）；
  *  - .list max-height 180、gap 8：状态字形 + 13/20 正文，单行省略；默认收起。
@@ -112,6 +114,7 @@ internal fun TodoDock(conversationId: Long?, todos: List<TodoItem>) {
             .padding(horizontal = TodoDockPageInset)
             .padding(bottom = DshSpacing.Lg)
             .dshProminentShadow(shape)
+            .lightCardShadow(shape)
             .clip(shape)
             .background(palette.menuSurface)
             .border(DshSpacing.Hairline, palette.borderL1, shape)
@@ -158,11 +161,13 @@ internal fun TodoDock(conversationId: Long?, todos: List<TodoItem>) {
             )
         }
         if (expanded) {
+            val listScroll = rememberScrollState()
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 180.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .dshVerticalScrollbar(listScroll, elevated = true)
+                    .verticalScroll(listScroll),
                 verticalArrangement = Arrangement.spacedBy(DshSpacing.Xl),
             ) {
                 todos.forEach { todo ->

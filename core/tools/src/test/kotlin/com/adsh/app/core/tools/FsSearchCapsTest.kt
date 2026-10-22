@@ -210,6 +210,31 @@ class FsSearchCapsTest {
         }
     }
 
+    /**
+     * 目录遍历**不跟随符号链接**（dsh 的 glob 用 rg --files，默认也不跟随）：
+     * 一条指回父目录的链（sym/up -> 父）会让同一棵树被反复枚举到 2 万次上限，
+     * 结果里还会出现 sym/up/sym/up/... 这种不属于工作区的路径。
+     * Windows 上普通用户建不了 symlink 时跳过（该平台无法复现，逻辑仍由同一实现覆盖）。
+     */
+    @Test
+    fun directoryWalkDoesNotFollowSymlinks() {
+        val root = tempTree()
+        val link = File(root, "loop")
+        val supported = try {
+            java.nio.file.Files.createSymbolicLink(link.toPath(), root.toPath())
+            true
+        } catch (_: Exception) {
+            false
+        }
+        if (!supported) return
+        try {
+            val dirs = collectMatchingDirectories(root, root, "**")
+            assertEquals("符号链接目录本身不进结果", listOf("src", "src/sub"), dirs.sorted())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     // ---------------------------------------------------------------- 路径显示
 
     /**

@@ -159,4 +159,39 @@ class BootstrapPlanTest {
         assertEquals(CopyEntry.Directory, copyEntryKind(null, isDirectory = true))
         assertEquals(CopyEntry.File, copyEntryKind(null, isDirectory = false))
     }
+
+    // --------------------------------------------- 全量安装对旧前缀的处置
+
+    @Test
+    fun `旧前缀是真实目录：合并（用户装的东西保留）`() {
+        assertEquals(PrefixInstall.Merge, prefixInstallPlan(prefixIsRealDirectory = true))
+    }
+
+    @Test
+    fun `前缀不存在或是符号链接：清掉重建`() {
+        assertEquals(PrefixInstall.Replace, prefixInstallPlan(prefixIsRealDirectory = false))
+    }
+
+    // ------------------------------------------------- 前缀外 manifest 副本的判据
+
+    @Test
+    fun `前缀 manifest 读不出 + 前缀像装好的树 + 副本可读：用副本救回来`() {
+        assertTrue(useFallbackManifest(prefixManifestReadable = false, prefixLooksInstalled = true, fallbackReadable = true))
+    }
+
+    @Test
+    fun `前缀 manifest 可读：一律以它为准（副本可能更旧）`() {
+        assertFalse(useFallbackManifest(prefixManifestReadable = true, prefixLooksInstalled = true, fallbackReadable = true))
+    }
+
+    /** 前缀被用户删了：副本还躺在 filesDir 里，不能让「已装好」的判定复活一棵不存在的树 */
+    @Test
+    fun `前缀不像装好的树：副本不能用`() {
+        assertFalse(useFallbackManifest(prefixManifestReadable = false, prefixLooksInstalled = false, fallbackReadable = true))
+    }
+
+    @Test
+    fun `两份都读不出：没有可用真相（走全量）`() {
+        assertFalse(useFallbackManifest(prefixManifestReadable = false, prefixLooksInstalled = true, fallbackReadable = false))
+    }
 }

@@ -46,6 +46,8 @@ import com.adsh.app.ui.kit.DshSpacing
  * @param lang 围栏信息串（```bash 里的 bash）。不认识的语言按纯文本渲染 ——
  *   dsh 用 Shiki 按语言着色，这里只有一套 TS/JS 规则，硬套会把别的语言标错颜色。
  * @param maxHeight 非空时限制代码区高度并在内部滚动（dsh 的 .bodyScroll 是 260px）
+ * @param streaming 围栏还在长：已完成的整行按行复用高亮，只给新增/变化的部分着色
+ *   （dsh 的 IncrementalHighlighter：每个 token 只重扫追加的文本）。
  */
 @Composable
 fun DshCodeBlock(
@@ -54,14 +56,24 @@ fun DshCodeBlock(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
     maxHeight: Dp? = null,
+    streaming: Boolean = false,
 ) {
     val palette = LocalDshPalette.current
-    val highlighted = remember(code, lang, palette, compact) {
-        CodeHighlightCache.get(code, lang, palette) {
-            buildAnnotatedString {
-                code.lineSequence().forEachIndexed { index, line ->
-                    if (index > 0) append("\n")
-                    if (compact) append(line) else append(highlightCode(line, lang, palette))
+    val streamingHighlighter = if (streaming && !compact) {
+        remember(lang, palette) { StreamingCodeHighlighter() }
+    } else {
+        null
+    }
+    val highlighted = if (streamingHighlighter != null) {
+        remember(code, lang, palette) { streamingHighlighter.highlight(code, lang, palette) }
+    } else {
+        remember(code, lang, palette, compact) {
+            CodeHighlightCache.get(code, lang, palette) {
+                buildAnnotatedString {
+                    code.lineSequence().forEachIndexed { index, line ->
+                        if (index > 0) append("\n")
+                        if (compact) append(line) else append(highlightCode(line, lang, palette))
+                    }
                 }
             }
         }
@@ -90,8 +102,16 @@ fun DshCodeBlock(
             Spacer(Modifier.weight(1f))
             RailCopyAction(payload = { code })
         }
+        val scroll = rememberScrollState()
         val vertical = Modifier.then(
-            if (maxHeight != null) Modifier.heightIn(max = maxHeight).verticalScroll(rememberScrollState()) else Modifier,
+            if (maxHeight != null) {
+                Modifier
+                    .heightIn(max = maxHeight)
+                    .dshVerticalScrollbar(scroll, elevated = true, bottomInset = 8.dp)
+                    .verticalScroll(scroll)
+            } else {
+                Modifier
+            },
         )
         Box(
             modifier = Modifier
@@ -102,6 +122,51 @@ fun DshCodeBlock(
             CodeText(highlighted)
         }
     }
+}
+
+/**
+ * 流式围栏的渐进高亮（dsh 的 IncrementalHighlighter 语义）：已完成的整行按行缓存，
+ * 追加一个新 token 时只给「上次的末行 + 新行」着色，其余行直接复用。
+ *
+ * 契约：[highlight] 的入参只允许**追加**（新文本以上一次为前缀）；不是追加（定稿 /
+ * 换块）就整体重算。高亮规则本身就是逐行的（[highlightCode]），所以按行复用不会改变结果。
+ */
+private class StreamingCodeHighlighter {
+    private var previous = ""
+    private var lines: List<AnnotatedString> = emptyList()
+
+    fun highlight(code: String, lang: String?, palette: com.adsh.app.ui.theme.DshPalette): AnnotatedString {
+        val append = code.startsWith(previous)
+        val raw = code.split('\n')
+        // 上次的末行可能还在长，不能复用；前面那些整行已经不会再变
+        val reusable = if (append) (lines.size - 1).coerceAtLeast(0) else 0
+        val painted = ArrayList<AnnotatedString>(raw.size)
+        raw.forEachIndexed { index, line ->
+            painted += if (index < reusable && index < lines.size) {
+                lines[index]
+            } else {
+                highlightCode(line, lang, palette)
+            }
+        }
+        previous = code
+        lines = painted
+        return joinHighlightedLines(painted)
+    }
+}
+
+/** 把逐行的高亮结果拼成整块：文本用 \n 连接，行内 span 的偏移按行起点平移 */
+private fun joinHighlightedLines(lines: List<AnnotatedString>): AnnotatedString {
+    val text = StringBuilder()
+    val spans = ArrayList<AnnotatedString.Range<androidx.compose.ui.text.SpanStyle>>()
+    lines.forEachIndexed { index, line ->
+        if (index > 0) text.append('\n')
+        val start = text.length
+        text.append(line.text)
+        line.spanStyles.forEach { range ->
+            spans += AnnotatedString.Range(range.item, start + range.start, start + range.end)
+        }
+    }
+    return AnnotatedString(text.toString(), spanStyles = spans)
 }
 
 /** 代码正文：等宽 11/19（dsh 的 --dsw-font-markdown-code-block） */

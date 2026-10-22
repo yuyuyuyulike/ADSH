@@ -14,6 +14,10 @@
   写成结论式一句，例：`targetSdk 必须 28 —— 内嵌 Termux 能直接 exec 的前提`。
 - 提示词字符串（`PromptAssembler`/`ToolSdk`）里禁止出现中文旁注、轮次、对 dsh 的对照说明 —— 模型会直接看到。
 
+## 错误文案
+
+- **所有报错一律英文**（异常消息、工具错误、界面错误条 / Toast、预览失败、诊断脚本的失败输出）。界面标签、按钮、状态词不算报错，可以保持中文；用户可见的成功/进行中文案也不动。
+
 ## 依赖方向
 
 - `seam`（服务定义）**零应用依赖**，且**不许反向依赖它的消费者**。
@@ -35,5 +39,5 @@
 ## 文档
 
 - **一个事实只有一个家**。同一句话不许在两份文档里各写一遍，只留链接。
-- 行数上限（由 `scripts/check-doc-budget.py` 门禁）：`AGENTS.md` 80、`docs/ARCHITECTURE.md` 150、`docs/TECH-STACK.md` 120、`docs/MODULES.md` 120、`docs/ROADMAP.md` 60、`HANDOFF.md` 100。
+- 行数上限（由 `scripts/check-doc-budget.py` 门禁）：`AGENTS.md` 80、`docs/ARCHITECTURE.md` 150、`docs/TECH-STACK.md` 120、`docs/MODULES.md` 120、`HANDOFF.md` 100。
 - 只写**当前状态**，不写演变过程。

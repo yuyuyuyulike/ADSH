@@ -14,6 +14,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -201,5 +202,167 @@ class BashValueTest {
         assertEquals(root.canonicalFile.absolutePath, value["cwd"]!!.jsonPrimitive.content)
         assertEquals("user pressed stop", value["stopped"]!!.jsonPrimitive.content)
         assertTrue(Jobs.list(null).none { it.kind == "bash" })
+    }
+
+    /**
+     * 截断提示只属于正文渲染（dsh 的 render.ts）；结构值必须是纯文本尾部（canonicalBashResult），
+     * 否则程序解析合法 JSON 输出时会被追加的那行提示直接打断。
+     */
+    @Test
+    fun foregroundTruncationNoticeStaysOutOfTheStructuredValue() = runBlocking {
+        shell.next = FakeProcess(out = ByteArray(200_000) { 'a'.code.toByte() })
+
+        val result = BashTool.execute(args(), ctx())
+        val stdout = okValue(result)["stdout"]!!.jsonObject
+
+        val text = stdout["text"]!!.jsonPrimitive.content
+        assertEquals("value 里只留 bashMaxOutputBytes 的纯尾部", 64_000, text.length)
+        assertFalse("value 里不许出现展示提示", text.contains("[output truncated"))
+        assertEquals("true", stdout["truncated"]!!.jsonPrimitive.content)
+        assertNotNull("真的丢字节时必须给出 spillPath：", stdout["spillPath"])
+
+        val rendered = (result as ToolResult.Ok).text
+        assertTrue(rendered, rendered.contains("[output truncated; full output: "))
+    }
+
+    /**
+     * 真机 agent 复测：早期在结算裁剪**之后**算 droppedChannels，把「已经完整读到」的小输出
+     * 误标成 truncated 并砍掉首行（2000 行 / 20 KB、6000 行 / 60 KB、单行 16385、恰好 64000
+     * 全部中招）。truncated 只允许表示「真的丢了字节」。
+     */
+    @Test
+    fun `小于输出上限的多行输出完整返回且不标 truncated`() = runBlocking {
+        val rows = buildString { repeat(2_000) { append("%09d\n".format(it)) } }.toByteArray()
+        assertEquals(20_000, rows.size)
+        shell.next = FakeProcess(out = rows)
+
+        val value = okValue(BashTool.execute(args(), ctx()))
+        val stdout = value["stdout"]!!.jsonObject
+        val text = stdout["text"]!!.jsonPrimitive.content
+
+        assertEquals("false", stdout["truncated"]!!.jsonPrimitive.content)
+        assertFalse("没丢字节就不该有 omittedBytes", stdout.containsKey("omittedBytes"))
+        assertEquals("2000 行必须原样返回（首行也在）", 20_000, text.toByteArray(Charsets.UTF_8).size)
+        assertTrue(text, text.startsWith("000000000\n"))
+        assertTrue(text, text.endsWith("000001999\n"))
+    }
+
+    /** 刚好越过上限 1 字节：只剩尾巴 + 行对齐丢半行 + spill 全文；omittedBytes 把丢的都算上 */
+    @Test
+    fun `64001 字节：行对齐 + omittedBytes + spill`() = runBlocking {
+        val rows = buildString { repeat(6_400) { append("%09d\n".format(it)) } }.toByteArray()
+        shell.next = FakeProcess(out = rows + "X".toByteArray())
+
+        val stdout = okValue(BashTool.execute(args(), ctx()))["stdout"]!!.jsonObject
+        val text = stdout["text"]!!.jsonPrimitive.content
+
+        assertEquals("true", stdout["truncated"]!!.jsonPrimitive.content)
+        assertTrue(text, text.startsWith("000000001\n"))
+        assertTrue(text, text.endsWith("000006399\nX"))
+        assertEquals(64_001L - text.toByteArray(Charsets.UTF_8).size, stdout["omittedBytes"]!!.jsonPrimitive.long)
+        assertNotNull("真的丢字节时必须有 spillPath", stdout["spillPath"])
+    }
+
+    @Test
+    fun `60 KB 多行输出也完整返回`() = runBlocking {
+        val rows = buildString { repeat(6_000) { append("%09d\n".format(it)) } }.toByteArray()
+        assertEquals(60_000, rows.size)
+        shell.next = FakeProcess(out = rows)
+
+        val stdout = okValue(BashTool.execute(args(), ctx()))["stdout"]!!.jsonObject
+        assertEquals("false", stdout["truncated"]!!.jsonPrimitive.content)
+        assertFalse(stdout.containsKey("omittedBytes"))
+        assertEquals(60_000, stdout["text"]!!.jsonPrimitive.content.toByteArray(Charsets.UTF_8).size)
+    }
+
+    @Test
+    fun `单行 16385 字节不标 truncated`() = runBlocking {
+        shell.next = FakeProcess(out = ByteArray(16_385) { 'A'.code.toByte() })
+
+        val stdout = okValue(BashTool.execute(args(), ctx()))["stdout"]!!.jsonObject
+
+        assertEquals("false", stdout["truncated"]!!.jsonPrimitive.content)
+        assertFalse(stdout.containsKey("omittedBytes"))
+        assertEquals(16_385, stdout["text"]!!.jsonPrimitive.content.length)
+    }
+
+    @Test
+    fun `恰好上限的 64000 字节输出不标 truncated`() = runBlocking {
+        // 6400 行 × 10 字节 = 64000 = bashMaxOutputBytes：一个字节都不该丢
+        val rows = buildString { repeat(6_400) { append("%09d\n".format(it)) } }.toByteArray()
+        assertEquals(64_000, rows.size)
+        shell.next = FakeProcess(out = rows)
+
+        val stdout = okValue(BashTool.execute(args(), ctx()))["stdout"]!!.jsonObject
+
+        assertEquals("false", stdout["truncated"]!!.jsonPrimitive.content)
+        assertEquals(64_000, stdout["text"]!!.jsonPrimitive.content.toByteArray(Charsets.UTF_8).size)
+    }
+
+    /**
+     * 单行大输出（`print('A'*500000)`）：尾巴里没有可对齐的行，丢掉半截首行会把内容变成空串。
+     * 这时保留尾巴；丢了多少字节由 `omittedBytes` 说清楚。
+     */
+    @Test
+    fun `单行大输出不会变成空串`() = runBlocking {
+        val out = ByteArray(200_000) { 'A'.code.toByte() } + "\n".toByteArray()
+        shell.next = FakeProcess(out = out)
+
+        val result = BashTool.execute(args(), ctx())
+        val stdout = okValue(result)["stdout"]!!.jsonObject
+        val text = stdout["text"]!!.jsonPrimitive.content
+
+        assertEquals("保留的仍是 64000 字节的尾巴", 64_000, text.toByteArray(Charsets.UTF_8).size)
+        assertTrue("不能是空串：" + text.length, text.isNotEmpty())
+        assertTrue("尾巴就是 A 跑", text.trimEnd('\n').all { it == 'A' })
+        assertEquals("true", stdout["truncated"]!!.jsonPrimitive.content)
+        assertEquals(200_001L - 64_000L, stdout["omittedBytes"]!!.jsonPrimitive.long)
+        val rendered = (result as ToolResult.Ok).text
+        assertTrue(rendered, rendered.contains("[output truncated; full output: "))
+    }
+
+    /**
+     * 尾巴从半行开始、后面还有完整行时：丢掉半截首行（行对齐），被丢的字节数由 omittedBytes 给出，
+     * 不再只能靠「看起来像不像连续序列」猜。
+     */
+    @Test
+    fun `中段超长行只丢半截首行其余照常`() = runBlocking {
+        val head = "L1\nL2\n".toByteArray()
+        val longLine = ByteArray(400_000) { 'B'.code.toByte() }
+        val tail = "\nL3\nL4\n".toByteArray()
+        shell.next = FakeProcess(out = head + longLine + tail)
+
+        val result = BashTool.execute(args(), ctx())
+        val stdout = okValue(result)["stdout"]!!.jsonObject
+        val text = stdout["text"]!!.jsonPrimitive.content
+
+        assertEquals("丢掉的只是半截长行，后面的行照常保留", "L3\nL4\n", text)
+        assertEquals("true", stdout["truncated"]!!.jsonPrimitive.content)
+        assertEquals((head.size + longLine.size + tail.size).toLong() - 6L, stdout["omittedBytes"]!!.jsonPrimitive.long)
+        val rendered = (result as ToolResult.Ok).text
+        assertTrue(rendered, rendered.contains("[output truncated; full output: "))
+    }
+
+    /**
+     * 字节对齐的尾巴可能从半行开始：首行必须是完整行（丢掉半截首行），
+     * 否则 `seq` 这类输出会被读成「从 90858 开始」的假序列。
+     */
+    @Test
+    fun foregroundTruncatedTailStartsAtAWholeLine() = runBlocking {
+        // 220 KB 的定长 11 字节行：64 KB 尾巴必然从半行开始
+        shell.next = FakeProcess(out = "0123456789\n".repeat(20_000).toByteArray())
+
+        val result = BashTool.execute(args(), ctx())
+        val stdout = okValue(result)["stdout"]!!.jsonObject
+        val text = stdout["text"]!!.jsonPrimitive.content
+
+        assertEquals("首行是完整行", "0123456789", text.lineSequence().first())
+        assertTrue("丢掉半截首行后长度略小于 64000", text.length in 63_985..64_000)
+        assertEquals("true", stdout["truncated"]!!.jsonPrimitive.content)
+        // 完整输出 220000 字节；omittedBytes = 220000 - 保留文本字节数（行对齐丢掉的半行也算在内）
+        assertEquals(220_000L - text.toByteArray(Charsets.UTF_8).size, stdout["omittedBytes"]!!.jsonPrimitive.long)
+        val rendered = (result as ToolResult.Ok).text
+        assertTrue(rendered, rendered.startsWith("0123456789\n"))
+        assertTrue(rendered, rendered.contains("[output truncated; full output: "))
     }
 }

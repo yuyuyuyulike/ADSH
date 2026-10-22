@@ -16,14 +16,34 @@ internal fun parseMarkdown(source: String): List<MdBlock> {
     return parseBlocks(lines, 0, lines.size)
 }
 
-private fun parseBlocks(lines: List<String>, from: Int, to: Int): List<MdBlock> {
+/** 顶层块 + 它在源文本里的起始行（增量解析冻结边界的口径，见 [MarkdownStreamParser]） */
+internal data class ParsedMdBlock(val block: MdBlock, val startLine: Int)
+
+/** 与 [parseMarkdown] 相同，但带回每个顶层块的起始行 */
+internal fun parseMarkdownPositioned(lines: List<String>): List<ParsedMdBlock> {
+    val starts = ArrayList<Int>()
+    val blocks = parseBlocks(lines, 0, lines.size, starts)
+    return blocks.mapIndexed { index, block -> ParsedMdBlock(block, starts[index]) }
+}
+
+/**
+ * @param starts 非空时按**顶层块顺序**记录每个块的起始行；递归解析（引用 / 列表子块）传 null
+ */
+private fun parseBlocks(
+    lines: List<String>,
+    from: Int,
+    to: Int,
+    starts: MutableList<Int>? = null,
+): List<MdBlock> {
     val blocks = ArrayList<MdBlock>()
     val paragraph = StringBuilder()
+    var paragraphStart = -1
     var index = from
 
     fun flushParagraph() {
         if (paragraph.isNotEmpty()) {
             blocks += MdBlock.Paragraph(paragraph.toString())
+            starts?.add(paragraphStart)
             paragraph.setLength(0)
         }
     }
@@ -37,8 +57,10 @@ private fun parseBlocks(lines: List<String>, from: Int, to: Int): List<MdBlock> 
                 flushParagraph()
                 val open = if (trimmed.startsWith("$$")) "$$" else "\\["
                 val close = if (open == "$$") "$$" else "\\]"
+                val blockStart = index
                 val body = StringBuilder(trimmed.removePrefix(open))
                 if (trimmed.length >= open.length + close.length && trimmed.endsWith(close)) {
+                    starts?.add(blockStart)
                     blocks += MdBlock.Math(trimmed.removePrefix(open).removeSuffix(close).trim())
                 } else {
                     index++
@@ -52,12 +74,14 @@ private fun parseBlocks(lines: List<String>, from: Int, to: Int): List<MdBlock> 
                         body.append('\n').append(current)
                         index++
                     }
+                    starts?.add(blockStart)
                     blocks += MdBlock.Math(body.toString().trim())
                 }
             }
             // 围栏代码块（``` 或 ~~~，可带语言信息串）
             fenceOf(trimmed) != null -> {
                 flushParagraph()
+                val blockStart = index
                 val fence = fenceOf(trimmed)!!
                 val lang = trimmed.removePrefix(fence).trim().substringBefore(' ').ifEmpty { null }
                 val code = StringBuilder()
@@ -66,20 +90,24 @@ private fun parseBlocks(lines: List<String>, from: Int, to: Int): List<MdBlock> 
                     code.appendLine(lines[index])
                     index++
                 }
+                starts?.add(blockStart)
                 blocks += MdBlock.Code(code.toString().trimEnd(), lang)
             }
             trimmed.startsWith("#") -> {
                 flushParagraph()
                 val level = trimmed.takeWhile { it == '#' }.length.coerceAtMost(6)
+                starts?.add(index)
                 blocks += MdBlock.Heading(level, trimmed.drop(level).trim())
             }
             trimmed == "---" || trimmed == "***" || trimmed == "___" -> {
                 flushParagraph()
+                starts?.add(index)
                 blocks += MdBlock.Rule
             }
             // 表格：本行以 | 开头，且下一行是分隔行
             trimmed.startsWith("|") && index + 1 < to && isTableSeparator(lines[index + 1]) -> {
                 flushParagraph()
+                val blockStart = index
                 val header = splitRow(trimmed)
                 val rows = ArrayList<List<String>>()
                 index += 2
@@ -87,11 +115,13 @@ private fun parseBlocks(lines: List<String>, from: Int, to: Int): List<MdBlock> 
                     rows += splitRow(lines[index].trim())
                     index++
                 }
+                starts?.add(blockStart)
                 blocks += MdBlock.Table(header, rows)
                 index--
             }
             trimmed.startsWith(">") -> {
                 flushParagraph()
+                val blockStart = index
                 val inner = ArrayList<String>()
                 while (index < to) {
                     val current = lines[index]
@@ -111,12 +141,15 @@ private fun parseBlocks(lines: List<String>, from: Int, to: Int): List<MdBlock> 
                     }
                     break
                 }
+                starts?.add(blockStart)
                 blocks += MdBlock.Quote(parseBlocks(inner, 0, inner.size))
                 continue
             }
             isListItem(trimmed) -> {
                 flushParagraph()
+                val blockStart = index
                 val parsed = parseListAt(lines, index, to)
+                starts?.add(blockStart)
                 blocks += parsed.first
                 index = parsed.second
                 continue
@@ -126,8 +159,10 @@ private fun parseBlocks(lines: List<String>, from: Int, to: Int): List<MdBlock> 
                 // 单独成段的图片 → 图片块
                 val image = parseStandaloneImage(trimmed)
                 if (image != null && paragraph.isEmpty()) {
+                    starts?.add(index)
                     blocks += image
                 } else {
+                    if (paragraph.isEmpty()) paragraphStart = index
                     if (paragraph.isNotEmpty()) paragraph.append(' ')
                     paragraph.append(trimmed)
                 }
@@ -252,3 +287,60 @@ private val STANDALONE_IMAGE = Regex("^!\\[([^]]*)]\\(([^)]+)\\)$")
 
 private fun parseStandaloneImage(trimmed: String): MdBlock.Image? =
     STANDALONE_IMAGE.find(trimmed)?.let { MdBlock.Image(it.groupValues[1], it.groupValues[2]) }
+
+/**
+ * 流式 Markdown 的**增量块解析**（dsh 的 IncrementalMarkdownParser 语义）。
+ *
+ * 这一份解析器是行序产物：追加文本只可能改写**末尾**的顶层块（段落 / 列表 / 围栏都可能还在长），
+ * 前面的块一旦被后面的块接上就再也不会变。于是每一拍只重解析尾部，把「倒数第
+ * [UNSTABLE_TAIL_BLOCKS] 块之前」的块冻结下来直接复用 —— 每拍的成本由尾块长度决定，
+ * 而不是整篇回答的长度（全量重解析在长回答上是 O(n²)）。
+ *
+ * 契约：
+ *  - 只在 [update] 的新文本以旧文本为前缀时增量；否则（重连重置 / 换了一条消息）整体重来；
+ *  - 返回的块与全量解析一致（解析器不支持跨块定义，冻结不会改变语义）；单测按「每个前缀 == 全量解析」钉住；
+ *  - 解析器**有状态**：一条流式消息一个实例（见 MarkdownBody），不要跨消息复用。
+ */
+internal class MarkdownStreamParser {
+
+    private var text = ""
+    private var frozen: List<MdBlock> = emptyList()
+
+    /** 冻结区之后的第一行在完整文本里的字符偏移；下一拍从它开始重解析 */
+    private var frozenOffset = 0
+    private var blocks: List<MdBlock> = emptyList()
+
+    fun update(next: String): List<MdBlock> {
+        if (next == text) return blocks
+        if (!next.startsWith(text)) reset()
+        text = next
+        val tail = next.substring(frozenOffset)
+        val lines = tail.split("\n")
+        val parsed = parseMarkdownPositioned(lines)
+        val freezeCount = (parsed.size - UNSTABLE_TAIL_BLOCKS).coerceAtLeast(0)
+        if (freezeCount > 0) {
+            frozen = frozen + parsed.subList(0, freezeCount).map { it.block }
+            frozenOffset += offsetOfLine(lines, parsed[freezeCount].startLine)
+        }
+        blocks = frozen + parsed.drop(freezeCount).map { it.block }
+        return blocks
+    }
+
+    private fun reset() {
+        text = ""
+        frozen = emptyList()
+        frozenOffset = 0
+        blocks = emptyList()
+    }
+
+    private fun offsetOfLine(lines: List<String>, line: Int): Int {
+        var offset = 0
+        for (index in 0 until line) offset += lines[index].length + 1
+        return offset
+    }
+
+    private companion object {
+        /** 末尾保留为不稳定的顶层块数（dsh 的 UNSTABLE_TAIL_BLOCKS = 2） */
+        const val UNSTABLE_TAIL_BLOCKS = 2
+    }
+}

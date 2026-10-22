@@ -150,7 +150,6 @@ suspend fun userContentPart(
         })
         count++
     }
-    if (text.isNotBlank()) addText(text)
     attachments.forEach { attachment ->
         when {
             !attachment.isImage -> addText(fileHandleText(attachment))
@@ -173,4 +172,8 @@ suspend fun userContentPart(
             else -> addText(textOnlyImageText(attachment))
         }
     }
+    // dsh 的 content 顺序：**附件在前、正文在最后**（ui-conversation service.ts 的
+    // `content = [...uploaded, ...text]`，host 原样保留）。正文放前面会让模型先读到指令、
+    // 再看到句柄/图片；与 dsh 的图文顺序相反。
+    if (text.isNotBlank()) addText(text)
 }

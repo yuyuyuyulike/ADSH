@@ -78,6 +78,10 @@ internal fun bashStatusMarker(body: String): String? = body.lineSequence()
  * **丢过字节**时才补一行提示，把全文 spill 文件的路径交给模型 —— 头部不再是「静默丢弃」，
  * 而是换了个地方等它来读（`[output truncated; full output: <路径>]`，没有路径就是 `(unavailable)`）。
  *
+ * **只用于正文渲染**：结构值里的 stdout/stderr.text 必须是没追加过提示的纯尾部文本
+ * （dsh 的 render.ts 与 canonicalBashResult 分工如此）；把提示塞进 value 会污染程序的
+ * JSON 解析（合法 JSON 输出被追加一行后 `JSON.parse` 直接失败）。
+ *
  * @param truncated 这一路在内存里丢过字节（环淘汰掉了，或者尾部截断了）
  * @param spillPath 全文落盘的路径
  */
@@ -86,10 +90,46 @@ internal fun streamText(text: String, truncated: Boolean, spillPath: String?): S
     return text + "\n[output truncated; full output: " + (spillPath ?: "(unavailable)") + "]"
 }
 
-/** dsh 的 canonicalBashResult：每一路输出是 `{text, truncated, spillPath?}`（路径只在有时出现） */
-internal fun streamValue(text: String, truncated: Boolean, spillPath: String?): JsonObject =
+/**
+ * 截断后的首行是字节切出来的半行：丢掉第一个 `\n` 之前的部分。
+ *
+ * dsh 的 subprocess 收集器按字节对齐窗口（"byte-exact at the cap"），尾巴可能从半行开始；
+ * 本客户端的 value 与正文都按文本消费，半截首行会被读成真实内容（`seq 1 200000` 的首行
+ * 从 190858 只剩 90858，外观却像连续序列）。**只在确实丢过字节时用**（[wholeLineTail]）；
+ * 没有任何换行（单行大输出）、或丢掉之后只剩空串时原样返回，否则会把整段可见内容丢掉。
+ */
+internal fun dropPartialFirstLine(text: String): String {
+    val newline = text.indexOf('\n')
+    // 没有换行 = 整段就是一条被切断的长行；丢掉它会把内容变成空串（调用方看到的是
+    // 「命令没有任何输出」）。这种情况保留尾巴，缺了多少由结果里的 omittedBytes 说明。
+    if (newline < 0) return text
+    val rest = text.substring(newline + 1)
+    if (rest.isNotEmpty()) return rest
+    // 尾巴只有「半截首行 + 换行」：丢掉会变成空串（内容消失了），保留原尾巴；
+    // 但整段只有一个换行（首行本身就是空行）时没有内容可丢，按空处理。
+    return if (newline > 0) text else ""
+}
+
+/** 丢过字节时把半截首行去掉；没丢或没有换行时原样返回（见 [dropPartialFirstLine]）。 */
+internal fun wholeLineTail(text: String, truncated: Boolean): String =
+    if (truncated) dropPartialFirstLine(text) else text
+
+/**
+ * dsh 的 canonicalBashResult：每一路输出是 `{text, truncated, spillPath?}`（路径只在有时出现）。
+ *
+ * ADSH 额外给一个可选 [omittedBytes]：只留尾部时，被丢掉的头部字节数（也就是 `text` 在完整流里的
+ * 起始偏移）。行对齐会把半截首行去掉、超长单行又只能保留尾巴 —— 正文保持纯净，这两件事由这个
+ * 字段说明，调用方不必从「看起来像不像连续序列」去猜。
+ */
+internal fun streamValue(
+    text: String,
+    truncated: Boolean,
+    spillPath: String?,
+    omittedBytes: Long? = null,
+): JsonObject =
     buildJsonObject {
         put("text", text)
         put("truncated", truncated)
+        if (omittedBytes != null) put("omittedBytes", omittedBytes)
         spillPath?.let { put("spillPath", it) }
     }

@@ -69,6 +69,14 @@ data class ChatUiState(
     val liveTurn: LiveTurn = LiveTurn(),
     /** 会话统计（对齐 dsh 状态栏：轮/步、tps、token、缓存命中） */
     val stats: SessionStats = SessionStats(),
+    /**
+     * 输入框下方胶囊行的入场动画是否还武装（判据见 [statsDockVisible] / [ChatStatsDock]）。
+     *
+     * **只有会话载入时统计为空**（新会话、还没跑过一轮）才为 true —— 胶囊第一次长出来是这条
+     * 会话的起点，允许一次淡入 + 高度展开。启动恢复、切到已有统计的旧会话时为 false：那一帧
+     * 胶囊本来就该在，播动画等于给 footer 做一次高度动画（底部内边距跟着变，会话流会被顶一下）。
+     */
+    val dockEntranceArmed: Boolean = false,
     val permission: String = Permissions.FULL_ACCESS,
     val reasoningEffort: String = "",
     /** 上下文占用（dsh 的 ContextMeter）：系统提示词 / 工具定义 / 对话消息 + 窗口上限 */
@@ -101,8 +109,6 @@ data class ChatUiState(
      * 而这一条在 [steer] 里同步写进来。认领之后由 [pendingSteeringToShow] 去掉。
      */
     val pendingSteering: List<PendingSteer> = emptyList(),
-    /** 掉线重连的可见状态（dsh 的 ConnectionIndicator）：连接条就画在输入框上面 */
-    val connection: ConnectionState = ConnectionState.Idle,
 ) : IslandSnapshot {
 
     /** 正在跑的那个工具名；null = 没有在跑的工具（岛据此画「#代码」那一格） */
@@ -115,41 +121,6 @@ data class ChatUiState(
             return runCatching { toolRowSummary(call.name, call.arguments) }.getOrDefault("")
         }
 }
-
-/**
- * 掉线重连的三态（dsh 的 `ConnectionIndicator`：断线 / 连接中 / 已恢复）。
- *
- * 时序规则也照搬 dsh 的 shell（见 [ConnectionRecovery.CONNECTING_MIN_VISIBLE_MS] /
- * [ConnectionRecovery.RECOVERY_CONFIRMATION_MS]）：「正在重连」至少可见 800ms（更短的一次
- * 看起来就是闪一下），「已恢复」显示 2 秒后自己消失。
- */
-sealed interface ConnectionState {
-    /** 连接正常 / 没有正在重连的事（界面什么都不画） */
-    data object Idle : ConnectionState
-
-    /** 正在按退避重连（第 [attempt] 次）——dsh 的 `connecting`，指示器带点动画 */
-    data class Reconnecting(val attempt: Int, val message: String = "") : ConnectionState
-
-    /**
-     * **断网挂起**（dsh 的 `disconnected`）：自动重试已暂停，等网络回来。
-     *
-     * 与 [Reconnecting] 的区别就是 dsh 那两个状态的区别：这个在**等**（指示器静态、写着「点此重试」），
-     * 那个在**试**（带点动画）。看错这两个状态，用户就分不清「手机没网」和「服务端挂了」。
-     */
-    data class Disconnected(val message: String = "") : ConnectionState
-
-    /** 刚刚重连上（HTTP 200 已经回来），停留 [ConnectionRecovery.RECOVERY_CONFIRMATION_MS] */
-    data class Recovered(val at: Long) : ConnectionState
-}
-
-/**
- * 这条连接条是不是**临时态**（重连中 / 断网挂起）—— 轮结束、按停止时都要把它收掉。
- *
- * 「已恢复」不算：它有自己的 2 秒计时收尾（dsh 的 `RECOVERY_CONFIRMATION_MS`），
- * 提前收掉就等于用户永远看不到「已恢复」。
- */
-internal fun ConnectionState.isTransient(): Boolean =
-    this is ConnectionState.Reconnecting || this is ConnectionState.Disconnected
 
 /**
  * 正在跑的一轮里的工具调用（dsh 的 live tool row）：

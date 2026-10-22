@@ -41,6 +41,8 @@ import com.adsh.app.ui.blocks.DshButtonKind
 import com.adsh.app.ui.blocks.DshCheckbox
 import com.adsh.app.ui.blocks.DshIconButton
 import com.adsh.app.ui.blocks.DshIcons
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
+import com.adsh.app.ui.blocks.lightCardShadow
 import com.adsh.app.ui.theme.LocalDshPalette
 import com.adsh.app.ui.kit.DshSpacing
 import com.adsh.app.ui.kit.DshSettingIcons
@@ -100,7 +102,7 @@ internal fun QuestionCard(questions: List<Question>, onAnswer: (List<Answer>) ->
         val missing = values.indexOfFirst { !it.completed }
         if (missing >= 0) {
             index = missing
-            error = "请先完成这道问题。"
+            error = "Please answer this question first."
             return
         }
         error = null
@@ -123,7 +125,7 @@ internal fun QuestionCard(questions: List<Question>, onAnswer: (List<Answer>) ->
 
     fun continueFlow() {
         if (!draft.answered) {
-            error = "请选择一个选项或填写自定义答案。"
+            error = "Select an option or write a custom answer."
             return
         }
         if (!last) {
@@ -173,6 +175,7 @@ internal fun QuestionCard(questions: List<Question>, onAnswer: (List<Answer>) ->
         Column(
             Modifier
                 .fillMaxWidth()
+                .lightCardShadow(cardShape)
                 .clip(cardShape)
                 .background(palette.inputMajor)
                 .border(DshSpacing.Hairline, palette.borderL1, cardShape)
@@ -192,11 +195,13 @@ internal fun QuestionCard(questions: List<Question>, onAnswer: (List<Answer>) ->
                 // 滚动体 = dsh 的 .body：weight(fill = false) 就是 flex:auto + min-height:0 ——
                 // 内容矮时按内容高（卡片贴着内容），内容高时吃掉剩下的空间并自己滚，
                 // 于是**底下的 footer 永远留在卡片里**（提交按钮不会再被顶出去）。
+                val bodyScroll = rememberScrollState()
                 Column(
                     Modifier
                         .fillMaxWidth()
                         .weight(1f, fill = false)
-                        .verticalScroll(rememberScrollState()),
+                        .dshVerticalScrollbar(bodyScroll, elevated = true)
+                        .verticalScroll(bodyScroll),
                 ) {
                     Column(
                         Modifier.fillMaxWidth().padding(horizontal = DshSpacing.Xl, vertical = DshSpacing.Md),
@@ -377,10 +382,12 @@ private fun QuestionCardHeader(
                 )
             }
             // 正文块自己滚（超上限时）：小标题与右上角两个按钮留在原地
+            val questionScroll = rememberScrollState()
             Column(
                 Modifier
                     .heightIn(max = textMaxHeight)
-                    .verticalScroll(rememberScrollState()),
+                    .dshVerticalScrollbar(questionScroll, elevated = true)
+                    .verticalScroll(questionScroll),
             ) {
                 Text(
                     text = question,

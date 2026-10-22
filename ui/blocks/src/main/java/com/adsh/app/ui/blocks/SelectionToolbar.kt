@@ -12,6 +12,10 @@ import androidx.compose.ui.platform.TextToolbarStatus
  * 长按选中文本后的浮动操作栏（复制 / 全选）——**拦掉「没有选中任何内容」的那一排**：Compose 在选中被
  * 清掉后还会再发一次 showMenu，那时只有「全选」可点，于是冒出一个一瞬即逝的栏。ADSH 的可选中区域都是
  * 只读文本，「全选」没有用处，所以直接不弹。
+ *
+ * 这个过滤器只在**旧 TextToolbar 路径**上生效：Compose 1.12 起 Android 默认启用新的 context-menu 路径
+ * （`ComposeFoundationFlags.isNewContextMenuEnabled`），它不经过 [LocalTextToolbar]。所以 `:app` 的
+ * `AdshApp.onCreate` 把该 flag 关掉 —— 两处是一对，改一处要同时改另一处。
  */
 private class NoEmptySelectionToolbar(private val delegate: TextToolbar) : TextToolbar {
 
@@ -24,8 +28,7 @@ private class NoEmptySelectionToolbar(private val delegate: TextToolbar) : TextT
         onCutRequested: (() -> Unit)?,
         onSelectAllRequested: (() -> Unit)?,
     ) {
-        // 三样都没有 = 这一次按下没有选中任何内容：不弹（见文件注释）
-        if (onCopyRequested == null && onCutRequested == null && onPasteRequested == null) return
+        if (!shouldShowSelectionToolbar(onCopyRequested, onPasteRequested, onCutRequested)) return
         delegate.showMenu(rect, onCopyRequested, onPasteRequested, onCutRequested, onSelectAllRequested)
     }
 
@@ -33,6 +36,16 @@ private class NoEmptySelectionToolbar(private val delegate: TextToolbar) : TextT
         delegate.hide()
     }
 }
+
+/**
+ * 这一次 showMenu 值不值得弹：三样能证明「确实选中了内容」的动作（复制 / 剪切 / 粘贴）一个都没有，
+ * 就只剩「全选」——只读正文里那没有用处，弹出就是一瞬即逝的空栏。
+ */
+internal fun shouldShowSelectionToolbar(
+    onCopyRequested: (() -> Unit)?,
+    onPasteRequested: (() -> Unit)?,
+    onCutRequested: (() -> Unit)?,
+): Boolean = onCopyRequested != null || onPasteRequested != null || onCutRequested != null
 
 /** 把 [NoEmptySelectionToolbar] 装进 [LocalTextToolbar]（在 App 根上包一层） */
 @Composable

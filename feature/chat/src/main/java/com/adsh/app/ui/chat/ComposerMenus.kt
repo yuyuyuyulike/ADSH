@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
 import com.adsh.app.ui.theme.LocalDshPalette
 import com.adsh.app.ui.kit.DshSpacing
 import com.adsh.app.seam.exec.Permissions
@@ -40,16 +41,13 @@ import com.adsh.app.seam.exec.Permissions
  * 它们在输入框那一行里各占二三十行，却不碰输入框的任何状态：模型菜单只要当前模型 / 等级 /
  * 余额与两个选择回调，权限菜单只要当前档位与一个「要不要弹风险确认」的回调。
  *
- * 两个菜单的窗口几何口径（高度夹在锚点上方、卡片贴窗口底边、切子页不改窗口尺寸）见
- * [popupPanelMaxHeight] 的注释 —— 那里是「点推理等级时上滑一下」那个 bug 的结论。
+ * 两个菜单的窗口几何口径（高度夹在锚点上方、卡片贴窗口底边；切子页只改卡片内容高度，
+ * 浮层窗口尺寸不变）见 [popupPanelMaxHeight] 的注释 —— 那里是「点推理等级时上滑一下」那个 bug 的结论。
  */
-
-/** 模型窗口根页的固定内容高度：两行按 weight 均分（54dp/行），切换子页时窗口不会改变尺寸 */
-private val MODEL_MENU_HEIGHT = 108.dp
 
 /** 子页（模型清单 / 推理等级）的高度上限（dsh 的菜单是 min(360px, 100vh-96px)） */
 private val MODEL_MENU_MAX_HEIGHT = 360.dp
-/** 模型窗口宽度：与上下文占用窗口一致（dsh 的 ._2WTFBq_panel 也是 264px） */
+/** 模型窗口宽度：dsh 的 .menu 是 width:max-content（min 240 / max 420）；ADSH 不按内容测宽，固定 264（落在区间内） */
 private val MODEL_MENU_WIDTH = 264.dp
 /** 卡片底边与触发按钮之间的间距（dsh 的 `bottom: calc(100% + 8px)`）：底边恒定锚在这里 */
 private val MODEL_MENU_GAP = 8.dp
@@ -60,7 +58,7 @@ private val MODEL_MENU_MIN_HEIGHT = 160.dp
 
 /**
  * 权限预设弹层的宽度下限（内容兜底）：三行里最长的是「工作区内修改」，
- * 图标 14 + 间距 + 6 个汉字 + 勾选 16 + 左右内边距，约 150dp。
+ * 图标 14 + 间距 + 6 个汉字 + 勾选 14 + 左右内边距，约 150dp。
  */
 private val PERMISSION_MENU_MIN_WIDTH = 160.dp
 
@@ -137,7 +135,7 @@ internal fun ModelMenuTrigger(
     /** 触发按钮顶边在 root 里的 y（px）：定位要用的量，见 [popupPanelMaxHeight] */
     var triggerTop by remember { mutableFloatStateOf(0f) }
     val anchor = remember { OverlayAnchorState() }
-    /** 当前子页：root（两行）/ model / effort（见 MODEL_MENU_HEIGHT 的注释） */
+    /** 当前子页：root（两行）/ model / effort */
     var pane by remember { mutableStateOf("root") }
     val palette = LocalDshPalette.current
     // 模型：**模型名 + 可转动倒角**（dsh 的 ModelSelect 触发器就是文字；图标只在窄容器下才出现）
@@ -158,8 +156,8 @@ internal fun ModelMenuTrigger(
             val hostMeasured = hostSize.height > 0.dp
             val screenHeight = if (hostMeasured) hostSize.height else androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp
             // 面板高度在**整个菜单生命周期里恒定**：换子页时尺寸一变，旧尺寸那一帧会先被画出来
-            // 再跳到新位置（用户看到的就是「点推理等级时上滑一下」）。高度定死之后，切子页只是
-            // 卡片内部内容变化，底边始终钉在触发按钮上方 8dp。
+            // 再跳到新位置（用户看到的就是「点推理等级时上滑一下」）。面板尺寸固定后，切子页只改
+            // 卡片内容高度（卡片贴面板底边），底边始终钉在触发按钮上方 8dp。
             val panelHeight = popupPanelMaxHeight(
                 density = density,
                 anchorTopPx = triggerTop,
@@ -183,27 +181,28 @@ internal fun ModelMenuTrigger(
                         },
                     )
                     // 卡片贴底：内容多高就往上长多高（dsh 的 bottom: calc(100% + 8px)）。
-                    // 根页两行用 weight 均分固定高度；子页高度上限就是这个窗口高度，
+                    // 根页内容高度就是两行 .cell（2×34）加卡片内边距 8；子页高度上限是窗口高度，
                     // 超过则在卡片内部滚动。
                     DshMenuCard(Modifier.fillMaxWidth()) {
+                        val scroll = rememberScrollState()
                         Column(
                             if (pane == "root") {
-                                Modifier.height(MODEL_MENU_HEIGHT)
+                                Modifier
                             } else {
-                                Modifier.heightIn(max = panelHeight).verticalScroll(rememberScrollState())
+                                Modifier
+                                    .heightIn(max = panelHeight)
+                                    .dshVerticalScrollbar(scroll, elevated = true)
+                                    .verticalScroll(scroll)
                             },
                         ) {
                                 when (pane) {
-                                    // 根页是固定高度（MODEL_MENU_HEIGHT），两行按 weight 均分；
-                                    // 注意 weight 只能在固定高度的 Column 里用 ——
-                                    // 子页那层是 heightIn + verticalScroll（滚动 → 高度无界），
-                                    // 里面再放 weight 的行会被量成 0 高（菜单看着像没打开）。
+                                    // 根页两行是 dsh 的 .cell（34 高、值右对齐、行尾 12dp 倒角）：
+                                    // 卡片高度就是内容高度，不按 weight 均分。
                                     "root" -> {
                                         DshMenuRow(
                                             label = "模型",
                                             value = currentModel,
                                             chevronRight = true,
-                                            modifier = Modifier.weight(1f),
                                             onClick = { pane = "model" },
                                         )
                                         DshMenuRow(
@@ -211,53 +210,67 @@ internal fun ModelMenuTrigger(
                                             // 该模型一个等级都没有时不显示值（dsh 的 effortLabel === undefined）
                                             value = efforts.firstOrNull { it.first == currentEffort }?.second,
                                             chevronRight = true,
-                                            modifier = Modifier.weight(1f),
                                             onClick = { pane = "effort" },
                                         )
                                     }
                                     "model" -> {
-                                        // dsh 的 ModelSelect：按提供方分组，组标题 12/18 三级色，
+                                        // dsh 的 ModelSelect：按提供方分组（组与组之间 3dp），
+                                        // 组标题 11/16 Medium 三级色、内边距 4/7/2，
                                         // 列表超过菜单高度时自己滚（dsh 的 .groups{overflow-y:auto}）。
                                         // 组标题这一行最右边是余额（DeepSeek 的 /user/balance，
                                         // 每次打开菜单刷新一次）—— 拿不到就不占位。
                                         Column(Modifier.fillMaxWidth()) {
-                                            modelGroups.forEach { group ->
+                                            modelGroups.forEachIndexed { index, group ->
                                                 val balance = balances[group.providerId]
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth()
-                                                        .padding(start = DshSpacing.Xl, end = DshSpacing.Xl, top = 5.dp, bottom = DshSpacing.Sm),
-                                                    verticalAlignment = Alignment.CenterVertically,
+                                                Column(
+                                                    Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(top = if (index == 0) 0.dp else DshSpacing.Sm),
                                                 ) {
-                                                    Text(
-                                                        text = group.providerName,
-                                                        fontSize = 12.sp,
-                                                        lineHeight = 18.sp,
-                                                        fontWeight = FontWeight.Medium,
-                                                        color = palette.labelTertiary,
-                                                    )
-                                                    val balanceText = balance?.text.orEmpty()
-                                                    if (balanceText.isNotEmpty()) {
-                                                        Spacer(Modifier.weight(1f))
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth()
+                                                            .padding(
+                                                                start = 7.dp,
+                                                                end = 7.dp,
+                                                                top = DshSpacing.Md,
+                                                                bottom = DshSpacing.Xs,
+                                                            ),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                    ) {
                                                         Text(
-                                                            // 刷新中在数字后面跟一个省略号，位置不动
-                                                            text = if (balance?.loading == true) balanceText + " …" else balanceText,
-                                                            fontSize = 12.sp,
-                                                            lineHeight = 18.sp,
+                                                            text = group.providerName,
+                                                            fontSize = 11.sp,
+                                                            lineHeight = 16.sp,
+                                                            fontWeight = FontWeight.Medium,
                                                             color = palette.labelTertiary,
-                                                            maxLines = 1,
+                                                        )
+                                                        val balanceText = balance?.text.orEmpty()
+                                                        if (balanceText.isNotEmpty()) {
+                                                            Spacer(Modifier.weight(1f))
+                                                            Text(
+                                                                // 刷新中在数字后面跟一个省略号，位置不动
+                                                                text = if (balance?.loading == true) balanceText + " …" else balanceText,
+                                                                fontSize = 11.sp,
+                                                                lineHeight = 16.sp,
+                                                                color = palette.labelTertiary,
+                                                                maxLines = 1,
+                                                            )
+                                                        }
+                                                    }
+                                                    group.models.forEach { model ->
+                                                        DshMenuRow(
+                                                            label = model,
+                                                            selected = model == currentModel &&
+                                                                group.providerId == currentProviderId,
+                                                            horizontalPadding = 7.dp,
+                                                            verticalPadding = 5.dp,
+                                                            textLineHeight = 18.sp,
+                                                            onClick = {
+                                                                onOpenChange(false)
+                                                                onSelectModel(model, group.providerId)
+                                                            },
                                                         )
                                                     }
-                                                }
-                                                group.models.forEach { model ->
-                                                    DshMenuRow(
-                                                        label = model,
-                                                        selected = model == currentModel &&
-                                                            group.providerId == currentProviderId,
-                                                        onClick = {
-                                                            onOpenChange(false)
-                                                            onSelectModel(model, group.providerId)
-                                                        },
-                                                    )
                                                 }
                                             }
                                         }
@@ -265,11 +278,12 @@ internal fun ModelMenuTrigger(
                                     else -> Column(Modifier.fillMaxWidth()) {
                                         if (efforts.isEmpty()) {
                                             // dsh 的 empty.efforts：「当前模型未提供推理等级。」
+                                            // 空态沿用 .empty 刻度：8 内边距、12/18 三级色。
                                             Text(
                                                 text = "当前模型未提供推理等级。",
-                                                modifier = Modifier.padding(horizontal = DshSpacing.Xxxl, vertical = DshSpacing.Xxl),
-                                                fontSize = 13.sp,
-                                                lineHeight = 20.sp,
+                                                modifier = Modifier.padding(DshSpacing.Xl),
+                                                fontSize = 12.sp,
+                                                lineHeight = 18.sp,
                                                 color = palette.labelTertiary,
                                             )
                                         }
@@ -277,6 +291,9 @@ internal fun ModelMenuTrigger(
                                             DshMenuRow(
                                                 label = label,
                                                 selected = id == currentEffort,
+                                                horizontalPadding = 7.dp,
+                                                verticalPadding = 5.dp,
+                                                textLineHeight = 18.sp,
                                                 onClick = {
                                                     onOpenChange(false)
                                                     onSelectEffort(id)

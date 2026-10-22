@@ -13,6 +13,8 @@ package com.adsh.app.seam.ptc
  *  - `protocol`：通道上的帧不合法（超限 / 空帧 / 不是 JSON / 调用 id 对不上 / 未声明的工具名）；
  *  - `abort`：用户按了停止；
  *  - `exception`：程序自己抛了（含语法错误）；
+ *  - `invalid-output`：程序返回值不是无损 JSON（dsh 的 snapshotPtcJsonValue 同一口径）；
+ *  - `output-limit`：日志 + 返回值超过 64 MiB 外圈预算；
  *  - null：程序正常结束。
  */
 data class CodeRunResult(

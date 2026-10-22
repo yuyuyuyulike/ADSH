@@ -22,6 +22,13 @@ class ToolSdkDeclarationsTest {
         assertFalse("ADSH 没有结构化 sandbox（平台机制不同）", out.contains("sandbox:"))
     }
 
+    /** bash 的截断元数据（omittedBytes）必须在 stdout / stderr 两处都声明 */
+    @Test
+    fun bashDeclaresTruncationMetadataOnBothStreams() {
+        val out = output("bash")
+        assertEquals(out, 2, Regex("omittedBytes\\?: number").findAll(out).count())
+    }
+
     /** write / edit 的值带原文/新文字节数；before/after 只是回显、可能被 256 KiB 截断 */
     @Test
     fun writeAndEditDeclareEchoByteCountsAndTheTruncation() {

@@ -130,6 +130,10 @@ internal const val TEXT_SHIMMER_SWEEP_FRACTION = 2f / 3f
 internal const val TEXT_SHIMMER_BAND_START = 0.4f
 internal const val TEXT_SHIMMER_BAND_END = 0.6f
 
-/** dsh 的 --dsw-alias-label-shimmer（浅色 neutral-1000 30% 透明 / 深色 neutral-00 45%） */
-internal const val SHIMMER_ALPHA_LIGHT = 0.30f
-internal const val SHIMMER_ALPHA_DARK = 0.45f
+/**
+ * 带子颜色 = dsh 的 --dsw-alias-label-shimmer（浅色 neutral-1000 / 深色 neutral-00），
+ * 透明度在 dsh 的 30% / 45% 上按用户口径提亮一档 —— 运行行的流光要比 dsh 默认更醒目。
+ * 几何与周期仍逐字照 dsh，只有这两个 alpha 不同。
+ */
+internal const val SHIMMER_ALPHA_LIGHT = 0.42f
+internal const val SHIMMER_ALPHA_DARK = 0.62f

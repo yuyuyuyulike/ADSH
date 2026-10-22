@@ -128,7 +128,7 @@ fun TerminalPanel(
         val started = runCatching { openTerminalSession(launch, ptyRows, ptyCols) }
         val opened = started.getOrElse { error ->
             state = TerminalState.FAILED
-            note = "启动失败：" + (error.message ?: error::class.java.simpleName)
+            note = "failed to start: " + (error.message ?: error::class.java.simpleName)
             return@LaunchedEffect
         }
         session = opened

@@ -23,6 +23,8 @@
 #define LOG_TAG "ADSH_PTY"
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+extern char **environ;
+
 static char *dup_jstring(JNIEnv *env, jstring s) {
     if (s == NULL) return NULL;
     const char *chars = (*env)->GetStringUTFChars(env, s, NULL);
@@ -32,17 +34,27 @@ static char *dup_jstring(JNIEnv *env, jstring s) {
     return copy;
 }
 
-// 子进程里关掉除 0/1/2 之外所有 fd，避免把 JVM 的 fd 泄漏给 shell
-static void close_extra_fds(void) {
+/**
+ * 在 fork **之前**收集「除 0/1/2 之外要关掉的 fd」。
+ *
+ * 不能在子进程里 opendir/readdir：fork 之后只剩 async-signal-safe 调用可用，而
+ * opendir 会 malloc —— JVM 是多线程的，另一个线程可能正握着 malloc 锁，子进程会直接死锁。
+ * 列表在父进程里准备好，子进程只做 close()。
+ *
+ * @return 收集到的 fd 数（上限 max 个；超出部分留给 exec 的 CLOEXEC 语义）
+ */
+static int collect_extra_fds(int *fds, int max) {
     DIR *dir = opendir("/proc/self/fd");
-    if (dir == NULL) return;
+    if (dir == NULL) return 0;
     int dir_fd = dirfd(dir);
+    int count = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         int fd = atoi(entry->d_name);
-        if (fd > 2 && fd != dir_fd) close(fd);
+        if (fd > 2 && fd != dir_fd && count < max) fds[count++] = fd;
     }
     closedir(dir);
+    return count;
 }
 
 JNIEXPORT jint JNICALL
@@ -79,7 +91,10 @@ Java_com_adsh_app_runtime_termux_Pty_createSubprocess(
     size.ws_ypixel = (unsigned short) ypix;
     ioctl(ptm, TIOCSWINSZ, &size);
 
-    // fork 之前把所有 JNI 数据拷成 C 字符串（fork 后不可再调用 JNI）
+    // fork 之前把所有 JNI 数据拷成 C 字符串（fork 后不可再调用 JNI），
+    // 顺便把要关的 fd 列表也准备好（子进程里不能再 opendir，见 collect_extra_fds）
+    int extra_fds[1024];
+    int extra_fd_count = collect_extra_fds(extra_fds, (int)(sizeof(extra_fds) / sizeof(extra_fds[0])));
     char *command = dup_jstring(env, cmd);
     char *workdir = dup_jstring(env, cwd);
 
@@ -127,13 +142,31 @@ Java_com_adsh_app_runtime_termux_Pty_createSubprocess(
         dup2(pts, STDERR_FILENO);
         if (pts > 2) close(pts);
 
-        close_extra_fds();
+        for (int i = 0; i < extra_fd_count; i++) close(extra_fds[i]);
 
-        clearenv();
-        for (char **e = envp; *e != NULL; ++e) putenv(*e);
-        if (workdir != NULL) chdir(workdir);
+        // 直接挂上父进程准备好的 envp：fork 之后不能调 clearenv/putenv（它们会 malloc）。
+        // 真正的 exec 用的是下面的 envp 参数，这里只为 execvp 的 PATH 搜索与 exec 前的库代码兜底。
+        environ = envp;
+        if (workdir != NULL && chdir(workdir) != 0) {
+            static const char no_cwd[] = "adsh-pty: cannot enter the session working directory\n";
+            ssize_t ignored = write(STDERR_FILENO, no_cwd, sizeof(no_cwd) - 1);
+            (void)ignored;
+        }
 
-        execvp(command, argv);
+        // 绝对路径走 execv：execvp 会为了 PATH 搜索调 malloc，fork 后不安全
+        if (command != NULL && command[0] == '/') {
+            execv(command, argv);
+        } else {
+            execvp(command, argv);
+        }
+        /* exec 失败必须说一句：以前是静默 _exit(127)，终端里只剩一片空白，谁也分不清是
+           「命令没起来」还是「解释器崩了」。stderr 此刻就是 PTY slave，用户能直接看到。
+           fork 之后只能做异步信号安全调用：write 常量串，不碰 stdio / strerror。 */
+        {
+            static const char exec_failed[] = "adsh-pty: failed to execute the shell\n";
+            ssize_t ignored = write(STDERR_FILENO, exec_failed, sizeof(exec_failed) - 1);
+            (void)ignored;
+        }
         _exit(127);
     }
 

@@ -22,11 +22,12 @@ data class EscalationAsk(
 
 /**
  * dsh 的 approveEscalation：在**任何东西执行之前**把一次 sandbox_permissions 请求
- * 解析成「这次调用被授予的模式」。顺序也是 dsh 的（先严格更宽、再审批通道、最后映射结论）。
+ * 解析成「这次调用被授予的模式」。顺序也是 dsh 的（重复当前模式直接放行 → 严格更宽 → 审批通道 →
+ * 结论映射）；参数配对校验在 [resolveCallMode] 里先做（dsh 的两个工具族各校验一次）。
  *
  * @param requestedMode 模型给的 sandbox_permissions（null = 没有申请升级）
  * @param effectiveMode 这次调用当前的模式（权限预设 → filePolicy）
- * @return 授予的模式：没有申请时是 [effectiveMode]，申请通过时是 [requestedMode]
+ * @return 授予的模式：没有申请时是 [effectiveMode]，重复当前模式 / 申请通过时是 [requestedMode]
  * @throws IllegalStateException dsh 的逐字错误文案（工具层把它变成这次调用的 isError 结果，什么都没跑）
  */
 suspend fun approveEscalation(
@@ -36,8 +37,9 @@ suspend fun approveEscalation(
     ask: EscalationAsk,
     ctx: ToolContext,
 ): String {
-    Escalation.validateArgs(requestedMode, justification)?.let { throw IllegalStateException(it) }
     if (requestedMode == null) return effectiveMode
+    // dsh：repeating the effective mode returns it without approval（bash 与 fs 两个族共用这句）。
+    if (requestedMode == effectiveMode) return effectiveMode
     if (!(Escalation.WIDER_MODES[effectiveMode] ?: emptyList()).contains(requestedMode)) {
         throw IllegalStateException(
             "sandbox escalation to \"" + requestedMode + "\" is not strictly wider than this call's " +
@@ -79,17 +81,37 @@ fun justificationOf(args: JsonObject): String? =
 /**
  * 工具入口统一用这一句：把 args 里的升级申请解析成这次调用的模式。
  * 抛出的错误由调用方转成 ToolResult.Error（dsh 的 tool registry 也是这么做的）。
+ *
+ * @param bashRules dsh 的 bash 族在参数校验上比 fs 族松一档（dsh-tool-bash 的 validateBashArgs）：
+ *   重复当前模式时连 justification 配对都不校验；没给模式时空白 justification 视同缺省。
+ *   fs 族（write / edit）按 dsh-tool-fs 原样严格校验。
  */
-suspend fun resolveCallMode(args: JsonObject, ctx: ToolContext, ask: EscalationAsk): String =
-    approveEscalation(
-        requestedMode = sandboxPermissionsOf(args),
+suspend fun resolveCallMode(
+    args: JsonObject,
+    ctx: ToolContext,
+    ask: EscalationAsk,
+    bashRules: Boolean = false,
+): String {
+    val requested = sandboxPermissionsOf(args)
+    var justification = justificationOf(args)
+    if (bashRules) {
+        // 重复当前模式不需要审批，也不需要理由（dsh-tool-bash 的 validateBashArgs 提前返回）。
+        if (requested != null && requested == effectiveMode(ctx)) return requested
+        if (requested == null && justification?.trim()?.isEmpty() == true) justification = null
+    }
+    Escalation.validateArgs(requested, justification)?.let { throw IllegalStateException(it) }
+    return approveEscalation(
+        requestedMode = requested,
         // 预设 → dsh 的模式名（filePolicyOf 是同一份映射）。
         // 以**运行时**读到的预设为准：用户在对话中途改了预设，下一次受限调用就用新的
         // （dsh 的 sandboxPolicy.resolve 每个调用现算，见 ToolContext.livePermission）。
-        effectiveMode = filePolicyOf(
-            ctx.livePermission?.invoke() ?: ctx.permission,
-        ),
-        justification = justificationOf(args),
+        effectiveMode = effectiveMode(ctx),
+        justification = justification,
         ask = ask,
         ctx = ctx,
     )
+}
+
+/** 这次调用当前的 dsh 沙箱模式（权限预设 → filePolicy；运行时读，长轮次里会变） */
+private fun effectiveMode(ctx: ToolContext): String =
+    filePolicyOf(ctx.livePermission?.invoke() ?: ctx.permission)

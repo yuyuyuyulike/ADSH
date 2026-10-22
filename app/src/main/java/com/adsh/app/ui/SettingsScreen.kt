@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import com.adsh.app.BuildConfig
 import com.adsh.app.core.data.SettingsStore
 import com.adsh.app.ui.blocks.RiskConfirmationDialog
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
 import com.adsh.app.ui.chat.DshMenuCard
 import com.adsh.app.ui.chat.DshMenuRow
 import com.adsh.app.ui.chat.DshPopup
@@ -222,10 +223,12 @@ private fun SettingsNav(selected: Int, onSelect: (Int) -> Unit) {
 /** 分节内容：竖向滚动，左右 16（dsh 的 .options 是 0 24 24） */
 @Composable
 internal fun SectionColumn(content: @Composable ColumnScope.() -> Unit) {
+    val scroll = rememberScrollState()
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .dshVerticalScrollbar(scroll)
+            .verticalScroll(scroll)
             .padding(start = DshSpacing.Card, end = DshSpacing.Card, top = DshSpacing.Xxxl, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(DshSpacing.Xxxl),
         content = content,

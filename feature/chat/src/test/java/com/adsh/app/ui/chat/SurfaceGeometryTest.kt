@@ -17,13 +17,15 @@ class SurfaceGeometryTest {
     }
 
     @Test
-    fun `待办浮岛比输入卡每侧窄 16、圆角 16、body 上下 6 左右 12、header 36`() {
-        // TodoPanel.module.css:1-33：composer 侧留白 16 + dock inset 8×2
-        assertEquals(32.dp, TodoDockPageInset)
+    fun `待办浮岛与输入卡同宽、圆角 16、body 上下 4 左右 12、header 32`() {
+        // 折叠态总高 4 + 32 + 4 = 40dp；横向留白取输入卡的侧留白，折叠态与输入框等宽
+        assertEquals(ComposerSpec.SideClearance, TodoDockPageInset)
         assertEquals(16.dp, TodoDockRadius)
-        assertEquals(6.dp, TodoDockBodyPaddingVertical)
+        assertEquals(4.dp, TodoDockBodyPaddingVertical)
         assertEquals(12.dp, TodoDockBodyPaddingHorizontal)
-        assertEquals(36.dp, TodoDockHeaderHeight)
+        assertEquals(32.dp, TodoDockHeaderHeight)
+        // 折叠态总高：上下内边距 + 标题行
+        assertEquals(40.dp, TodoDockBodyPaddingVertical * 2 + TodoDockHeaderHeight)
     }
 
     @Test

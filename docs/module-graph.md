@@ -8,44 +8,44 @@
 
 | 单元 | 文件 | 行 | 模块 |
 |---|---|---|---|
-| core.agent | 11 | 2506 | :core:agent |
-| core.data | 14 | 4048 | :core:data |
-| core.jobs | 3 | 689 | :core:tools |
-| core.llm | 7 | 1004 | :core:data |
+| core.agent | 21 | 3101 | :core:agent |
+| core.data | 17 | 4477 | :core:data |
+| core.jobs | 3 | 705 | :core:tools |
+| core.llm | 6 | 902 | :core:data |
 | core.phone | 0 | 0 | None |
 | core.ptc | 0 | 0 | None |
 | core.session | 1 | 140 | :core:data |
-| core.tools | 15 | 6123 | :core:tools |
+| core.tools | 16 | 6357 | :core:tools |
 | core.workspace | 1 | 90 | :core:tools |
 
 ## 二、core.* 出边（谁依赖谁）
 
 | 来源单元 | 目标 | 次数 | 样本（文件:行） |
 |---|---|---|---|
-| core.agent | core.data | 9 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:3<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:4<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:5 |
-| core.agent | core.llm | 13 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:6<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:7<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:8 |
-| core.agent | core.session | 13 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:198<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:210<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:233 |
-| core.agent | core.tools | 10 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:12<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:13<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:14 |
-| core.agent | core.workspace | 6 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:61<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:102<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:235 |
-| core.agent | seam.exec | 1 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:35 |
+| core.agent | core.data | 19 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:3<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:4<br>core/agent/src/main/java/com/adsh/app/core/agent/ContextTokens.kt:3 |
+| core.agent | core.llm | 27 | core/agent/src/main/java/com/adsh/app/core/agent/AgentHooks.kt:3<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:5<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:6 |
+| core.agent | core.session | 6 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:8<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:9<br>core/agent/src/main/java/com/adsh/app/core/agent/ToolRound.kt:5 |
+| core.agent | core.tools | 6 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:10<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:11<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:12 |
+| core.agent | core.workspace | 6 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:82<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:166<br>core/agent/src/main/java/com/adsh/app/core/agent/PromptAssembler.kt:4 |
+| core.agent | seam.exec | 1 | core/agent/src/main/java/com/adsh/app/core/agent/TurnContext.kt:11 |
 | core.agent | seam.llm | 1 | core/agent/src/main/java/com/adsh/app/core/agent/TurnDecisions.kt:4 |
-| core.agent | seam.model | 7 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:31<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:32<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:36 |
-| core.agent | seam.ptc | 2 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:18<br>core/agent/src/main/java/com/adsh/app/core/agent/SubCallTrimmer.kt:3 |
-| core.agent | seam.tool | 9 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:33<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:34<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:562 |
-| core.data | core.llm | 12 | core/data/src/main/kotlin/com/adsh/app/core/data/Database.kt:736<br>core/data/src/main/kotlin/com/adsh/app/core/data/Database.kt:752<br>core/data/src/main/kotlin/com/adsh/app/core/data/Database.kt:753 |
+| core.agent | seam.model | 7 | core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:13<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:14<br>core/agent/src/main/java/com/adsh/app/core/agent/AgentLoop.kt:15 |
+| core.agent | seam.ptc | 2 | core/agent/src/main/java/com/adsh/app/core/agent/SubCallTrimmer.kt:3<br>core/agent/src/main/java/com/adsh/app/core/agent/ToolRound.kt:7 |
+| core.agent | seam.tool | 9 | core/agent/src/main/java/com/adsh/app/core/agent/RequestMessages.kt:10<br>core/agent/src/main/java/com/adsh/app/core/agent/RequestMessages.kt:11<br>core/agent/src/main/java/com/adsh/app/core/agent/RequestMessages.kt:219 |
+| core.data | core.llm | 16 | core/data/src/main/kotlin/com/adsh/app/core/data/Database.kt:771<br>core/data/src/main/kotlin/com/adsh/app/core/data/Database.kt:796<br>core/data/src/main/kotlin/com/adsh/app/core/data/Database.kt:800 |
 | core.data | seam.exec | 1 | core/data/src/main/kotlin/com/adsh/app/core/data/SettingsStore.kt:7 |
 | core.data | seam.llm | 9 | core/data/src/main/kotlin/com/adsh/app/core/data/Balance.kt:12<br>core/data/src/main/kotlin/com/adsh/app/core/data/Balance.kt:13<br>core/data/src/main/kotlin/com/adsh/app/core/data/Providers.kt:4 |
-| core.data | seam.model | 3 | core/data/src/main/kotlin/com/adsh/app/core/data/Database.kt:883<br>core/data/src/main/kotlin/com/adsh/app/core/data/Database.kt:884<br>core/data/src/main/kotlin/com/adsh/app/core/data/SettingsStore.kt:8 |
+| core.data | seam.model | 5 | core/data/src/main/kotlin/com/adsh/app/core/data/AttachmentStore.kt:8<br>core/data/src/main/kotlin/com/adsh/app/core/data/AttachmentStore.kt:9<br>core/data/src/main/kotlin/com/adsh/app/core/data/Database.kt:944 |
 | core.jobs | seam.exec | 1 | core/tools/src/main/kotlin/com/adsh/app/core/jobs/Jobs.kt:3 |
-| core.llm | core.session | 1 | core/data/src/main/kotlin/com/adsh/app/core/llm/ChatModels.kt:219 |
+| core.llm | core.session | 1 | core/data/src/main/kotlin/com/adsh/app/core/llm/ChatModels.kt:223 |
 | core.llm | seam.llm | 3 | core/data/src/main/kotlin/com/adsh/app/core/llm/ChatModels.kt:9<br>core/data/src/main/kotlin/com/adsh/app/core/llm/ChatModels.kt:10<br>core/data/src/main/kotlin/com/adsh/app/core/llm/ChatModels.kt:11 |
 | core.session | seam.ptc | 1 | core/data/src/main/kotlin/com/adsh/app/core/session/SessionLog.kt:3 |
 | core.tools | core.data | 6 | core/tools/src/main/kotlin/com/adsh/app/core/tools/Tools.kt:56<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/Tools.kt:65<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/Tools.kt:70 |
 | core.tools | core.jobs | 2 | core/tools/src/main/kotlin/com/adsh/app/core/tools/JobTools.kt:3<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/Tools.kt:8 |
 | core.tools | core.workspace | 1 | core/tools/src/main/kotlin/com/adsh/app/core/tools/Tools.kt:10 |
 | core.tools | seam.exec | 10 | core/tools/src/main/kotlin/com/adsh/app/core/tools/Approval.kt:5<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/Approval.kt:8<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/BashRender.kt:4 |
-| core.tools | seam.model | 4 | core/tools/src/main/kotlin/com/adsh/app/core/tools/Tools.kt:3<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/Tools.kt:5<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/Tools.kt:1235 |
-| core.tools | seam.ptc | 10 | core/tools/src/main/kotlin/com/adsh/app/core/tools/PtcToolRunner.kt:10<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/PtcToolRunner.kt:11<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/PtcToolRunner.kt:12 |
+| core.tools | seam.model | 4 | core/tools/src/main/kotlin/com/adsh/app/core/tools/Tools.kt:3<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/Tools.kt:5<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/Tools.kt:1426 |
+| core.tools | seam.ptc | 10 | core/tools/src/main/kotlin/com/adsh/app/core/tools/PtcToolRunner.kt:3<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/PtcToolRunner.kt:4<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/PtcToolRunner.kt:5 |
 | core.tools | seam.tool | 17 | core/tools/src/main/kotlin/com/adsh/app/core/tools/Approval.kt:3<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/BashRender.kt:3<br>core/tools/src/main/kotlin/com/adsh/app/core/tools/ExtraTools.kt:11 |
 | core.workspace | seam.exec | 1 | core/tools/src/main/kotlin/com/adsh/app/core/workspace/WorkspaceManager.kt:4 |
 
@@ -53,22 +53,22 @@
 
 | 目标单元 | 来源 | 次数 | 样本（文件:行） |
 |---|---|---|---|
-| core.agent | com.adsh.app | 1 | app/src/main/java/com/adsh/app/AppContainer.kt:6 |
-| core.data | com.adsh.app | 3 | app/src/main/java/com/adsh/app/AppContainer.kt:7<br>app/src/main/java/com/adsh/app/AppContainer.kt:8<br>app/src/main/java/com/adsh/app/AppContainer.kt:9 |
-| core.llm | com.adsh.app | 3 | app/src/main/java/com/adsh/app/AdshApp.kt:4<br>app/src/main/java/com/adsh/app/AppContainer.kt:10<br>app/src/main/java/com/adsh/app/AppContainer.kt:11 |
-| core.workspace | com.adsh.app | 1 | app/src/main/java/com/adsh/app/AppContainer.kt:12 |
+| core.agent | com.adsh.app | 4 | app/src/main/java/com/adsh/app/AppContainer.kt:6<br>app/src/main/java/com/adsh/app/AppContainer.kt:7<br>app/src/main/java/com/adsh/app/AppContainer.kt:8 |
+| core.data | com.adsh.app | 3 | app/src/main/java/com/adsh/app/AppContainer.kt:10<br>app/src/main/java/com/adsh/app/AppContainer.kt:11<br>app/src/main/java/com/adsh/app/AppContainer.kt:12 |
+| core.llm | com.adsh.app | 2 | app/src/main/java/com/adsh/app/AppContainer.kt:13<br>app/src/main/java/com/adsh/app/AppContainer.kt:14 |
+| core.workspace | com.adsh.app | 1 | app/src/main/java/com/adsh/app/AppContainer.kt:15 |
 | core.data | host | 1 | app/src/main/java/com/adsh/app/host/ToolingHost.kt:4 |
 | core.tools | host | 1 | app/src/main/java/com/adsh/app/host/ToolingHost.kt:5 |
 | core.workspace | host | 1 | app/src/main/java/com/adsh/app/host/ToolingHost.kt:6 |
-| core.data | ui | 15 | app/src/main/java/com/adsh/app/ui/AppRoot.kt:51<br>app/src/main/java/com/adsh/app/ui/Drawer.kt:59<br>app/src/main/java/com/adsh/app/ui/Drawer.kt:60 |
+| core.data | ui | 15 | app/src/main/java/com/adsh/app/ui/AppRoot.kt:55<br>app/src/main/java/com/adsh/app/ui/Drawer.kt:59<br>app/src/main/java/com/adsh/app/ui/Drawer.kt:60 |
 | core.llm | ui | 1 | app/src/main/java/com/adsh/app/ui/SettingsModelsSection.kt:51 |
-| core.agent | ui.chat | 10 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatUiState.kt:191<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:6<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:906 |
-| core.data | ui.chat | 33 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatDecisions.kt:3<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatDecisions.kt:111<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatScreen.kt:137 |
-| core.jobs | ui.chat | 7 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:470<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:570<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:575 |
-| core.llm | ui.chat | 21 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatUiState.kt:5<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:8<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:14 |
-| core.session | ui.chat | 12 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatUiState.kt:67<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:979<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:1061 |
-| core.tools | ui.chat | 13 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatBars.kt:49<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatBars.kt:50<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatScreen.kt:50 |
-| core.workspace | ui.chat | 5 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:17<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:288<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:1214 |
+| core.agent | ui.chat | 11 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatUiState.kt:162<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:6<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:7 |
+| core.data | ui.chat | 34 | feature/chat/src/main/java/com/adsh/app/ui/chat/AttachmentImport.kt:5<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatDecisions.kt:3<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatDecisions.kt:108 |
+| core.jobs | ui.chat | 7 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:524<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:622<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:627 |
+| core.llm | ui.chat | 13 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatUiState.kt:5<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:15<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:16 |
+| core.session | ui.chat | 12 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatUiState.kt:67<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:1049<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:1142 |
+| core.tools | ui.chat | 13 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatBars.kt:47<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatBars.kt:48<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatScreen.kt:49 |
+| core.workspace | ui.chat | 5 | feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:18<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:332<br>feature/chat/src/main/java/com/adsh/app/ui/chat/ChatViewModel.kt:1253 |
 
 事实：core.* 对外的出边只到 seam.exec、seam.llm、seam.model、seam.ptc、seam.tool（没有 runtime.* / ui.* / island.* 的边）。
 
@@ -110,9 +110,9 @@
 | 单元 | 模块 | 状态 | 三方库 import 前缀 | Room/KSP |
 |---|---|---|---|---|
 | core.agent | :core:agent | 已建（:core:agent 已注册） | kotlinx.coroutines<br>kotlinx.serialization | 否 |
-| core.data | :core:data | 已建（:core:data 已注册） | kotlinx.serialization<br>android.content<br>androidx.room | 是 |
+| core.data | :core:data | 已建（:core:data 已注册） | kotlinx.serialization<br>android.content<br>android.graphics<br>android.media<br>android.os<br>androidx.room | 是 |
 | core.jobs | :core:tools | 已建（:core:tools 已注册） | kotlinx.coroutines | 否 |
-| core.llm | :core:data | 已建（:core:data 已注册） | kotlinx.coroutines<br>kotlinx.serialization<br>android.content<br>android.net<br>android.util | 否 |
+| core.llm | :core:data | 已建（:core:data 已注册） | kotlinx.coroutines<br>kotlinx.serialization<br>android.util | 否 |
 | core.phone | None | 无模块映射 | （无三方依赖） | 否 |
 | core.ptc | None | 无模块映射 | （无三方依赖） | 否 |
 | core.session | :core:data | 已建（:core:data 已注册） | （无三方依赖） | 否 |

@@ -1,5 +1,6 @@
 package com.adsh.app.ui.chat
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -29,17 +30,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -63,6 +65,7 @@ import com.adsh.app.ui.blocks.RailReadBlock
 import com.adsh.app.ui.blocks.RailTerminalBlock
 import com.adsh.app.ui.blocks.RailTodoCard
 import com.adsh.app.ui.blocks.copyToClipboard
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
 import com.adsh.app.ui.blocks.formatRunDuration
 import com.adsh.app.ui.blocks.parseReadEnvelope
 import com.adsh.app.ui.blocks.presentRowSummary
@@ -79,17 +82,17 @@ import com.adsh.app.ui.kit.dshInteraction
 /**
  * 一轮对话的过程区（PTC），几何与状态逐项对齐 dsh：
  *
- * - chat/TurnProcessNodeView：折叠行高 33px、下边框 .5px border-l2、标签在左（14/24 二级色）、
+ * - chat/TurnProcessNodeView：折叠行高 33px、下边框 .5px border-l2、标签在左（13/24 三级色）、
  *   倒角在右（16px，-90° → 0°，transition .1s）；收起时 margin-bottom 8px。
  *   标签 = 「N 次工具调用 · M 条消息」，一条都没有时是「已思考」。
- * - chat/ReasoningRow：思考行 = 思考图标 14px +「思考」(14/24, 字重 400) + 2×2px 圆点 +
- *   摘要 13/20 三级色 + 倒角；运行中的摘要取「最后一行」（dsh 的 data-follow-end），
- *   结束后取第一行；展开后是 thinkBody（13/20 三级色、左缩进 22px、pre-wrap）。
- * - tool/components/ToolRow：工具行 = 图标（error/stopped 换成状态点）+ 标题 14/24 +
- *   圆点 + 摘要 13/24 三级色 + 倒角；展开是「代码块 / ioCard（输入·输出）」。
+ * - chat/ReasoningRow：思考行 = 思考图标 14px +「思考」(13/24, 字重 400) + 2×2px 圆点 +
+ *   摘要 13/20 三级色 + 倒角；运行中取「最新已完成段落的首行」、结束后取正文第一行，
+ *   运行中右端 48px 渐隐；展开后是 thinkBody（13/20 三级色、左缩进 22px、pre-wrap）。
+ * - tool/components/ToolRow：工具行 = 图标（失败态在 leading 换成 6dp 状态点，ADSH 自有表达）+
+ *   标题 13/24 + 圆点 + 摘要 13/24 三级色 + 倒角；展开是「代码块 / ioCard（输入·输出）」。
  *   行上**不带用时**（dsh 的 ToolRow 没有用时后缀，用时只在轮尾）。
  * - tool/ToolCallTree：子调用 = 左侧 0.5px 竖线 + margin 4 0 2 22 + padding-left 8 + gap 4。
- * - 运行中的行有一道 300px 宽的扫光（transparent → bg 60% → transparent）。
+ * - 运行中的行 = 文字本体的流光带（TextShimmer：1.5s 周期 / 0.3s 延迟），不是整行扫底色。
  *
  * 折叠规则见 TurnList.kt 的注释：只有「本轮已结束 + 最后一步是最终回答」才折叠。
  */
@@ -171,7 +174,7 @@ fun TurnEntryRow(
         if (isAnswer && entry is ProcessEntry.Text) {
             AssistantText(entry.text)
         } else {
-            EntryRow(entry, reasoningOpen, onReasoningToggle, onReaderAction, onOpenFile)
+            EntryRow(entry, reasoningOpen, onReasoningToggle, onReaderAction, onOpenFile, turnClosed = view.closed)
         }
     }
 }
@@ -187,7 +190,6 @@ fun TurnEntryRow(
 @Composable
 fun TurnTailRow(
     view: TurnView,
-    branchable: Boolean,
     onBranch: (Long) -> Unit,
     modifier: Modifier = Modifier,
     /** 当前会话的工作区根：文件卡片用它裁掉路径前缀（见 deliverableDisplayPath） */
@@ -228,8 +230,11 @@ fun TurnTailRow(
                     .joinToString("") { it.text },
                 usage = view.usage,
                 runMillis = view.runMillis,
-                branchable = branchable,
-                onBranch = { view.lastMessageId?.let(onBranch) },
+                // dsh 的 TurnTailNodeView：有收尾回答的已完成轮都画分支按钮，
+                // 不可用时是「可见 + 变淡 + 不可点」（原因写在 contentDescription 里，Android 没有 hover）。
+                branchVisible = view.branchVisible,
+                branchEnabled = view.branchEnabled,
+                onBranch = { view.branchMessageId?.let(onBranch) },
             )
         }
     }
@@ -262,6 +267,7 @@ private fun entryKey(view: TurnView, entry: ProcessEntry, index: Int): String = 
     is ProcessEntry.Text -> "text:" + sameKindOrdinal(view, index) { it is ProcessEntry.Text }
     is ProcessEntry.Steering -> "steering:" + sameKindOrdinal(view, index) { it is ProcessEntry.Steering }
     is ProcessEntry.Notice -> "notice:" + sameKindOrdinal(view, index) { it is ProcessEntry.Notice }
+    is ProcessEntry.Retry -> "retry:" + sameKindOrdinal(view, index) { it is ProcessEntry.Retry }
 }
 
 /** 这个条目在它「同类」里排第几（只数它前面的） */
@@ -292,6 +298,8 @@ private fun EntryRow(
     onReasoningToggle: (Boolean) -> Unit,
     onReaderAction: (Boolean) -> Unit = {},
     onOpenFile: ((String) -> Unit)? = null,
+    /** 本轮是否已结束：重试行据此把「等待中」推到「已取消」（dsh 的 retryState 推导） */
+    turnClosed: Boolean = false,
 ) {
     when (entry) {
         // 正文不在这一行：展开时按块拆成独立行（[ChatItem.ReasoningBody]），这里只画头
@@ -301,7 +309,7 @@ private fun EntryRow(
             open = reasoningOpen,
             onToggle = onReasoningToggle,
         )
-        is ProcessEntry.Text -> AssistantText(entry.text)
+        is ProcessEntry.Text -> AssistantText(entry.text, streaming = entry.streaming)
         // 插话：与普通用户消息同一个气泡（dsh 的 UserStyleBubble 由 user / steering 两行共用）
         is ProcessEntry.Steering -> UserMessage(entry.text, entry.time, entry.attachments)
         // 任务完成通知：与沙箱策略通知同一个形态（dsh 的 message.contextInjection）
@@ -310,6 +318,12 @@ private fun EntryRow(
             form = "notice",
             text = entry.text,
             onReaderAction = { onReaderAction(true) },
+        )
+        // 模型请求重试：会话流里的一行（dsh 的 model-retry，不是连接条）
+        is ProcessEntry.Retry -> RetryRow(
+            info = entry.info,
+            turnClosed = turnClosed,
+            onReaderAction = onReaderAction,
         )
         is ProcessEntry.Call -> RailToolRow(
             RailTool(
@@ -331,7 +345,8 @@ private fun EntryRow(
 /**
  * 一行工具调用（dsh 的 ToolRow）。
  *
- * @param compact 子调用用的小一号标题（dsh 的 BashRow 等子调用视图标题是 13px）
+ * @param compact 子调用（dsh 的 ToolCallTree 对子行复用同一个 ToolRow，行几何与主行相同；
+ *   这里只留给子行专属的图片画廊内边距）
  */
 @Composable
 private fun RailToolRow(
@@ -445,8 +460,8 @@ private fun RailToolRow(
     } else {
         null
     }
-    // 子调用（compact）与主行的差别只有行高 / 标题字号（dsh 的子调用视图是 13px 小一号）
-    val rowHeight = if (compact) 22.dp else 24.dp
+    // 子调用与主行同一套行几何：dsh 的 ToolCallTree 对子行复用同一个 ToolRow（24px 行高、13/24 标题）。
+    val rowHeight = 24.dp
     // **必须包一层 Column**：本函数会发射两个兄弟节点（自己的行 + 下面的子调用树），而调用方
     // TurnEntryRow 把每一行放进一个 Box —— Box 会把兄弟节点**叠在同一个位置**，于是 run_code
     // 的第一条子调用正好压在 run_code 那一行上。删掉这层 Column 就会重现这个重叠。
@@ -491,9 +506,10 @@ private fun RailToolRow(
                     text = shown,
                     modifier = summaryModifier,
                     fontSize = 13.sp,
-                    lineHeight = if (compact) 22.sp else 24.sp,
-                    // 链接用二级色（比普通摘要深一档）；普通摘要用动画色（失败时淡入 error 色，
-                    // dsh 的 `.summary{transition:color .1s}`），失败那一帧看着才不是硬切
+                    lineHeight = 24.sp,
+                    // 链接用二级色（比普通摘要深一档）；普通摘要用动画色（失败时 100ms 内淡入
+                    // error 色 —— ADSH 自有的过渡：失败那一帧「红点 + 变色 + 换摘要」三处同时变，
+                    // 硬切会闪一下；dsh 的 .summary 没有颜色过渡，这是有意偏离）
                     color = if (linkPath != null) palette.labelSecondary else summaryColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -740,6 +756,7 @@ private fun RailIoCard(input: String?, output: String?, error: Boolean) {
 @Composable
 private fun RailIoSection(label: String, text: String, error: Boolean) {
     val palette = LocalDshPalette.current
+    val bodyScroll = rememberScrollState()
     Row(
         Modifier
             .fillMaxWidth()
@@ -756,7 +773,7 @@ private fun RailIoSection(label: String, text: String, error: Boolean) {
         )
         Text(
             text = text,
-            modifier = Modifier.weight(1f).scrollableBody(),
+            modifier = Modifier.weight(1f).scrollableBody(bodyScroll),
             fontSize = IO_TEXT_SIZE,
             lineHeight = IO_TEXT_LINE_HEIGHT,
             fontFamily = FontFamily.Monospace,
@@ -773,27 +790,29 @@ private fun RailIoSection(label: String, text: String, error: Boolean) {
 private const val CODE_HIGHLIGHT_LANG = "javascript"
 
 /**
- * dsh 的 [data-follow-end]（ReasoningRow 运行中的摘要），等价于 CSS 的 width: max-content +
- * min-width: 100% + justify-content: flex-end：**比行宽短时仍然从左开始**，只有更长时才整块贴到
- * 行尾、把左边溢出裁掉（一直看得到最新写出来的字）。直接用右对齐会让短摘要看着「从右往左长」。
+ * dsh 的 `.summary[data-streaming]`（ReasoningRow.module.css）：
+ * `mask-image: linear-gradient(to right, black calc(100% - 48px), transparent)` ——
+ * 运行中的摘要右端 48px 渐隐。Compose 没有 mask-image：在离屏层上用 DstOut 的横向渐变
+ * 擦掉右端同样宽度（只影响这一块文字，不叠底色、不盖字）。
  */
-
-/*
- * 右端渐隐**不做**（dsh 的 `[data-streaming]` 用 `mask-image`）：Compose 没有 mask-image，
- * 用「右端叠一层透明→底色的渐变」顶替时那一层底色会盖住字，而 follow-end 正好把最新写出来的
- * 几个字贴在右端 —— 看起来就是被白雾糊住。只 `clipToBounds`：最新的字完整可读，左边照旧裁掉。
- */
-
-private fun Modifier.followEnd(): Modifier = layout { measurable, constraints ->
-    val placeable = measurable.measure(
-        constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity),
-    )
-    val width = constraints.maxWidth
-    layout(width, placeable.height) {
-        // 比行宽短：x = 0（左对齐）；比行宽长：x < 0，左边被父级的 clipToBounds 裁掉
-        placeable.place((width - placeable.width).coerceAtMost(0), 0)
+private fun Modifier.streamingSummaryFade(): Modifier = this
+    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .drawWithContent {
+        drawContent()
+        if (size.width <= 0f) return@drawWithContent
+        val fade = STREAMING_SUMMARY_FADE.toPx()
+        drawRect(
+            brush = Brush.horizontalGradient(
+                colors = listOf(Color.Transparent, Color.Black),
+                startX = (size.width - fade).coerceAtLeast(0f),
+                endX = size.width,
+            ),
+            blendMode = BlendMode.DstOut,
+        )
     }
-}
+
+/** dsh 的 `calc(100% - 48px)` */
+private val STREAMING_SUMMARY_FADE = 48.dp
 
 // ------------------------------------------------------------------ 思考行
 
@@ -803,11 +822,11 @@ private fun Modifier.followEnd(): Modifier = layout { measurable, constraints ->
  *  - 收起时：图标 + 「思考」+ 2×2 圆点 + 摘要；**展开时摘要整行不渲染**
  *    （dsh 的 DisclosureRow 只在 !open 时渲染 collapsedContent，这里没有 keepContentWhenOpen），
  *    行上只剩倒角 + 标题。
- *  - 摘要：运行中取最后一行（latestLine），结束后取第一行（firstLine），都去掉 ** 标记。
- *  - 运行中的摘要按 dsh 的 [data-follow-end] 渲染：容器右对齐 + 裁剪左边，
- *    也就是**永远显示最新的那一段**。按左对齐截尾的话，模型写一大段没有换行的思考时，
- *    可见的永远是开头那几个字，看起来就像「半天不动」（这就是「思考变化太慢」的根因）。
- *  - 文字本身始终从左往右排，只是整块贴在行尾；只有比行宽更长时才裁掉左边。
+ *  - 摘要：运行中取**最新一个已完成段落的第一个完整行**（[latestCompletedParagraphFirstLine]：
+ *    段落以空行分界，段首行后面出现换行才算完成），结束后取正文第一行；都去掉 ** 标记。
+ *    所以运行中摘要按段落推进，不是每收到一个字就变 —— dsh 折叠态肉眼看到的「变化慢」就是这条。
+ *  - 运行中右端 48px 渐隐（[streamingSummaryFade]，dsh 的 mask-image）；文字始终左对齐、
+ *    超出省略。dsh 没有 follow-end 平移，摘要不会整块贴到行尾。
  *
  * 正文不在这里：展开时按块拆成独立行（[ChatItem.ReasoningBody]）—— 行级绘制剔除才管得到它。
  * 展开态由界面持有（[reasoningKey]），不在行内 rememberSaveable：折叠整轮让这一行离开组合时
@@ -820,9 +839,8 @@ private fun ReasoningHeadRow(
     open: Boolean,
     onToggle: (Boolean) -> Unit,
 ) {
-    // 运行中的摘要取**最后一行**（dsh 的 data-follow-end：整块贴到行尾、左边被裁掉，
-    // 于是永远看得到最新写出来的字）；结束后取第一行。
-    val summary = (if (running) latestLine(text) else firstLine(text)).replace("**", "")
+    val summary = (if (running) latestCompletedParagraphFirstLine(text) else firstLine(text))
+        .replace("**", "")
     DshDisclosureRow(
         icon = DshIcons.Think,
         title = "思考",
@@ -835,35 +853,18 @@ private fun ReasoningHeadRow(
             {
                 // 展开时圆点与摘要一起消失（dsh 展开后行里只剩 leading + title）
                 RailDot()
-                if (running) {
-                    // 流式时摘要只裁左边（[followEnd]），**右端不叠渐隐** —— 那层底色正好盖住
-                    // 最新写出来的字（看着像「字的右侧被白雾遮挡」）。
-                    Text(
-                        text = summary,
-                        modifier = Modifier
-                            .weight(1f)
-                            .clipToBounds()
-                            .followEnd(),
-                        fontSize = 13.sp,
-                        lineHeight = 20.sp,
-                        color = LocalDshPalette.current.labelTertiary,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Clip,
-                    )
-                } else {
-                    Text(
-                        text = summary,
-                        modifier = Modifier.weight(1f),
-                        fontSize = 13.sp,
-                        lineHeight = 20.sp,
-                        color = LocalDshPalette.current.labelTertiary,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.Start,
-                    )
-                }
+                Text(
+                    text = summary,
+                    modifier = Modifier
+                        .weight(1f)
+                        .then(if (running) Modifier.streamingSummaryFade() else Modifier),
+                    fontSize = 13.sp,
+                    lineHeight = 20.sp,
+                    color = LocalDshPalette.current.labelTertiary,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = if (running) TextOverflow.Clip else TextOverflow.Ellipsis,
+                )
             }
         },
         body = null,
@@ -880,7 +881,12 @@ private fun ReasoningHeadRow(
  *  - [ReasoningBoundary.NONE]：首块的上边界 / 末块的下边界，不保留外侧边距。
  */
 @Composable
-internal fun ReasoningBodyRow(text: String, before: ReasoningBoundary, after: ReasoningBoundary) {
+internal fun ReasoningBodyRow(
+    text: String,
+    before: ReasoningBoundary,
+    after: ReasoningBoundary,
+    streaming: Boolean = false,
+) {
     Box(
         Modifier.padding(
             start = 22.dp,
@@ -893,6 +899,7 @@ internal fun ReasoningBodyRow(text: String, before: ReasoningBoundary, after: Re
             compact = true,
             hasPreceding = before == ReasoningBoundary.BLOCK,
             hasFollowing = after == ReasoningBoundary.BLOCK,
+            streaming = streaming,
         )
     }
 }
@@ -919,7 +926,8 @@ private fun TurnActions(
     text: String,
     usage: TurnUsage?,
     runMillis: Long?,
-    branchable: Boolean,
+    branchVisible: Boolean,
+    branchEnabled: Boolean,
     onBranch: () -> Unit,
 ) {
     val palette = LocalDshPalette.current
@@ -940,8 +948,14 @@ private fun TurnActions(
             copyToClipboard(context, text)
             copied = true
         }
-        if (branchable) {
-            RailIconAction(icon = DshSidebarIcons.Branch, label = "在新对话中分支", onClick = onBranch)
+        if (branchVisible) {
+            RailIconAction(
+                icon = DshSidebarIcons.Branch,
+                // dsh 的 tooltip：不可用时解释原因；Android 没有 hover，用 contentDescription 暴露给无障碍。
+                label = if (branchEnabled) "在新对话中分支" else "仅可从已完成轮次的最后一条消息分支",
+                enabled = branchEnabled,
+                onClick = onBranch,
+            )
         }
         if (usage != null || runMillis != null) {
             Row(
@@ -972,18 +986,33 @@ private fun TurnActions(
     }
 }
 
-/** dsh 的 .xzv4MW_action：28×28 的圆形图标按钮（图标 15px，hover 时换底色） */
+/**
+ * dsh 的 .xzv4MW_action：28×28 的圆形图标按钮（图标 15px，hover 时换底色）。
+ *
+ * [enabled] = false 时对齐 dsh 的 `[data-unavailable]`：图标降到 40% 不透明度、不响应点击
+ * （dsh 还保留 focus/hover 好让 tooltip 解释原因；Android 用 [label] 进无障碍树代替）。
+ */
 @Composable
-internal fun RailIconAction(icon: ImageVector, label: String, onClick: () -> Unit) {
+internal fun RailIconAction(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
     val palette = LocalDshPalette.current
     Box(
         modifier = Modifier
             .size(28.dp)
             .clip(RoundedCornerShape(28.dp))
-            .dshClickable(interactionSource = dshInteraction()) { onClick() },
+            .dshClickable(interactionSource = dshInteraction(), enabled = enabled) { onClick() },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription = label, tint = palette.labelTertiary, modifier = Modifier.size(15.dp))
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = if (enabled) palette.labelTertiary else palette.labelTertiary.copy(alpha = 0.4f),
+            modifier = Modifier.size(15.dp),
+        )
     }
 }
 
@@ -1098,11 +1127,35 @@ private fun RailStatPill(icon: ImageVector, label: String, open: Boolean, onClic
  * 排版量随内容长度暴涨，展开一大段输出时又慢又难读。
  */
 @Composable
-private fun Modifier.scrollableBody(): Modifier =
-    this.verticalScroll(rememberScrollState())
+private fun Modifier.scrollableBody(scroll: ScrollState): Modifier =
+    this.dshVerticalScrollbar(scroll, elevated = true).verticalScroll(scroll)
 
-private fun latestLine(text: String): String {
-    val trimmed = text.trimEnd()
-    return trimmed.substringAfterLast('\n').trim()
+/**
+ * dsh 的 `latestCompletedParagraphFirstLine`（ReasoningRow.tsx）—— 运行中折叠摘要取的那一行。
+ *
+ * 段落以**空行**分界（正则 `\r?\n(?:[\t ]*\r?\n)+`，可跨 CRLF）；每个段落只取第一行，
+ * 且这一行的换行已经到达（`newline <= paragraphEnd`）才算「完成」。最后一个段落没有换行时
+ * 仍用上一段的结果 —— 于是摘要按整段推进，不会每来一个字就重排。
+ * 逐字对齐 dsh 的实现，包括「最后一段已有换行但内容很长时也只取第一行」。
+ */
+internal fun latestCompletedParagraphFirstLine(text: String): String {
+    var summary = ""
+    var paragraphStart = 0
+    val separator = Regex("\\r?\\n(?:[\\t ]*\\r?\\n)+")
+    var next = separator.find(text, paragraphStart)
+    while (true) {
+        val paragraphEnd = if (next == null) {
+            text.length
+        } else {
+            next.range.first + next.value.indexOf('\n')
+        }
+        val newline = text.indexOf('\n', paragraphStart)
+        if (newline != -1 && newline <= paragraphEnd) {
+            val candidate = text.substring(paragraphStart, newline).trim()
+            if (candidate.isNotEmpty()) summary = candidate
+        }
+        if (next == null) return summary
+        paragraphStart = next.range.first + next.value.length
+        next = separator.find(text, paragraphStart)
+    }
 }
-

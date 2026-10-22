@@ -112,9 +112,9 @@ internal fun TerminalPlugin(settings: SettingsStore) {
         failed = bashFailed,
         onSave = {
             if (!timeoutValid || !maxTimeoutValid || !outputValid) {
-                bashFailed = "三个字段都要填正整数。"
+                bashFailed = "All three fields must be positive integers."
             } else if (maxTimeout.trim().toLong() < timeout.trim().toLong()) {
-                bashFailed = "超时上限不能小于默认超时。"
+                bashFailed = "The maximum timeout cannot be smaller than the default timeout."
             } else {
                 bashSaving = true
                 settings.bashTimeoutMs = timeout.trim().toLong()
@@ -285,7 +285,7 @@ internal fun WebSearchPlugin(settings: SettingsStore) {
                 // DeepSeek 后端的密钥跟提供方走（dsh 的搜索提供方复用会话凭据）
                 settings.webSearchKeyFollowsProvider(backendId) -> "已跟随 DeepSeek 提供方的密钥。"
                 webConfigured -> "已配置密钥。"
-                else -> "未配置密钥；配置之前搜索不可用。"
+                else -> "No key configured; search is unavailable until one is configured."
             },
             configured = webConfigured,
             hint = if (settings.webSearchKeyFollowsProvider(backendId)) {

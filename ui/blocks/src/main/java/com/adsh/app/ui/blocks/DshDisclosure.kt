@@ -94,7 +94,7 @@ fun DshRowTitle(
  * ```
  * .row      height calc(24px + D)、position:relative、overflow:hidden、flex 居中
  * .leading  16×16 的图标格（margin-right 6px、色 label-tertiary），里面 svg 14×14
- * .title    13px（secondary 档）/ calc(24px + D)、label-secondary、字重 400
+ * .title    13px（secondary 档）/ calc(24px + D)、颜色继承行色 label-tertiary、字重 400
  * .iconIdle / .chevronHover  opacity 100ms ease 交叉淡出
  * ```
  *
@@ -103,10 +103,9 @@ fun DshRowTitle(
  *
  * @param running 运行态（preparing / running）：**标题 + 摘要整块文字**上掠过 dsh 的流光带
  *   （见 [DshTextShimmer]）。图标不在流光里 —— 与 dsh 的 DisclosureRow 一致。
- * @param failed 这一行失败了：图标格交叉淡出成一个状态点（dsh 的 `leadingFor(error/stopped)`）。
- *   100ms 的交叉淡出是**照 dsh 的 CSS 抄的**（ToolRow 的 `.title/.summary{transition:color .1s}`
- *   与 DisclosureRow 的 `.iconIdle/.chevronHover`）：失败那一帧「红点 + 变色 + 换摘要」三处
- *   同时变，硬切看着就是闪一下。
+ * @param failed 这一行失败了：图标格换成一个 6dp 的状态点。dsh 的工具行错误态**不换** leading
+ *   （图标始终是业务图标，状态只由摘要红色与 data-state 表达）；这是 ADSH 自有的失败标记，
+ *   尺寸与 dsh 的 StateDot 圆核一致（10px 槽里的 6px 核）。
  * @param trailing 标题之后的内容（分隔点 + 摘要 + 后缀），通常自带 weight(1f)
  * @param expandable 不可展开的行没有点击手势（dsh 的 preparing 阶段）
  */
@@ -142,10 +141,11 @@ fun DshDisclosureRow(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     DshRowTitle(
                         text = title,
-                        // dsh 的 .title 是 13px（secondary 档），行高按内容字号的 1.85 倍
+                        // dsh 的 .title 是 13px（secondary 档），行高按内容字号的 1.85 倍；
+                        // 颜色继承行色（.row 是 label-tertiary），不是二级色
                         fontSize = TITLE_SIZE,
                         lineHeight = TITLE_SIZE * 1.85f,
-                        color = palette.labelSecondary,
+                        color = palette.labelTertiary,
                     )
                     if (trailing != null) trailing()
                 }
@@ -170,36 +170,43 @@ fun railLeadingState(open: Boolean, failed: Boolean): RailLeadingState = when {
 }
 
 /**
- * dsh 的 .leading（16×16）：收起 = 本体图标（14px、label-tertiary），展开 = 倒角（label-secondary），
- * 失败 = 状态点（6px、error 色）。**红点不挂动画**：`failed` 为真就满不透明画出来 —— 否则流式
- * 期间失败那一格会整个空着（见 [railLeadingState]）。摘要颜色的 100ms 过渡保留。
+ * dsh 的 .leading（16×16）：收起 = 本体图标（14px、label-tertiary），展开 = 倒角（label-secondary）；
+ * 失败 = ADSH 自有的 6dp 状态点（error 色，与 dsh 的 StateDot 圆核同尺寸）。
+ * **红点不挂动画**：`failed` 为真就满不透明画出来 —— 否则流式期间失败那一格会整个空着
+ * （见 [railLeadingState]）。
  */
 @Composable
 private fun RailLeading(icon: ImageVector, open: Boolean, failed: Boolean = false) {
     val palette = LocalDshPalette.current
-    Box(Modifier.size(16.dp).padding(end = DshSpacing.Lg), contentAlignment = Alignment.Center) {
-        when (railLeadingState(open = open, failed = failed)) {
-            // 失败：状态点（6px、error 色）—— **不透明的实心点，不参与任何淡入淡出**，见上面的注释
-            RailLeadingState.DOT -> Box(
-                Modifier
-                    .size(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(palette.errorLabel),
-            )
-            // 展开时朝下（0°）—— 与折叠行的倒角同一套角度：收起朝右、展开朝下（用户口径）
-            RailLeadingState.CHEVRON -> Icon(
-                imageVector = DshIcons.ChevronDown,
-                contentDescription = null,
-                tint = palette.labelSecondary,
-                modifier = Modifier.size(14.dp),
-            )
-            RailLeadingState.ICON -> Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = palette.labelTertiary,
-                modifier = Modifier.size(14.dp),
-            )
+    // dsh 的 .leading 是「16×16 内容盒 + margin-right 6px」= 22px 步进。
+    // **不能写成 .size(16.dp).padding(end = 6.dp)**：padding 在 size 之后，会把内容压到 10dp，
+    // 14dp 的图标被约束成 10dp（比 dsh 瘦一圈）。
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+            when (railLeadingState(open = open, failed = failed)) {
+                // 失败：状态点（6px、error 色）—— **不透明的实心点，不参与任何淡入淡出**，见上面的注释
+                RailLeadingState.DOT -> Box(
+                    Modifier
+                        .size(6.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(palette.errorLabel),
+                )
+                // 展开时朝下（0°）—— 与折叠行的倒角同一套角度：收起朝右、展开朝下（用户口径）
+                RailLeadingState.CHEVRON -> Icon(
+                    imageVector = DshIcons.ChevronDown,
+                    contentDescription = null,
+                    tint = palette.labelSecondary,
+                    modifier = Modifier.size(14.dp),
+                )
+                RailLeadingState.ICON -> Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = palette.labelTertiary,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
         }
+        Spacer(Modifier.width(DshSpacing.Lg))
     }
 }
 
@@ -269,6 +276,7 @@ fun RailChevron(open: Boolean) {
 @Composable
 private fun DshCodeBody(text: String) {
     val palette = LocalDshPalette.current
+    val scroll = rememberScrollState()
     Box(
         Modifier
             .fillMaxWidth()
@@ -276,7 +284,8 @@ private fun DshCodeBody(text: String) {
             .heightIn(max = 141.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(palette.codeBlock)
-            .verticalScroll(rememberScrollState())
+            .dshVerticalScrollbar(scroll, elevated = true, topInset = 4.dp, bottomInset = 4.dp)
+            .verticalScroll(scroll)
             .padding(start = DshSpacing.Xxxl, top = DshSpacing.Xxl, end = DshSpacing.Card, bottom = DshSpacing.Xxxl),
     ) {
         Text(

@@ -28,6 +28,13 @@ data class ExecResult(
      * 与超时区分开：超时是「命令太慢」，中断是「人按了停止」——工具行上的文案不一样。
      */
     val cancelled: Boolean = false,
+    /**
+     * stdout 完整输出的字节数（截断元数据用；0 = 未知 / 调用方没给）。
+     * 结果里的 `stdout.omittedBytes` 就是「完整字节数 - 保留下来的字节数」。
+     */
+    val outputBytes: Long = 0,
+    /** stderr 完整输出的字节数（只有 separateStreams = true 的调用会有意义） */
+    val stderrBytes: Long = 0,
 ) {
     val ok: Boolean get() = exitCode == 0 && !timedOut
 }

@@ -83,7 +83,7 @@ internal object PhoneChannel {
             val text = runCatching { req.readText() }.getOrDefault("")
             val parsed = parsePhoneRequest(text)
             val (code, body) = if (parsed == null) 2 to USAGE else runCatching { handle(context, parsed) }
-                .getOrElse { 1 to ("失败：" + (it.message ?: it::class.java.simpleName)) }
+                .getOrElse { 1 to ("failed: " + (it.message ?: it::class.java.simpleName)) }
             runCatching {
                 File(rspDir, id + ".rsp").writeText(encodePhoneResponse(code, body))
                 req.delete()
@@ -111,9 +111,9 @@ internal object PhoneChannel {
             is PhoneOpenTarget.Url -> Intent(Intent.ACTION_VIEW, Uri.parse(resolved.url))
             is PhoneOpenTarget.Domain -> Intent(Intent.ACTION_VIEW, Uri.parse(resolved.url))
             is PhoneOpenTarget.Package -> pm.getLaunchIntentForPackage(resolved.name)
-                ?: return 1 to ("拉起失败：找不到 " + resolved.name + " 的启动入口")
+                ?: return 1 to ("failed to launch: no launch intent for " + resolved.name)
             is PhoneOpenTarget.Unsupported ->
-                return 1 to ("打不开：" + resolved.target + "（既不是网址，也不是已安装的包名）")
+                return 1 to ("cannot open " + resolved.target + " (neither a URL nor an installed package)")
         }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return runCatching {
@@ -121,7 +121,7 @@ internal object PhoneChannel {
             0 to ("已打开：" + target)
         }.getOrElse {
             // 后台启动活动限制（锁屏 / 应用不在前台）会走到这里
-            1 to ("打开失败：" + (it.message ?: it::class.java.simpleName))
+            1 to ("failed to open: " + (it.message ?: it::class.java.simpleName))
         }
     }
 
@@ -146,13 +146,13 @@ internal object PhoneChannel {
         val clip = clipboard(context).primaryClip
         val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
         // Android 10+：应用不在前台时读剪贴板会拿到 null —— 如实说明，别让模型以为剪贴板是空的
-        return if (text == null) 1 to "剪贴板读不到（应用不在前台时系统不允许读）" else 0 to text
+        return if (text == null) 1 to "clipboard is not readable (the system blocks it while the app is in the background)" else 0 to text
     }
 
     private fun clipSet(context: Context, text: String): Pair<Int, String> = runCatching {
         clipboard(context).setPrimaryClip(ClipData.newPlainText("ADSH", text))
         0 to ("已写入剪贴板（" + text.length + " 字）")
-    }.getOrElse { 1 to ("写入剪贴板失败：" + (it.message ?: it::class.java.simpleName)) }
+    }.getOrElse { 1 to ("failed to write the clipboard: " + (it.message ?: it::class.java.simpleName)) }
 
     private val USAGE = """
         phone —— 让 ADSH 用它自己的前台身份做几件事（bash 直接做不了的那些）

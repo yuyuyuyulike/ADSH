@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -28,14 +27,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -50,13 +48,12 @@ import com.adsh.app.core.tools.PlanReview
 import com.adsh.app.core.tools.TodoItem
 import com.adsh.app.seam.tool.UserQuestionChannel
 import com.adsh.app.ui.blocks.DshIcons
-import com.adsh.app.ui.blocks.DshStateDot
-import com.adsh.app.ui.blocks.IconTap
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
+import com.adsh.app.ui.blocks.lightCardShadow
 import com.adsh.app.ui.theme.LocalDshPalette
 import com.adsh.app.ui.kit.DshSpacing
 import com.adsh.app.ui.kit.dshClickable
 import com.adsh.app.ui.kit.dshInteraction
-import kotlinx.coroutines.delay
 
 // 会话页的浮条与空态（从 ChatScreen 搬出来的最后一组：彼此成组，对外只有调用点）
 
@@ -74,6 +71,7 @@ internal fun BackToBottomButton(onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .size(34.dp)
+            .lightCardShadow(RoundedCornerShape(100.dp))
             .clip(RoundedCornerShape(100.dp))
             .background(palette.menu)
             .border(DshSpacing.Hairline, palette.borderL3, RoundedCornerShape(100.dp))
@@ -98,6 +96,7 @@ internal fun CompactingBar() {
             .fillMaxWidth()
             .padding(horizontal = DshSpacing.Xxl)
             .padding(bottom = DshSpacing.Lg)
+            .lightCardShadow(RoundedCornerShape(12.dp))
             .clip(RoundedCornerShape(12.dp))
             .background(palette.menu)
             .padding(horizontal = DshSpacing.Xxxl, vertical = DshSpacing.Xl),
@@ -120,6 +119,7 @@ internal fun QueuedBar(count: Int, onClear: () -> Unit) {
             .fillMaxWidth()
             .padding(horizontal = DshSpacing.Xxl)
             .padding(bottom = DshSpacing.Lg)
+            .lightCardShadow(RoundedCornerShape(16.dp))
             .clip(RoundedCornerShape(16.dp))
             .background(palette.menu)
             .dshClickable(interactionSource = dshInteraction(), onClick = onClear)
@@ -131,103 +131,6 @@ internal fun QueuedBar(count: Int, onClear: () -> Unit) {
         Spacer(Modifier.weight(1f))
         Text("清空", fontSize = 12.sp, color = palette.labelTertiary)
     }
-}
-
-/**
- * 掉线重连条（dsh 的 ConnectionIndicator：断开 / 连接中 / 已恢复三态）。
- *
- * 形状与令牌**逐条**取自 dsh 的 `ConnectionIndicator.module.css`：
- *  - 28px 高、8px 圆角（`--dsw-radius-sm`）、左右各 8px 内边距、图标与文案间距 4px；
- *  - 12px / 字重 500 / 行高 18px 的字；
- *  - warning 态 = `state-warn-tertiary` 底 + `state-warn-label` 字 + 同色 20% 描边（可点）；
- *    success 态 = `state-success-tertiary` 底 + `state-success-primary` 字 + 同色 20% 描边（不可点）；
- *  - 图标：连接中 = dsh 的 `StateDot ongoing`（转圈），断开 = 刷新图形，已恢复 = 对勾；
- *  - **文案自己写着动作**（dsh 没有额外的「点击重试」提示），连接中的点接在文案后面、
- *    宽度固定 1em（dsh 的 `.dots`）—— 点长出来时整条不会跟着抖。
- */
-@Composable
-internal fun ConnectionBar(
-    state: ConnectionState,
-    modifier: Modifier = Modifier,
-    onRetry: () -> Unit,
-) {
-    val palette = LocalDshPalette.current
-    val recovered = state is ConnectionState.Recovered
-    val connecting = state is ConnectionState.Reconnecting
-    val tint = if (recovered) palette.success else palette.warnLabel
-    val background = if (recovered) palette.successBg else palette.warnBg
-    val shape = RoundedCornerShape(8.dp)          // dsh 的 --dsw-radius-sm = 8px
-    // 文案自己写着动作（dsh 的三条文案同理），所以不需要另加「点击重试」那一行
-    val label = when (state) {
-        is ConnectionState.Recovered -> "连接已恢复"
-        is ConnectionState.Disconnected -> "连接已断开，点此重试"
-        is ConnectionState.Reconnecting -> "正在重连（第 " + state.attempt + " 次）"
-        ConnectionState.Idle -> ""
-    }
-    Row(
-        modifier = modifier
-            .height(28.dp)
-            .clip(shape)
-            .background(background)
-            .border(1.dp, tint.copy(alpha = 0.2f), shape)
-            .then(
-                if (recovered) {
-                    Modifier
-                } else {
-                    Modifier.dshClickable(interactionSource = dshInteraction(), onClick = onRetry)
-                },
-            )
-            .padding(horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        when {
-            recovered -> Icon(
-                DshIcons.Check,
-                contentDescription = null,
-                tint = tint,
-                modifier = Modifier.size(14.dp),
-            )
-            connecting -> DshStateDot("ongoing")
-            else -> Icon(
-                DshIcons.Refresh,
-                contentDescription = null,
-                tint = tint,
-                modifier = Modifier.size(14.dp),
-            )
-        }
-        Text(
-            text = label,
-            fontSize = 12.sp,
-            lineHeight = 18.sp,
-            fontWeight = FontWeight.Medium,
-            color = tint,
-            maxLines = 1,
-        )
-        // 连接中的点：宽度固定（dsh 的 .dots 是 1em），所以点长出来时这条不会抖
-        if (connecting) LoadingDots(tint)
-    }
-}
-
-/**
- * 「连接中」的一至三个点，每 500ms 推进一格（dsh 的 ongoing loader：
- * 「一至三个点以独立于 retry 时序的 500ms 节奏推进」）。
- */
-@Composable
-internal fun LoadingDots(tint: Color) {
-    val step by produceState(1) {
-        while (true) {
-            kotlinx.coroutines.delay(500)
-            value = value % 3 + 1
-        }
-    }
-    Text(
-        text = ".".repeat(step).padEnd(3, ' '),
-        fontSize = 12.sp,
-        lineHeight = 18.sp,
-        color = tint,
-        modifier = Modifier.width(12.dp),
-    )
 }
 
 /** 检查点卡片：历史被压缩后的摘要，默认折叠 */@Composable
@@ -260,6 +163,7 @@ internal fun CompactCard(text: String, onReaderAction: () -> Unit = {}) {
         }
         if (expanded) {
             Spacer(Modifier.height(8.dp))
+            val summaryScroll = rememberScrollState()
             Text(
                 text = body,
                 fontSize = 12.sp,
@@ -267,7 +171,8 @@ internal fun CompactCard(text: String, onReaderAction: () -> Unit = {}) {
                 color = palette.labelSecondary,
                 modifier = Modifier
                     .heightIn(max = 360.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .dshVerticalScrollbar(summaryScroll, elevated = true)
+                    .verticalScroll(summaryScroll),
             )
         }
     }
@@ -347,6 +252,10 @@ internal fun ChatTopBar(
 ) {
     val focusManager = LocalFocusManager.current
     val palette = LocalDshPalette.current
+    // **手势块不能钉死在第一次组合的回调上**：`pointerInput(Unit)` 的协程只启动一次，
+    // 它捕获的闭包不会随重组更新 —— 切会话后仍会去滚上一条会话那份已经卸载的 ScrollState，
+    // 表现就是「切换过会话后双击刘海完全没反应」。
+    val scrollToTop by rememberUpdatedState(onScrollToTop)
     // 标题的宽度上限 = **半个屏幕**（用户口径）：再长就省略，不留到把右侧图标挤走。
     // 窗口宽度用 LocalWindowInfo 而不是 Configuration.screenWidthDp —— 分屏 / 折叠屏下后者是整块屏。
     val titleMaxWidth = with(LocalDensity.current) {
@@ -367,7 +276,7 @@ internal fun ChatTopBar(
                     onTap = { focusManager.clearFocus() },
                     onDoubleTap = {
                         focusManager.clearFocus()
-                        onScrollToTop()
+                        scrollToTop()
                     },
                 )
             },
@@ -394,11 +303,25 @@ internal fun ChatTopBar(
             conversationId = conversationId,
             onReaderAction = readerAction,
         )
-        // 右上角只保留「工作区文件预览」（dsh 的 IconPanelLeftOutline16 镜像 = 分栏线在右）。
+        // 右上角只保留「工作区文件预览」，几何照 dsh 的 ExpandButton（ui-sidebar-right
+        // ExpandButton.module.css）：28px 按钮、15px 图标、label-secondary ——
+        // 原来 18dp + 一级色，比 dsh 大一圈也重一档。
         // 点开它也是离开输入状态：光标立刻消失（覆盖页会盖住输入框，光标不该在底下继续闪）。
-        IconTap(DshIcons.PanelRight, "工作区文件", size = 18.dp, tint = palette.labelPrimary) {
-            focusManager.clearFocus()
-            onOpenWorkspaceFiles()
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .dshClickable(interactionSource = dshInteraction()) {
+                    focusManager.clearFocus()
+                    onOpenWorkspaceFiles()
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = DshIcons.PanelRight,
+                contentDescription = "工作区文件",
+                tint = palette.labelSecondary,
+                modifier = Modifier.size(15.dp),
+            )
         }
     }
 }

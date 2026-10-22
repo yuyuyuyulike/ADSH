@@ -129,14 +129,14 @@ class TurnDecisionsTest {
         assertNull(loopGuardReason("bash", REPEAT_CALL_LIMIT, 1))
         val why = loopGuardReason("bash", REPEAT_CALL_LIMIT + 1, 4)!!
         assertTrue(why.contains("bash"))
-        assertTrue(why.contains("4 次"))
+        assertTrue(why.contains("4 times"))
     }
 
     @Test
     fun tooManyCallsInOneTurnStops() {
         assertNull(loopGuardReason("bash", 1, MAX_TOOL_CALLS_PER_TURN))
         assertEquals(
-            "单条消息的工具调用总数超过 300 次",
+            "tool calls in one message exceed 300",
             loopGuardReason("bash", 1, MAX_TOOL_CALLS_PER_TURN + 1),
         )
     }
@@ -144,7 +144,7 @@ class TurnDecisionsTest {
     @Test
     fun repeatReasonWinsWhenBothAreHit() {
         val why = loopGuardReason("bash", REPEAT_CALL_LIMIT + 1, MAX_TOOL_CALLS_PER_TURN + 1)!!
-        assertTrue(why.startsWith("同一个工具调用重复了"))
+        assertTrue(why.startsWith("the same tool call repeated"))
     }
 
     // ---------- 本轮结束判据 ----------
@@ -183,8 +183,8 @@ class TurnDecisionsTest {
     @Test
     fun stoppedTextIsTheSentenceTheUserSees() {
         assertEquals(
-            "（已停下：同一个工具调用重复了 4 次（bash），疑似陷入循环。可以换个说法让我继续，或先检查工作区状态）",
-            stoppedText("同一个工具调用重复了 4 次（bash），疑似陷入循环"),
+            "(stopped: the same tool call repeated 4 times (bash); possible loop. Rephrase to continue, or check the workspace state first.)",
+            stoppedText("the same tool call repeated 4 times (bash); possible loop"),
         )
     }
 }

@@ -46,6 +46,8 @@ data class ConversationEntity(
     val statToolMillis: Long = 0,
     val statTtftMillis: Long = 0,
     val statTtftSamples: Long = 0,
+    /** dsh 的置顶会话：侧栏里置顶行排在所属分组最前 */
+    val pinned: Boolean = false,
 )
 
 @Entity(tableName = "messages", indices = [Index("conversationId")])
@@ -111,9 +113,6 @@ interface WorkspaceDao {
     @Insert
     suspend fun insert(workspace: WorkspaceEntity): Long
 
-    @Query("UPDATE workspaces SET name = :name WHERE id = :id")
-    suspend fun rename(id: Long, name: String)
-
     @Query("DELETE FROM workspaces WHERE id = :id")
     suspend fun delete(id: Long)
 
@@ -164,6 +163,10 @@ interface ConversationDao {
         ttftSamples: Long,
         updatedAt: Long,
     )
+
+    /** dsh 的置顶 / 取消置顶：只改 pinned 列，**不碰 updatedAt** —— 置顶不是一次会话活动 */
+    @Query("UPDATE conversations SET pinned = :pinned WHERE id = :id")
+    suspend fun setPinned(id: Long, pinned: Boolean)
 
     @Query("DELETE FROM conversations WHERE id = :id")
     suspend fun delete(id: Long)
@@ -305,7 +308,7 @@ interface ConversationDaoExtra {
 
 @Database(
     entities = [ConversationEntity::class, MessageEntity::class, WorkspaceEntity::class],
-    version = 17,
+    version = 18,
     exportSchema = true,
 )
 abstract class AdshDatabase : RoomDatabase() {
@@ -510,6 +513,16 @@ abstract class AdshDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v17 → v18：会话置顶（dsh 的 registry-global pin set）。
+         * 只加一列，历史会话一条不动 —— 老会话没置顶过，读出来就是 false。
+         */
+        private val MIGRATION_17_18 = object : androidx.room.migration.Migration(17, 18) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         @Volatile private var instance: AdshDatabase? = null
 
         fun get(context: Context): AdshDatabase = instance ?: synchronized(this) {
@@ -518,6 +531,7 @@ abstract class AdshDatabase : RoomDatabase() {
                     MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7,
                     MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
                     MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17,
+                    MIGRATION_17_18,
                 )
                 .fallbackToDestructiveMigration(dropAllTables = true)
                 .build()
@@ -547,6 +561,9 @@ class ConversationRepository(private val db: AdshDatabase) : TurnStore {
             size > MESSAGE_CACHE_LIMIT
     }
 
+    /** usageJson 的解码口径：旧数据没有 llmMillis / toolMillis，缺字段落到默认值 */
+    private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true }
+
     /** 缓存命中时返回那条会话的正文（同步、不碰库）；没命中返回 null。 */
     fun cachedMessages(conversationId: Long): List<MessageEntity>? =
         synchronized(messageCache) { messageCache[conversationId] }
@@ -571,11 +588,17 @@ class ConversationRepository(private val db: AdshDatabase) : TurnStore {
          * 只是正文换成 DSH file policy。它不是「用户的发言」，UI 按上下文注入行渲染（见 TurnList）。
          */
         /**
-         * 权限预设切换的历史行名。**不再写这种行**（切换只追加一条合并快照，见
-         * ContextLedger），但老会话的历史行还在库里 —— TurnList 仍按「上下文注入」把它画出来，
-         * 所以这个常量与那条渲染分支都留着。
+         * 权限预设切换的历史行名。**不再写这种行**（切换只追加一条新快照，与 dsh 一样没有
+         * 「策略变了」的叙述），但老会话的历史行还在库里 —— TurnList 仍按「上下文注入」把它画
+         * 出来，所以这个常量与那条渲染分支都留着。
          */
         const val SANDBOX_SWITCH = "sandbox:switch"
+
+        /**
+         * 计划模式切换的叙述行（dsh plan-mode 的 narration：一条 source = plan-mode、form = notice
+         * 的 user 消息）。只有「退出」会产生：ADSH 的 plan 段就在快照里，进入时模型已经看得到。
+         */
+        const val PLAN_MODE_NARRATION = "plan-mode"
 
         /**
          * 插话发送进来的用户消息标记（dsh 的 `steering` 节点）。
@@ -614,17 +637,32 @@ class ConversationRepository(private val db: AdshDatabase) : TurnStore {
 
     suspend fun conversations(): List<ConversationEntity> = db.conversations().list()
 
-    /** dsh 的 fork：把一条会话的历史整份复制成新会话（分叉点 = 当前历史末尾） */
+    /**
+     * 侧栏行序：置顶行提前，两组内部各按 updatedAt 倒序（规则见 [sidebarConversationOrder]）。
+     * 本方法是列表的**排序投影**；[conversations] 自己的行序不动 —— 启动恢复
+     * （[resumeConversationId]）按它取最近一条。
+     */
+    suspend fun sidebarConversations(): List<ConversationEntity> =
+        sidebarConversationOrder(db.conversations().list())
+
+    /** dsh 的置顶 / 取消置顶：只改 pinned 列，不刷新 updatedAt（置顶动作不是会话活动） */
+    suspend fun setPinned(id: Long, pinned: Boolean) = db.conversations().setPinned(id, pinned)
+
+    /**
+     * dsh 的 fork：把一条会话的历史整份复制成新会话（分叉点 = 当前历史末尾）。
+     * 统计列随完整历史一起复制 —— 历史相同，聚合值就相同。
+     */
     suspend fun forkConversation(id: Long): Long? {
         val source = db.conversations().byId(id) ?: return null
         val now = System.currentTimeMillis()
         val copyId = db.conversations().insert(
-            ConversationEntity(
+            source.copy(
+                id = 0,
                 title = source.title + " (分叉)",
                 createdAt = now,
                 updatedAt = now,
-                workspaceId = source.workspaceId,
-                planMode = source.planMode,
+                // 置顶是会话自己的标记，不随历史复制进新会话
+                pinned = false,
             )
         )
         readMessages(id).forEach { message ->
@@ -699,9 +737,6 @@ class ConversationRepository(private val db: AdshDatabase) : TurnStore {
         )
     }
 
-    /** dsh 的「重命名工作区」 */
-    suspend fun renameWorkspace(id: Long, name: String) = db.workspaces().rename(id, name)
-
     /** dsh 的「删除工作区」：只解绑，会话转未分组 */
     suspend fun deleteWorkspace(id: Long) {
         db.workspaces().orphanConversations(id)
@@ -749,6 +784,32 @@ class ConversationRepository(private val db: AdshDatabase) : TurnStore {
     }
 
     /** 读出持久化的会话统计（turns/steps 由消息推导，不入库） */
+    /**
+     * 按会话正文里的**逐轮用量**重算统计列并落库。
+     *
+     * 统计是随会话持久化的聚合值；分叉 / 分支出来的会话这份历史是空的，而 dsh 的统计是日志投影
+     * （见 [aggregateTurnUsage]）。[messages] 可以由调用方传进来（刚复制完的那批），省一次读库。
+     */
+    suspend fun recomputeStats(
+        id: Long,
+        messages: List<MessageEntity>? = null,
+    ): com.adsh.app.core.llm.SessionStats {
+        val rows = messages ?: readMessages(id)
+        val usages = rows.mapNotNull { row ->
+            row.usageJson?.let { raw ->
+                runCatching { json.decodeFromString(com.adsh.app.core.llm.TurnUsage.serializer(), raw) }.getOrNull()
+            }
+        }
+        val stats = aggregateTurnUsage(
+            usages = usages,
+            // 与 statsOf 同一口径：带 name 的 user 行（插话 / 通知）不算一轮
+            turns = rows.count { it.role == "user" && it.name == null },
+            steps = rows.count { it.role == "tool" },
+        )
+        setStats(id, stats)
+        return stats
+    }
+
     suspend fun statsOf(id: Long): com.adsh.app.core.llm.SessionStats {
         val row = db.conversations().byId(id) ?: return com.adsh.app.core.llm.SessionStats()
         return com.adsh.app.core.llm.SessionStats(
@@ -895,7 +956,7 @@ class ConversationRepository(private val db: AdshDatabase) : TurnStore {
      * dsh 的 /compact：把会话历史替换成「一条检查点 + 保留的最近若干条」。
      * id 会重新分配，相对顺序不变；检查点用 name = COMPACT_MARKER 标记，UI 可单独折叠展示。
      */
-    suspend fun replaceHistory(
+    override suspend fun replaceHistory(
         conversationId: Long,
         prefix: List<MessageEntity>,
         keep: List<MessageEntity>,
@@ -971,9 +1032,12 @@ class ConversationRepository(private val db: AdshDatabase) : TurnStore {
                 planMode = source.planMode,
             )
         )
-        history.take(cut + 1).forEach { message ->
+        val copied = history.take(cut + 1)
+        copied.forEach { message ->
             db.messages().insert(message.copy(id = 0, conversationId = id))
         }
+        // 只复制了前缀：统计要按复制过来的这些轮次重算（不能照抄原会话的聚合值）
+        recomputeStats(id, copied)
         return id
     }
 

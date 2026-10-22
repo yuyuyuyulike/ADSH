@@ -1,5 +1,12 @@
 package com.adsh.app.ui.chat
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import com.adsh.app.core.llm.SessionStats
 import com.adsh.app.ui.blocks.DshIcons
 import com.adsh.app.ui.blocks.dshProminentShadow
+import com.adsh.app.ui.blocks.lightCardShadow
 import com.adsh.app.ui.theme.LocalDshPalette
 import com.adsh.app.ui.kit.DshSpacing
 import com.adsh.app.ui.kit.dshClickable
@@ -228,12 +236,31 @@ internal fun SessionUsagePanel(stats: SessionStats) {
 }
 
 /**
+ * 这一排此刻有没有内容：有输出速度或 token 才算跑过一轮。
+ *
+ * 可见性判据只此一处 —— [ChatViewModel] 用它决定会话载入时是否武装入场动画
+ * （[ChatUiState.dockEntranceArmed]），UI 用它做 [ChatStatsDock] 的可见性，两边不许各写一份。
+ */
+internal fun statsDockVisible(stats: SessionStats): Boolean =
+    stats.tps > 0 || stats.billedInput > 0 || stats.completionTokens > 0
+
+/**
  * 输入框下方那一排（dsh 的 composer dock + ContextMeter）：
  * 「N 轮 M 步 · TPS」、「{total} tok」、「上下文圆环 + NN%」三个胶囊，居中、间距 12。
  *
  * 与 dsh 同一条可见性规则：一步都没跑、也没有 token 时**不画统计与用量**（dsh 的
  * stats.steps === 0 && !hasTokens 直接 return null）；上下文占用要拿到窗口大小才画。
  * 三个都不画时整排不存在 —— 不为没用到的能力常驻一行。
+ *
+ * **footer 的高度就是滚动容器的布局输入**（底部内边距 = 实测 footer 高度 + 间距），所以这一排
+ * 一旦出现，任何高度变化都会经贴底滚动把会话流顶一下。由此两条硬规矩：
+ *
+ *  - 入场只在 [animateEntrance] 为 true 时播 150ms 的淡入 + 高度展开，且**只有新会话第一轮
+ *    跑出统计的那一次**该播；启动恢复 / 切到已有统计的旧会话时组态层已经给出 false ——
+ *    那一帧胶囊本来就该在，播动画等于给 footer 做一次高度动画。
+ *  - 出现之后的数字 / 胶囊增删**只做宽度变化，不做高度动画**（没有 animateContentSize，
+ *    也没有 expand/shrink）：它们只影响自己这一行，footer 高度不变，会话流不重贴底。
+ *    退出永远瞬间（[ExitTransition.None]）：那一帧不是被抽屉盖着，就是会话已经清空。
  */
 @Composable
 internal fun ChatStatsDock(
@@ -242,6 +269,11 @@ internal fun ChatStatsDock(
     /** 当前打开的那一个浮层（[ChatOverlays.open]）；本排的取值是 OPEN_STATS / OPEN_USAGE / OPEN_CONTEXT */
     open: String?,
     onToggle: (String) -> Unit,
+    /**
+     * 这一次出现要不要播入场动画。由 [ChatUiState.dockEntranceArmed] 决定：
+     * 会话载入时统计为空才武装（= 新会话第一轮），其余时候必须瞬间出现。
+     */
+    animateEntrance: Boolean = true,
 ) {
     // 胶囊标签只有**输出速度**（几轮几步在详情卡里），没有速度就没得显示 —— 与 dsh 的 compact
     // 形态同一条（TimePill 的 speed === null 就不画）。
@@ -250,12 +282,29 @@ internal fun ChatStatsDock(
     // 上下文占用跟它们**同步出现**（用户口径：不要提前出来，一轮对话完成后再出现）：
     // 「有 token」或「有速度」都意味着这一轮真的跑起来了
     val showMeter = context.window > 0 && (showStats || showTokens)
-    if (!showStats && !showTokens && !showMeter) return
-    Row(
-        Modifier.fillMaxWidth().padding(top = DshSpacing.Md),
-        horizontalArrangement = Arrangement.spacedBy(DshSpacing.Xxxl, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
+    val visible = statsDockVisible(stats)
+    // 初始状态 = 首次组合时的可见性：启动恢复 / 切会话的第一帧里胶囊本来就该在，
+    // 不能从 false 开始播一遍展开（那是旧实现「加载会话时页面上滚一下」的来源）。
+    val visibleState = remember { MutableTransitionState(visible) }
+    visibleState.targetState = visible
+    AnimatedVisibility(
+        visibleState = visibleState,
+        enter = if (animateEntrance) {
+            fadeIn(tween(DOCK_FADE_MS)) +
+                expandVertically(tween(DOCK_FADE_MS), expandFrom = Alignment.Top)
+        } else {
+            EnterTransition.None
+        },
+        exit = ExitTransition.None,
     ) {
+        Row(
+            // 行高由胶囊的固定高度决定；数字 / 宽度变化不参与任何布局动画。
+            Modifier
+                .fillMaxWidth()
+                .padding(top = DshSpacing.Md),
+            horizontalArrangement = Arrangement.spacedBy(DshSpacing.Xxxl, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
         if (showStats) {
             DockPill(
                 icon = DshIcons.Gauge,
@@ -294,8 +343,12 @@ internal fun ChatStatsDock(
                 onToggle = { onToggle(OPEN_CONTEXT) },
             )
         }
+        }
     }
 }
+
+/** dock 出现 / 消失的过渡时长（与重连条同一档：150ms） */
+private const val DOCK_FADE_MS = 150
 
 /** dsh StatsPills.module.css 的 trigger 圆角：--dsw-radius-sm = 8 */
 internal val StatsDockPillRadius = 8.dp
@@ -321,6 +374,7 @@ private fun DockPill(
         val ink = if (expanded) palette.labelSecondary else palette.labelTertiary
         Row(
             modifier = Modifier
+                .lightCardShadow(RoundedCornerShape(StatsDockPillRadius))
                 .clip(RoundedCornerShape(StatsDockPillRadius))
                 .background(if (expanded) palette.hover else Color.Transparent)
                 .dshClickable(interactionSource = dshInteraction(), onClick = onClick)
@@ -330,7 +384,16 @@ private fun DockPill(
             horizontalArrangement = Arrangement.spacedBy(DshSpacing.Lg),
         ) {
             Icon(icon, contentDescription = null, tint = ink, modifier = Modifier.size(14.dp))
-            Text(label, fontSize = 12.sp, lineHeight = 20.sp, color = ink, maxLines = 1, softWrap = false)
+            Text(
+                text = label,
+                // dsh 的 .pill 是 font-variant-numeric: tabular-nums —— 数字等宽，数字变化时胶囊宽度不抖
+                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                fontSize = 12.sp,
+                lineHeight = 20.sp,
+                color = ink,
+                maxLines = 1,
+                softWrap = false,
+            )
         }
         if (expanded) {
             DshPopup(onDismiss = onClick, alignStart = alignStart, margin = DshSpacing.Xxxl, anchor = anchor, content = panel)

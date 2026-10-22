@@ -47,6 +47,7 @@ import com.adsh.app.ui.blocks.DshIcons
 import com.adsh.app.ui.blocks.RailTerminalBlock
 import com.adsh.app.ui.blocks.TERMINAL_GUTTER_PANEL
 import com.adsh.app.ui.blocks.TERMINAL_OUTPUT_MAX_HEIGHT_PANEL
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
 import com.adsh.app.ui.theme.DshPalette
 import com.adsh.app.ui.theme.LocalDshPalette
 import com.adsh.app.ui.kit.DshSpacing
@@ -129,10 +130,12 @@ fun JobsControl(
         if (open) {
             DshPopup(onDismiss = { open = false }, below = true, gap = 5.dp, anchor = anchor) {
                 DshMenuCard(modifier = Modifier.width(cardWidth).heightIn(max = 440.dp)) {
+                    val listScroll = rememberScrollState()
                     Column(
                         Modifier
                             .fillMaxWidth()
-                            .verticalScroll(rememberScrollState())
+                            .dshVerticalScrollbar(listScroll, elevated = true)
+                            .verticalScroll(listScroll)
                             .padding(DshSpacing.Sm),
                     ) {
                         if (live.isNotEmpty()) {
@@ -481,7 +484,7 @@ private fun KillButton(armed: Boolean, failed: Boolean, onArm: () -> Unit, onCon
         ) {
             Icon(
                 imageVector = DshIcons.Stop,
-                contentDescription = if (failed) "停止失败" else "停止任务",
+                contentDescription = if (failed) "stop failed" else "stop job",
                 tint = if (failed) palette.errorLabel else palette.labelSecondary,
                 modifier = Modifier.size(10.dp),
             )

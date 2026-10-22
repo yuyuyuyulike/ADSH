@@ -204,6 +204,28 @@ class FakeTurnStore : TurnStore {
     override fun hasInjected(conversationId: Long): Boolean =
         synchronized(lock) { inboxes[conversationId]?.isNotEmpty() == true }
 
+    override suspend fun replaceHistory(
+        conversationId: Long,
+        prefix: List<MessageEntity>,
+        keep: List<MessageEntity>,
+        checkpoint: String,
+    ) {
+        synchronized(lock) {
+            all.removeAll { it.conversationId == conversationId }
+            prefix.forEach { insert(it.copy(conversationId = conversationId)) }
+            insert(
+                MessageEntity(
+                    conversationId = conversationId,
+                    role = "user",
+                    content = checkpoint,
+                    name = ConversationRepository.COMPACT_MARKER,
+                    createdAt = 0,
+                ),
+            )
+            keep.forEach { insert(it.copy(conversationId = conversationId)) }
+        }
+    }
+
     override suspend fun claimInjected(conversationId: Long, openTurn: Boolean): List<MessageEntity> {
         val pending = synchronized(lock) {
             val queue = inboxes.remove(conversationId) ?: return emptyList()
@@ -231,8 +253,7 @@ class FakeTurnStore : TurnStore {
  * 设置项的内存替身。默认值刻意是「最素的一档」：
  *  - deepseek 路由（providerId = 内置 DeepSeek `+` 模型名 deepseek-flash）→ 走 DeepSeek 分支；
  *  - reasoningEffort = 空串 → 请求里 `reasoning_effort` 与 `thinking` 两个字段都不发；
- *  - systemPromptSuffix = 空串 → 系统提示词就是 [PromptAssembler.STATIC_SYSTEM_PROMPT] 原文；
- *  - lastWorkspacePath = null（没有绑定工作区）。
+ *  - systemPromptSuffix = 空串 → 系统提示词就是 [PromptAssembler.STATIC_SYSTEM_PROMPT] 原文。
  *
  * 每一项都是 `var`/`val`，测试按需要改；不要在这里加生产里没有的行为。
  */
@@ -256,8 +277,6 @@ class FakeTurnSettings(
     var bashMaxTimeout: Long = 600_000,
 ) : TurnSettings {
 
-    override var lastWorkspacePath: String? = null
-
     override fun providerConfig(): ProviderConfig = config
 
     override val providerRoute: String get() = route
@@ -273,4 +292,9 @@ class FakeTurnSettings(
     override val bashTimeoutMs: Long get() = bashTimeout
 
     override val bashMaxTimeoutMs: Long get() = bashMaxTimeout
+
+    /** 上下文窗口（token）：压缩用例按需调小；默认与设置里的出厂值一致。 */
+    var window: Long = 1_000_000L
+
+    override val contextWindow: Long get() = window
 }

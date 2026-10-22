@@ -14,6 +14,10 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
@@ -59,7 +63,6 @@ import com.adsh.app.ui.blocks.hasAllFilesAccess
 import com.adsh.app.ui.chat.ChatScreen
 import com.adsh.app.ui.chat.ChatUiState
 import com.adsh.app.ui.chat.ChatViewModel
-import com.adsh.app.ui.chat.TranscriptScrollbarHitRegion
 import com.adsh.app.ui.chat.edgeTouchGuard
 import com.adsh.app.ui.chat.importAttachments
 import com.adsh.app.ui.panels.TerminalPanel
@@ -110,12 +113,32 @@ fun AppRoot(viewModel: ChatViewModel) {
 
     // 启动恢复期间只画底色：bootstrap（读设置 / 上次会话 / 工作区）完成之前不画“新会话”首页 ——
     // 否则会先闪一帧空会话再跳到上次那条会话（用户口径：看着太割裂）。
-    if (!state.booted) {
+    //
+    // **窗口 insets 也要等**：Compose 的 WindowInsets 在第一次 attach 后、第一次 insets 分发前是 0。
+    // 此时画会话页，首帧按 insets=0 布局，下一帧再补状态栏 / 导航栏内边距 —— 视口一下矮 200+px，
+    // 贴底把整页往上滚一格（用户报的「加载会话时还有上滚的迹象」）。等就绪再画，首帧即终态。
+    // 兜底：全屏 / 无系统栏的设备 insets 恒为 0，500ms 后照常放行。
+    val insetsDensity = LocalDensity.current
+    val insetsReady = WindowInsets.statusBars.getTop(insetsDensity) > 0 ||
+        WindowInsets.navigationBars.getBottom(insetsDensity) > 0 ||
+        WindowInsets.ime.getBottom(insetsDensity) > 0
+    var insetsTimedOut by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(500)
+        insetsTimedOut = true
+    }
+    if (!state.booted || (!insetsReady && !insetsTimedOut)) {
         StartupRestoring()
         return
     }
 
     val context = LocalContext.current
+    // 侧栏动作失败的提示（置顶 / 取消置顶失败）：失败时侧栏没有别的动静，静默会读成按钮坏了
+    LaunchedEffect(Unit) {
+        viewModel.notices.collect { text ->
+            android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
     val stack = remember { mutableStateListOf<Dest>(Dest.Conversation) }
     // 设置页当前分栏：设置页会被终端/文件预览页顶掉（组合销毁），状态必须托管在这里，
     // 否则从「功能 → 终端 → 终端会话」返回时会跳回第 0 栏（通用设置）。
@@ -214,7 +237,7 @@ fun AppRoot(viewModel: ChatViewModel) {
             if (!hasAllFilesAccess()) {
                 android.widget.Toast.makeText(
                     context,
-                    "要读到手机里的文件，请打开「所有文件访问」权限（设置 → 功能 → 权限 里可以一键跳转）",
+                    "To read files on this device, enable the \"All files access\" permission (Settings > Features > Permissions)",
                     android.widget.Toast.LENGTH_LONG,
                 ).show()
             }
@@ -227,6 +250,14 @@ fun AppRoot(viewModel: ChatViewModel) {
     // 文件预览的「窗口」：打开一个文件加一个标签，✕ 关掉；最后一个关掉就退出预览页
     val previewTabs = remember { mutableStateListOf<String>() }
     var previewIndex by remember { mutableStateOf(0) }   // 0 = 工作区文件（目录树）
+
+    // 预览标签是**会话作用域**的（dsh 的右侧栏按会话存）：换会话（含换工作区、分叉、分支）时
+    // 旧标签必须清掉 —— 它们是另一个工作区的绝对路径，不清就会在打开文件浏览时直接停在
+    // 上一条会话的文件上（目录树都不出现，也没有打开目录树那一帧）。
+    LaunchedEffect(state.conversationId) {
+        previewTabs.clear()
+        previewIndex = 0
+    }
 
     fun openPreview(path: String) {
         var index = previewTabs.indexOf(path)
@@ -300,7 +331,7 @@ fun AppRoot(viewModel: ChatViewModel) {
             // 边缘防误触（见 EdgeTouchGuard.kt）：贴边那一条里的手指整根不参与手势。
             // 必须放在抽屉手势**之前**：同一元素上的多个 pointerInput 按链序派发，Initial 阶段
             // 最外层先跑 —— 先摘掉的手指，后面的手势节点就再也看不到它了。宽度固定 12dp。
-            .edgeTouchGuard(edgeGuardDp.dp) { TranscriptScrollbarHitRegion.bounds }
+            .edgeTouchGuard(edgeGuardDp.dp)
             // 抽屉手势挂在根层：抽屉拉出后左滑落在抽屉那一侧也能关回去。覆盖页在最上面时
             // 手势自动停用（见 drawerDrag 的 enabled）—— 否则右滑会把看不见的抽屉悄悄拉开。
             .then(drawerDrag)
@@ -331,6 +362,8 @@ fun AppRoot(viewModel: ChatViewModel) {
             onRenameConversation = viewModel::renameConversation,
             onForkConversation = { id -> viewModel.forkConversation(id); closeDrawer(afterContentSwap = true) },
             onDeleteConversation = { id -> viewModel.deleteConversation(id) },
+            // 置顶 / 取消置顶（dsh 的 pinSession）：侧栏行序与行尾标记都由 Conversations 的 pinned 驱动
+            onSetPinned = viewModel::setPinned,
             onAddWorkspace = { closeDrawer(); addWorkspace() },
             onDeleteWorkspace = viewModel::deleteWorkspace,
             // 点「设置」不收起抽屉：设置页会从右侧盖上来，退出后抽屉还在原处
@@ -362,9 +395,8 @@ fun AppRoot(viewModel: ChatViewModel) {
                     ambientShadowColor = Color.Black
                     spotShadowColor = Color.Black
                     // 抽屉的轻微景深：**直接作用在主内容图层上**（RenderEffect），半径跟着进度连续长。
-                    // 早先是 haze 的 hazeBlur 覆层：它每帧要把主内容重新渲染进离屏层再模糊，
-                    // 长会话里抽屉动画掉帧的主因。图层自身的 RenderEffect 复用已缓存的内容纹理，
-                    // 只多一次 GPU 模糊，半径变化不触发重组、也没有覆层与内容之间的颜色差。
+                    // 图层自身的纹理复用让每帧只多一次 GPU 模糊、半径变化不触发重组；覆层方案
+                    // 每帧要把主内容重渲进离屏层，是长会话抽屉动画掉帧的根因（不要再加回来）。
                     if (android.os.Build.VERSION.SDK_INT >= 31 && progress > 0f) {
                         renderEffect = BlurEffect(
                             radiusX = drawerBlurRadiusPx * progress,
@@ -384,7 +416,9 @@ fun AppRoot(viewModel: ChatViewModel) {
                         onOpenWorkspaceFiles = { push(Dest.WorkspaceFiles) },
                         workspaces = workspaceList,
                         onAddWorkspace = addWorkspace,
-                        onPickWorkspace = viewModel::openWorkspace,
+                        // 输入框外的工作区 chip：选了哪个工作区就从它那里开一条新会话（dsh 的
+                        // selectWorkspace → openWorkspace → connectWorkspace，复用该工作区的空白会话）。
+                        onPickWorkspace = viewModel::newConversationIn,
                         modelGroups = viewModel.availableModelGroups,
                         onSelectModel = viewModel::setModel,
                         balances = balances,
@@ -397,6 +431,7 @@ fun AppRoot(viewModel: ChatViewModel) {
                         onTogglePlan = viewModel::togglePlan,       // Plan chip
                         onSetPlan = viewModel::setPlan,             // /plan、/plan off
                         onCompact = viewModel::compact,             // /compact
+                        onExportSession = viewModel::exportSession, // /export：落盘到当前会话的工作区
                         question = question,
                         onAnswer = viewModel::answerQuestion,
                         onSkipQuestion = viewModel::skipQuestion,
@@ -405,8 +440,6 @@ fun AppRoot(viewModel: ChatViewModel) {
                         onRejectApproval = viewModel::rejectApproval,
                         onBranch = viewModel::branchAt,
                         onClearQueued = viewModel::clearQueued,
-                        // 掉线重连条被点了一下 → 立刻重发（dsh 的 connection.reconnect()）
-                        onRetryConnection = viewModel::retryConnection,
                         // 轮尾交付物卡片：dsh 的 PresentedFileCard.onPreview → openFile(path)。
                         // 交付物存的是**声明时**的路径（工作区相对路径，工作区外是绝对路径），
                         // 这里按当前工作区解析成绝对路径再进预览（dsh 的 resolveWorkspacePath(cwd, path)）。
@@ -502,10 +535,14 @@ private fun PanelLayer(
     // 1 = 完全在屏幕右边（屏幕外），0 = 就位
     val slide = remember { Animatable(1f) }
     LaunchedEffect(onScreen) {
-        slide.animateTo(
-            targetValue = if (onScreen) 0f else 1f,
-            animationSpec = tween(SLIDE_MS, easing = FastOutSlowInEasing),
-        )
+        if (onScreen) {
+            // 每次「推上来」都必须是一整段滑入：组合若被复用（上一位移已经收在 0），
+            // 直接从当前位置 animateTo(0) 会变成「没有动画」。先归位到屏幕外再滑进来。
+            slide.snapTo(1f)
+            slide.animateTo(0f, animationSpec = tween(SLIDE_MS, easing = FastOutSlowInEasing))
+        } else {
+            slide.animateTo(1f, animationSpec = tween(SLIDE_MS, easing = FastOutSlowInEasing))
+        }
     }
     Box(
         Modifier

@@ -48,7 +48,6 @@ class LiveRunStateTest {
         liveTurnId = 1L,
         turnEvents = toolEvents,
         liveTurn = foldLiveTurn(toolEvents),
-        connection = ConnectionState.Reconnecting(2, "网络抖了一下"),
         runStartedAt = 1_000L,
         queuedCount = 2,
     )
@@ -75,7 +74,6 @@ class LiveRunStateTest {
         assertFalse(opened.toolArgsFlowing)
         assertEquals(0, opened.liveTurn.calls.size)
         assertEquals(0, opened.turnEvents.size)
-        assertEquals(ConnectionState.Idle, opened.connection)
         assertEquals(0L, opened.runStartedAt)
         assertEquals(other, opened.conversationId)
         // 会话级的那几项跟着会话走，不许被复位
@@ -107,11 +105,40 @@ class LiveRunStateTest {
         assertEquals(1L, resumed.liveTurnId)
         assertEquals(foldLiveTurn(toolEvents), resumed.liveTurn)
         assertEquals(toolEvents, resumed.turnEvents)
-        assertEquals(ConnectionState.Reconnecting(2, "网络抖了一下"), resumed.connection)
         assertEquals(1_000L, resumed.runStartedAt)
         assertEquals(2, resumed.queuedCount)
         // 正文以**库**为准：切回来时刚读过一次，库里那份比登记表里那份全（含已定稿的步）
         assertEquals(listOf(message(1, "问"), message(2, "定稿的那一步")), resumed.messages)
+    }
+
+    /**
+     * 用户报的第二件事的回归：Agent 干活时切走再切回来，输入框下方三个胶囊会消失，等下一次
+     * 工具调用结算才回来。根因是**统计比库新**：库里的 stats 只在收尾落盘（finishTurn → setStats），
+     * 一轮在跑时切回来若拿库值（首轮就是零值），三个胶囊的可见判据都不成立。
+     */
+    @Test
+    fun switchingBackToRunningConversationKeepsLiveStatsAndContext() {
+        val liveStats = SessionStats(
+            turns = 2,
+            steps = 6,
+            promptTokens = 12_000,
+            completionTokens = 900,
+            cacheHitTokens = 4_000,
+            toolMillis = 2_500,
+        )
+        val liveContext = ContextUsage(system = 8_400, tools = 120, messages = 3_100, window = 128_000)
+        val live = liveRun.copy(stats = liveStats, context = liveContext)
+        val fromLibrary = ChatUiState(
+            conversationId = running,
+            messages = listOf(message(1, "问")),
+            stats = SessionStats(),
+            context = ContextUsage(window = 128_000),
+        )
+
+        val resumed = fromLibrary.resetTurnFields(queuedCount = 0).withLiveRun(live)
+
+        assertEquals(liveStats, resumed.stats)
+        assertEquals(liveContext, resumed.context)
     }
 
     /** 这条会话没有在跑的一轮：盖回来的必须是复位后的样子，不是别处的残留 */
@@ -122,6 +149,23 @@ class LiveRunStateTest {
         assertEquals(fresh, fresh.withLiveRun(null))
         assertEquals(4, fresh.queuedCount)
         assertFalse(fresh.sending)
+    }
+
+    /**
+     * 空态（删掉当前会话 / 没有可落工作区的 clearMain）没有胶囊：入场动画的武装位必须一起清掉，
+     * 否则下一条会话载入后第一次出现胶囊会带着上一条会话的旧决定播一次高度动画。
+     */
+    @Test
+    fun clearedMainDisarmsTheDockEntrance() {
+        val armed = ChatUiState(
+            conversationId = running,
+            messages = listOf(message(1, "问")),
+            stats = SessionStats(turns = 1),
+            dockEntranceArmed = true,
+        )
+        val cleared = armed.clearedMain()
+        assertFalse(cleared.dockEntranceArmed)
+        assertNull(cleared.conversationId)
     }
 
     /** 复位**只动轮内字段**：模型 / 字号 / 对话显示 / 上下文占用这些是全局视图，不许被清 */

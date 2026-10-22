@@ -3,6 +3,7 @@ package com.adsh.app.core.agent
 import com.adsh.app.core.llm.ChatEvent
 import com.adsh.app.core.session.SessionLog
 import com.adsh.app.core.tools.RunCodeTool
+import com.adsh.app.core.tools.ToolOutcome
 import com.adsh.app.core.workspace.Workspace
 import com.adsh.app.core.workspace.WorkspaceForm
 import kotlinx.coroutines.flow.toList
@@ -32,15 +33,16 @@ class AgentLoopToolRoundTest {
 
     private class Recorded(val name: String, val argsJson: String, val callId: String?, val execToken: Long)
 
-    /** 假的工具世界：记下每次调用，按脚本吐输出。 */
+    /** 假的工具世界：记下每次调用，按脚本吐输出（规范化结果与生产同一条形状）。 */
     private class FakeTurnTools(
         override val workspace: Workspace,
         private val outputs: List<Pair<String, Boolean>> = listOf("ok-output" to false),
     ) : TurnTools {
         val calls = ArrayList<Recorded>()
-        override suspend fun run(name: String, argsJson: String, callId: String?, execToken: Long): Pair<String, Boolean> {
+        override suspend fun run(name: String, argsJson: String, callId: String?, execToken: Long): ToolOutcome {
             calls.add(Recorded(name, argsJson, callId, execToken))
-            return outputs.getOrElse(calls.size - 1) { outputs.last() }
+            val (text, isError) = outputs.getOrElse(calls.size - 1) { outputs.last() }
+            return ToolOutcome(ok = !isError, text = text, value = null)
         }
     }
 

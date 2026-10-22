@@ -29,15 +29,6 @@ class TranscriptFlowGapTest {
         createdAt = id * 10,
     )
 
-    private fun toolResult(id: Long, callId: String) = MessageEntity(
-        id = id,
-        conversationId = 1,
-        role = "tool",
-        content = "ok",
-        toolCallId = callId,
-        createdAt = id * 10,
-    )
-
     @Test
     fun simpleAnswerSitsTwelveBelowTheUserMessage() {
         val items = buildChatItems(messages = listOf(user(1), answer(2)), liveTurnId = null)

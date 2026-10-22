@@ -107,6 +107,7 @@ fun RailTerminalBlock(
 ) {
     val palette = LocalDshPalette.current
     val context = LocalContext.current
+    val outputScroll = rememberScrollState()
     val settle = remember(output, running, error) { terminalSettleOf(output, running, error) }
     val outputBlank = output.isNullOrBlank()
     // dsh 的 body 判据：跑动且还没打印 → 只有横幅；收尾后没输出 → 画「无输出」占位
@@ -210,7 +211,8 @@ fun RailTerminalBlock(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = outputMaxHeight)
-                        .verticalScroll(rememberScrollState())
+                        .dshVerticalScrollbar(outputScroll, elevated = true, bottomInset = 8.dp)
+                        .verticalScroll(outputScroll)
                         .padding(start = gutter, end = DshSpacing.Section, top = DshSpacing.Xxxl, bottom = DshSpacing.Xxxl),
                     fontFamily = FontFamily.Monospace,
                     fontSize = 12.sp,

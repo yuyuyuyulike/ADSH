@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
 import com.adsh.app.ui.theme.LocalDshPalette
 
 /**
@@ -71,11 +72,13 @@ internal fun PrivacyConsentGate(onAccept: () -> Unit) {
                     fontSize = 12.sp,
                     color = palette.labelTertiary,
                 )
+                val scroll = rememberScrollState()
                 Column(
                     Modifier
                         .fillMaxWidth()
                         .heightIn(max = 420.dp)
-                        .verticalScroll(rememberScrollState()),
+                        .dshVerticalScrollbar(scroll, elevated = true)
+                        .verticalScroll(scroll),
                 ) {
                     PRIVACY_POLICY_TEXT.forEach { (title, text) ->
                         Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = palette.labelPrimary)

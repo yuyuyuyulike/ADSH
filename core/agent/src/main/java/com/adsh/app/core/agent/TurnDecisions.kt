@@ -117,9 +117,9 @@ internal fun callSignature(name: String, argsJson: String): String = name + "\u0
  */
 internal fun loopGuardReason(name: String, repeat: Int, callsThisTurn: Int): String? = when {
     repeat > REPEAT_CALL_LIMIT ->
-        "同一个工具调用重复了 " + repeat + " 次（" + name + "），疑似陷入循环"
+        "the same tool call repeated " + repeat + " times (" + name + "); possible loop"
     callsThisTurn > MAX_TOOL_CALLS_PER_TURN ->
-        "单条消息的工具调用总数超过 " + MAX_TOOL_CALLS_PER_TURN + " 次"
+        "tool calls in one message exceed " + MAX_TOOL_CALLS_PER_TURN
     else -> null
 }
 
@@ -158,4 +158,4 @@ internal fun hasInterruptedContent(answer: CharSequence, reasoning: CharSequence
  * （dsh 的「未开始就取消」路径也是这么收尾的）。
  */
 internal fun stoppedText(reason: String): String =
-    "（已停下：" + reason + "。可以换个说法让我继续，或先检查工作区状态）"
+    "(stopped: " + reason + ". Rephrase to continue, or check the workspace state first.)"

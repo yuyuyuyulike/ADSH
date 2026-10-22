@@ -26,7 +26,7 @@ class AbortedSubCallTest {
         val settled = abortedSubCall(started, startedAt = 1_000L, now = 2_500L)
         assertFalse("必须落到结束态（界面据此停流光）", settled.running)
         assertFalse("abort 是失败", settled.ok)
-        assertEquals("tool call aborted", settled.result)
+        assertEquals("Error: tool call aborted", settled.result)
         assertEquals(1_500L, settled.durationMs)
         assertEquals("7:ptc:1", settled.id)
         assertEquals("bash", settled.name)

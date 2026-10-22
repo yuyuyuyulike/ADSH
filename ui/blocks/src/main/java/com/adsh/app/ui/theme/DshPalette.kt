@@ -82,12 +82,25 @@ data class DshPalette(
     val labelCaption: Color,
     val borderL1: Color,
     val borderL2: Color,
+    /** --dsw-alias-border-l2-darkmode-thin（附件缩略图 / 图片框的描边；深色下比 borderL2 更淡） */
+    val borderL2DarkmodeThin: Color,
     val borderL3: Color,
     val borderL4: Color,
-    /** --dsw-alias-scrollbar-bg-l1（会话滚动条 thumb：浅 neutral-200 / 深 neutral-700） */
+    /** --dsw-alias-button-contrast-fill（附件卡片右上角移除键的深/浅反差底） */
+    val buttonContrastFill: Color,
+    /** --dsw-alias-label-primary-inverted（反差底上的图标色） */
+    val labelPrimaryInverted: Color,
+    /**
+     * --dsw-alias-scrollbar-bg-l1（会话滚动条 thumb：深 neutral-700）。
+     *
+     * 浅色下**有意比 dsh 的 neutral-200 深一档**（用 neutral-400）：dsh 原值在会话底色上几乎看不见，
+     * 手机小屏 + 5dp 宽度下更糟（用户口径：浅色模式看不清）。深色档保持 dsh 原值。
+     */
     val scrollbarThumb: Color,
     /** --dsw-alias-scrollbar-hover-l1（悬停色；ADSH 滚动条非交互，保留以免令牌镜像缺角） */
     val scrollbarThumbHover: Color,
+    /** --dsw-alias-scrollbar-bg-l2（抬升面：菜单 / 弹层 / 任务面板 / 卡片；浅色同样加深到 neutral-400、深 = neutral-600） */
+    val scrollbarThumbL2: Color,
     /** --dsw-alias-interactive-bg-hover (#2631480f) */
     val hover: Color,
     val hoverSolid: Color,
@@ -168,11 +181,19 @@ val LightDshPalette = DshPalette(
     labelCaption = Color(0xFFADB2B8),
     borderL1 = Color(0x0A000000),
     borderL2 = Color(0x1A000000),
+    // --dsw-alias-border-l2-darkmode-thin = rgba(0, 0, 0, 0.1)
+    borderL2DarkmodeThin = Color(0x1A000000),
     borderL3 = Color(0x1F000000),
     borderL4 = Color(0x29000000),
-    // --dsw-alias-scrollbar-bg-l1 / -hover-l1 = neutral-200 / neutral-300
-    scrollbarThumb = Color(0xFFE5E5E5),
-    scrollbarThumbHover = Color(0xFFD4D4D4),
+    // --dsw-alias-button-contrast-fill = --dsw-static-neutral-bluish-700 = rgb(97, 102, 107)
+    buttonContrastFill = Color(0xFF61666B),
+    // --dsw-alias-label-primary-inverted = --dsw-static-neutral-bluish-00 = rgb(255, 255, 255)
+    labelPrimaryInverted = Color(0xFFFFFFFF),
+    // --dsw-alias-scrollbar-bg-l1 / -hover-l1：dsh 是 neutral-200 / 300，浅色下太淡（见字段 KDoc）
+    scrollbarThumb = Color(0xFFA2A4A6),
+    scrollbarThumbHover = Color(0xFF8C8F93),
+    // --dsw-alias-scrollbar-bg-l2：同上，浅色档 l1/l2 用同一个加深值
+    scrollbarThumbL2 = Color(0xFFA2A4A6),
     hover = Color(0x0F263148),
     hoverSolid = Color(0xFFF1F3F5),
     accent = Color(0xFF4176E6),
@@ -240,11 +261,19 @@ val DarkDshPalette = DshPalette(
     labelCaption = Color(0xFF81858C),
     borderL1 = Color(0x0AFFFFFF),
     borderL2 = Color(0x1AFFFFFF),
+    // --dsw-alias-border-l2-darkmode-thin = rgba(255, 255, 255, 0.06)
+    borderL2DarkmodeThin = Color(0x0FFFFFFF),
     borderL3 = Color(0x1FFFFFFF),
     borderL4 = Color(0x29FFFFFF),
+    // --dsw-alias-button-contrast-fill = --dsw-static-neutral-bluish-50 = rgb(249, 250, 251)
+    buttonContrastFill = Color(0xFFF9FAFB),
+    // --dsw-alias-label-primary-inverted = --dsw-static-neutral-bluish-800 = rgb(53, 54, 56)
+    labelPrimaryInverted = Color(0xFF353638),
     // --dsw-alias-scrollbar-bg-l1 / -hover-l1 = neutral-700 / neutral-600
     scrollbarThumb = Color(0xFF3C3C3D),
     scrollbarThumbHover = Color(0xFF545557),
+    // --dsw-alias-scrollbar-bg-l2 = neutral-600（深色下抬升面要比 l1 亮一档才看得见）
+    scrollbarThumbL2 = Color(0xFF545557),
     hover = Color(0x14FFFFFF),
     hoverSolid = Color(0xFF353638),
     accent = Color(0xFF4176E6),

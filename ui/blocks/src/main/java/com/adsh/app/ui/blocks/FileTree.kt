@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Notes
@@ -152,7 +153,7 @@ private fun FileTreePanel(rootPath: String, onOpenFile: (String) -> Unit) {
         val failure = error
         if (failure != null) {
             Text(
-                text = "无法读取：" + failure,
+                text = "cannot read: " + failure,
                 modifier = Modifier.padding(DshSpacing.Xxxl),
                 fontSize = 13.sp,
                 color = palette.labelSecondary,
@@ -160,8 +161,10 @@ private fun FileTreePanel(rootPath: String, onOpenFile: (String) -> Unit) {
             return@Column
         }
 
+        val listState = rememberLazyListState()
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().dshVerticalScrollbar(listState),
+            state = listState,
             contentPadding = androidx.compose.foundation.layout.PaddingValues(
                 start = 8.dp,
                 end = 8.dp,
@@ -239,7 +242,7 @@ private fun ToolIconButton(icon: androidx.compose.ui.graphics.vector.ImageVector
 /** 展开状态下的可见节点（目录在前、其余按名字；与 dsh 的 orderEntries 一致） */
 private fun buildTree(root: String, expanded: Set<String>): List<FileNode> {
     val rootFile = File(root)
-    if (!rootFile.isDirectory) throw IllegalStateException("目录不存在：" + root)
+    if (!rootFile.isDirectory) throw IllegalStateException("directory not found: " + root)
     val out = ArrayList<FileNode>()
     fun walk(directory: File, depth: Int) {
         val children = directory.listFiles() ?: return

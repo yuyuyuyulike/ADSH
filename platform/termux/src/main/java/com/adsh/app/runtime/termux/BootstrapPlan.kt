@@ -54,6 +54,47 @@ internal fun installPlan(
     else -> InstallPlan.Installed
 }
 
+/** 全量安装遇到一个已经存在的前缀时的处置 */
+internal sealed interface PrefixInstall {
+    /** 前缀是一棵真实目录：把新 bootstrap 里**缺的东西补进去**，已存在的一律不动 */
+    data object Merge : PrefixInstall
+
+    /** 前缀不存在（或不是真实目录，例如老版本留下的自指链接）：清掉重建 */
+    data object Replace : PrefixInstall
+}
+
+/**
+ * 全量安装要不要删掉旧前缀。
+ *
+ * Termux 官方安装器只在前缀不存在时解压（"$PREFIX already exist" 就直接收工），所以升级
+ * bootstrap 从不会删用户装的东西。ADSH 的 [BootstrapInstaller.INSTALLER_VERSION] 变化会走到
+ * 全量安装；直接 removeTree(prefix) 会连用户 apt 装的包与 dpkg 数据库一起删掉 —— 这超出了
+ * 「更新 bootstrap」的授权范围。
+ *
+ * [Merge] 只**补缺**：已存在的文件一律不动（用户 apt 升级过的库和程序优先于 bootstrap 里的旧
+ * 版本 —— 全量覆盖会把 libc++ 这类库打回 bootstrap 版本，用户装的 chromium 当场链接失败）。
+ * 缺的 SYMLINKS 与 exec 槽位随后由重链接补齐 / 修到当前 nativeLibraryDir。
+ *
+ * 判据用「真实目录」而不是「bin/bash 在」：半坏的前缀（bash 恰好缺了）也应该救，而不是清掉；
+ * 只有符号链接（老方案留下的自指别名）不能合并 —— 往链接目标里写正是旧安装挂 ELOOP 的那条路。
+ */
+internal fun prefixInstallPlan(prefixIsRealDirectory: Boolean): PrefixInstall =
+    if (prefixIsRealDirectory) PrefixInstall.Merge else PrefixInstall.Replace
+
+/**
+ * in-prefix manifest 读不出时，能不能用**前缀外那份副本**（\`filesDir/bootstrap-manifest.properties\`）？
+ *
+ * 副本在每次成功安装后与 in-prefix manifest 一起原子写。它能替代 in-prefix manifest 的唯一前提是
+ * 前缀确实像一棵装好的树（bash 在）——否则「用户删了前缀」会被误判成「已装好」。
+ * 这条路的典型触发是 manifest 写入时进程被杀 / 磁盘故障：树本身完好，副本能把它救回来，
+ * 不会掉进 [InstallPlan.Full] 的 removeTree(prefix)（会删掉用户 apt 装的包与 dpkg 数据库）。
+ */
+internal fun useFallbackManifest(
+    prefixManifestReadable: Boolean,
+    prefixLooksInstalled: Boolean,
+    fallbackReadable: Boolean,
+): Boolean = !prefixManifestReadable && prefixLooksInstalled && fallbackReadable
+
 /**
  * second stage（184 个包的 postinst）需不需要补跑：**脚本在、lock 不在**。
  *

@@ -191,6 +191,10 @@ data class TurnUsage(
     val reasoningTokens: Long = 0,
     /** 本轮总用时（dsh 的 message.turnTime.duration） */
     val runMillis: Long = 0,
+    /** 本轮模型用时合计（各步 completed − start 之和；TPS 的分母由它减首 token 时延得到） */
+    val llmMillis: Long = 0,
+    /** 本轮工具用时合计（各步工具执行耗时之和） */
+    val toolMillis: Long = 0,
     /** 首 token 用时（dsh 的 message.turnTime.ttft） */
     val ttftMillis: Long = 0,
     /** 输出速度（dsh 的 message.turnTime.speed） */
@@ -256,47 +260,63 @@ sealed interface ChatEvent {
     /** 一轮（一次模型请求 + 其后的工具执行）的用量与时延 */
     data class Stats(val stats: SessionStats) : ChatEvent
     /**
-     * 这一步彻底失败了（不可重试：HTTP 4xx、没配密钥……）。**可重试的失败不会走到这里** ——
-     * 它们由 [ChatEvent.Reconnecting] 那条路自动重连（见 `ConnectionRecovery`），
-     * 所以这里不再需要 `retryable` 这个字段（它已经没有任何读者）。
+     * 这一步彻底失败了（重试预算耗尽 / 不可重试的失败：HTTP 4xx、没配密钥……）。
+     * **可重试的失败不走到这里** —— 它们由 [RetryScheduled] 转成 dsh 的会话流重试行。
+     *
+     * [code] 是终态失败的规范化 code（dsh 的 LlmError.code）；自动恢复按它分流：
+     * [CONTEXT_WINDOW_EXCEEDED] 表示请求超出上下文窗口，压缩可以接管重试；其余（含 null）原样透传。
      */
-    data class Failed(val message: String) : ChatEvent
+    data class Failed(val message: String, val code: String? = null) : ChatEvent
 
     /**
-     * 这一步的流断了，正在按 dsh 的退避策略重连（第 [attempt] 次，等 [delayMs] 之后重发）。
-     *
-     * dsh 的 ConnectionController 在丢线时发 `connecting` 状态、由 ConnectionIndicator 显示
-     * 「正在连接」；这里同构：界面据此显示重连条，用户也可以点它立刻重试（dsh 的
-     * `connection.reconnect()`：attempt 归零 + 立刻重试）。
+     * 这一次尝试失败、**已经调度一次重试**（dsh 的 `llm/retry`，log-only 事件）：
+     * [retry] 从 1 起、[maximum] = [LlmRetry.MAX_RETRIES]、[delayMs] 退避时长、
+     * [failure] 是失败原因（界面展开体里的「失败原因」）。界面按 dsh 的 model-retry 行渲染
+     * —— 它是**会话流里的一行**，不是输入框边上的连接条。
      */
-    data class Reconnecting(
-        val attempt: Int,
-        val message: String,
+    data class RetryScheduled(
+        val retry: Int,
+        val maximum: Int,
         val delayMs: Long,
+        val failure: String,
     ) : ChatEvent
 
     /**
-     * **断网了，自动重试已挂起**（dsh 的 `disconnected` 状态 + `setNetworkAvailable`）：
-     * 它和 [Reconnecting] 不是一回事 —— 那个在按退避不停地重试（指示器带点动画），
-     * 这个在等网络回来（指示器是静态的「断开，点此重试」）。
-     *
-     * 为什么要有它：断网时按 500ms/1s/2s… 一路重试只是白打服务端，用户也看不明白在等什么。
-     * dsh 的做法是**网络不可用就暂停重试**，网络一恢复立刻重来（退避序列归零）。
+     * 退避等待结束、下一次请求即将发出（dsh 的 `llm/retry-started`）：同一行从「正在重试」
+     * 切成「已重试模型请求」。重试成功后这一行保持「已重试」（dsh 的恢复上下文行）。
      */
-    data class Disconnected(val message: String) : ChatEvent
+    data class RetryStarted(val retry: Int) : ChatEvent
 
     /**
-     * 重连成功（HTTP 200 已经回来）——dsh 的 `connected`：指示器切成「已恢复」并保留 2 秒。
-     * 它**不代表**这一步的正文完整，只代表连接回来了。
-     */
-    data object Reconnected : ChatEvent
-
-    /**
-     * 重连接下来的这一次请求会**从头生成这一步**：消费者必须把上一次尝试已经收到的
-     * Delta / Reasoning / ToolCallDelta 全部丢掉（[ChatEvent.Reconnected] 之前的那些增量）。
-     *
-     * dsh 的重连是「新的一代以完整快照开场」（a reconnect's first frame is already the whole
-     * truth），客户端不保留断线期间的非持久增量 —— 这里同理：没落库的部分不留。
+     * 重试会**重新生成这一步**：消费者必须把上一次尝试已经收到的 Delta / Reasoning /
+     * ToolCallDelta 全部丢掉（与 dsh 客户端收到 `llm/retry` 时清空 assistant 流一致）。
      */
     data object StreamReset : ChatEvent
+
+    /**
+     * 自动压缩开始（dsh 的 `compaction/start`）：界面把「压缩中」状态亮起来。
+     *
+     * 只有自动触发（[CompactionCause.PRESSURE] / [CompactionCause.OVERFLOW]）走这条通道；
+     * 手动 /compact 由界面自己置状态。
+     */
+    data class CompactionStarted(val cause: CompactionCause) : ChatEvent
+
+    /**
+     * 自动压缩结束（dsh 的 `compaction/end`）。
+     *
+     * [applied] = 是否真的有替换落地；false 表示这次触发什么都没改（历史照旧、界面只需收起压缩中）。
+     */
+    data class CompactionFinished(val cause: CompactionCause, val applied: Boolean) : ChatEvent
+}
+
+/** 压缩的触发原因（dsh 的 CompactionTrigger）。 */
+enum class CompactionCause {
+    /** 用户显式 /compact */
+    MANUAL,
+
+    /** 请求装配前的阈值压力（window × 80%） */
+    PRESSURE,
+
+    /** 模型请求报上下文超限后的强制恢复 */
+    OVERFLOW,
 }

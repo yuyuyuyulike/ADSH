@@ -74,14 +74,14 @@ object EnvSelfCheck {
             # 1) 脚本：安卓 10+ 且 targetSdk >= 29 时，内核 exec 脚本自己那一步就 EACCES
             printf '#!/data/data/com.termux/files/usr/bin/sh\necho "  [1] 脚本直接执行：ok"\n' > "${'$'}probe/probe.sh"
             chmod 755 "${'$'}probe/probe.sh" 2>/dev/null
-            "${'$'}probe/probe.sh" 2>/dev/null || echo "  [1] 脚本直接执行：失败（EACCES —— 只能靠 linker 改写或 shebang 兜底）"
+            "${'$'}probe/probe.sh" 2>/dev/null || echo "  [1] direct script exec: failed (EACCES - only linker rewriting or a shebang fallback works)"
             # 2) ELF：复制一个真实的动态可执行文件到 app 私有目录再执行
             if cp /system/bin/sh "${'$'}probe/probe-elf" 2>/dev/null; then
                 chmod 755 "${'$'}probe/probe-elf" 2>/dev/null
                 "${'$'}probe/probe-elf" -c 'echo "  [2] ELF 直接执行：ok"' 2>/dev/null ||
-                    echo "  [2] ELF 直接执行：失败（EACCES —— 被 app_data_file 的 exec 限制挡住）"
+                    echo "  [2] direct ELF exec: failed (EACCES - blocked by the app_data_file exec restriction)"
             else
-                echo "  [2] ELF 直接执行：跳过（无法把 /system/bin/sh 复制到私有目录）"
+                echo "  [2] direct ELF exec: skipped (cannot copy /system/bin/sh into the private directory)"
             fi
             rm -f "${'$'}probe/probe.sh" "${'$'}probe/probe-elf" "${'$'}probe/.write-probe" 2>/dev/null
         else

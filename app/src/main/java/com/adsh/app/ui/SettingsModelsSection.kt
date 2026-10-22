@@ -55,6 +55,7 @@ import com.adsh.app.ui.blocks.DshCheckbox
 import com.adsh.app.ui.blocks.DshIcons
 import com.adsh.app.ui.blocks.DshModal
 import com.adsh.app.ui.blocks.DshSidebarIcons
+import com.adsh.app.ui.blocks.dshVerticalScrollbar
 import com.adsh.app.ui.chat.DshMenuCard
 import com.adsh.app.ui.chat.DshMenuRow
 import com.adsh.app.ui.chat.DshPopup
@@ -659,12 +660,12 @@ internal fun FetchModelsDialog(
     ) {
         when {
             loading -> Text("正在询问提供方…", fontSize = 13.sp, lineHeight = 20.sp, color = palette.labelSecondary)
-            error != null -> Text("获取失败：" + error, fontSize = 13.sp, lineHeight = 20.sp, color = palette.errorLabel)
+            error != null -> Text("failed to fetch models: " + error, fontSize = 13.sp, lineHeight = 20.sp, color = palette.errorLabel)
             candidates.isEmpty() -> Text(
                 text = if (fetched > 0) {
                     "服务端返回 " + fetched + " 个模型，全部已经在目录里了（无需添加）。"
                 } else {
-                    "该提供方没有列出任何模型，请手动添加。"
+                    "This provider listed no models; add one manually."
                 },
                 fontSize = 13.sp,
                 lineHeight = 20.sp,
@@ -698,8 +699,13 @@ internal fun FetchModelsDialog(
                         textAlign = TextAlign.Center,
                     )
                 }
+                val scroll = rememberScrollState()
                 Column(
-                    Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .dshVerticalScrollbar(scroll, elevated = true)
+                        .verticalScroll(scroll),
                 ) {
                     filtered.forEach { id ->
                         val checked = id in selected
@@ -906,10 +912,13 @@ internal fun CustomProviderEditor(
                                 // **滚动必须发生在卡片内部**：把这个 Modifier 交给 DshMenuCard 自己，
                                 // Surface 的 shape/background 就挂在滚动节点**里面** —— 挂在外面时一滑背景
                                 // 与圆角跟着滚走（「小卡片上方消失了一点、圆角也没了」）。与 Composer 的模型菜单同一写法。
+                                // 菜单卡圆角 16 + 4dp 内边距：thumb 贴边时两端会被圆角裁掉，轨道上下各让 4dp
+                                val scroll = rememberScrollState()
                                 Column(
                                     Modifier
                                         .heightIn(max = 320.dp)
-                                        .verticalScroll(rememberScrollState()),
+                                        .dshVerticalScrollbar(scroll, elevated = true, topInset = 4.dp, bottomInset = 4.dp)
+                                        .verticalScroll(scroll),
                                 ) {
                                     presetChoices.forEach { choice ->
                                         DshMenuRow(
@@ -967,7 +976,7 @@ internal fun CustomProviderEditor(
                 invalid = form.baseInvalid,
             )
             if (form.baseInvalid) {
-                Text("请输入有效的 HTTP 或 HTTPS 地址。", fontSize = 12.sp, lineHeight = 18.sp, color = palette.errorLabel)
+                Text("Enter a valid HTTP or HTTPS URL.", fontSize = 12.sp, lineHeight = 18.sp, color = palette.errorLabel)
             }
         }
 

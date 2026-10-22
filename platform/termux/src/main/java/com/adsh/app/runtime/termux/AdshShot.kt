@@ -90,7 +90,7 @@ internal object AdshShot {
         # headless_shell 只作为兜底，并且渲染完发现没产出时会**自动换另一个再试一次**。
         resolve_browser() {
             if [ -n "${'$'}{ADSH_SHOT_BROWSER:-}" ]; then
-                [ -x "${'$'}{ADSH_SHOT_BROWSER}" ] || die "ADSH_SHOT_BROWSER 不可执行：${'$'}ADSH_SHOT_BROWSER"
+                [ -x "${'$'}{ADSH_SHOT_BROWSER}" ] || die "ADSH_SHOT_BROWSER is not executable: ${'$'}ADSH_SHOT_BROWSER"
                 echo "${'$'}{ADSH_SHOT_BROWSER}"; return 0
             fi
             for name in chromium chromium-browser chrome headless_shell; do
@@ -104,8 +104,8 @@ internal object AdshShot {
         }
 
         need_browser() {
-            browser="$(resolve_browser)" || die "没有找到浏览器。装一个再试：pkg install chromium（或 apt install chromium）；\
-        已经装在别处就用 --browser /path/to/headless_shell 或 ADSH_SHOT_BROWSER=…"
+            browser="$(resolve_browser)" || die "no browser found; install one with pkg install chromium (or apt install chromium); \
+        if it is installed elsewhere, pass --browser /path/to/headless_shell or set ADSH_SHOT_BROWSER=…"
             echo "${'$'}browser"
         }
 
@@ -165,7 +165,7 @@ internal object AdshShot {
             log="${'$'}tmp/adsh-shot-$$.log"
             render "${'$'}1" "${'$'}2" "${'$'}BROWSER" >"${'$'}log" 2>&1
             if [ -s "${'$'}probed" ]; then rm -f "${'$'}log"; return 0; fi
-            echo "${'$'}BROWSER 没有产出文件" >&2
+            echo "${'$'}BROWSER produced no file" >&2
             alt="$(command -v chromium 2>/dev/null || true)"
             [ -z "${'$'}alt" ] && alt="$(command -v headless_shell 2>/dev/null || true)"
             if [ -n "${'$'}alt" ] && [ "${'$'}alt" != "${'$'}BROWSER" ]; then
@@ -207,8 +207,8 @@ internal object AdshShot {
         </body></html>
         HTML
             SIZE="1000x600"; WAIT_MS="3000"; FULL_PAGE=0; PDF=""
-            render_any "file://${'$'}page" "${'$'}png" || die "渲染失败（见上面的浏览器输出）"
-            [ -s "${'$'}png" ] || die "渲染结束但没有产出 PNG：${'$'}png"
+            render_any "file://${'$'}page" "${'$'}png" || die "render failed (see the browser output above)"
+            [ -s "${'$'}png" ] || die "render finished but produced no PNG: ${'$'}png"
             echo "测试页：${'$'}page"
             echo "截图：${'$'}png（$(wc -c < "${'$'}png" | tr -d ' ') 字节）"
         }
@@ -217,7 +217,7 @@ internal object AdshShot {
         [ ${'$'}# -eq 0 ] && { usage; exit 2; }
         case "${'$'}1" in
             -h|--help) usage; exit 0;;
-            --which) resolve_browser || die "没有找到浏览器。装一个：pkg install chromium"; exit 0;;
+            --which) resolve_browser || die "no browser found; install one: pkg install chromium"; exit 0;;
             --check) do_check; exit ${'$'}?;;
         esac
 
@@ -231,17 +231,17 @@ internal object AdshShot {
                 --pdf) PDF="${'$'}2"; shift 2;;
                 --browser) ADSH_SHOT_BROWSER="${'$'}2"; shift 2;;
                 --full-page) FULL_PAGE=1; shift;;
-                -*) die "不认识的选项：${'$'}1（-h 看用法）";;
+                -*) die "unknown option: ${'$'}1 (see -h)";;
                 *) OUT="${'$'}1"; shift;;
             esac
         done
 
-        URL="$(resolve_target "${'$'}TARGET")" || die "既不是存在的路径、也不是带协议的 URL：${'$'}TARGET\
-        （本地文件要写成存在的路径，例如 ./index.html 或 /storage/emulated/0/…/index.html）"
+        URL="$(resolve_target "${'$'}TARGET")" || die "not an existing path and not a URL with a protocol: ${'$'}TARGET\
+        (a local file must be an existing path such as ./index.html or /storage/emulated/0/…/index.html)"
 
         BROWSER="$(need_browser)"
         if [ -n "${'$'}PDF" ]; then
-            [ -n "${'$'}OUT" ] && die "给了 --pdf 就不要再给输出 PNG"
+            [ -n "${'$'}OUT" ] && die "do not pass an output PNG together with --pdf"
             OUT="${'$'}PDF"
         else
             [ -n "${'$'}OUT" ] || OUT="adsh-shot.png"
@@ -255,7 +255,7 @@ internal object AdshShot {
             abs="$(cd "$(dirname "${'$'}OUT")" 2>/dev/null && pwd)/$(basename "${'$'}OUT")"
             echo "输出：${'$'}abs（$(wc -c < "${'$'}OUT" | tr -d ' ') 字节）"
         else
-            die "渲染结束但没有产出文件：${'$'}OUT"
+            die "render finished but produced no file: ${'$'}OUT"
         fi
     """.trimIndent() + "\n"
 

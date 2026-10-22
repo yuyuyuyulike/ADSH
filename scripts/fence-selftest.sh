@@ -6,9 +6,13 @@
 #   D 显式 danger-full-access = 不判决                        E/F 有模式无根 = 失败关闭
 #   G bionic 自传播（env -u LD_PRELOAD 摘不掉）  H 非 bionic 不塞 preload  I chmod 不误报
 #   J shebang 自愈：脚本被拒时改 exec 解释器（自测旋钮 ADSH_SHEBANG_FORCE 复现）
-# 用法：bash scripts/fence-selftest.sh     （40 项全过 = 门闸语义正确）
+#   K 目录项删除/重命名按父目录判决  M 软链 + /.. 先解析软链再回退  N 时间戳写入（utime 家族）
+#   P 内部 pid 标记（ADSH_PID_MARKER）单文件放行：read-only 下也要能写，其他文件仍拒
+# 用法：bash scripts/fence-selftest.sh     （全部 PASS = 门闸语义正确）
 # 坑：测试树必须放在 /tmp **之外**（ADSH_TMP_REDIRECT 会把 /tmp 映射走，放 /tmp 下路径会被 shim 改写）
 set -uo pipefail
+# 编译器可覆盖：桌面默认 gcc，安卓设备上可以用 CC=clang 跑同一套用例
+CC="${CC:-gcc}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d /var/tmp/fence-selftest.XXXXXX)"
 FENCE="$T/libadshfence.so"
@@ -17,8 +21,8 @@ WS="$T/ws"
 export T FENCE TMPMAP WS
 mkdir -p "$WS" "$T/outside" "$TMPMAP"
 cd "$T" || exit 1
-gcc -shared -fPIC -O2 -o "$FENCE" "$ROOT/platform/termux/src/main/cpp/fence.c" -ldl -lpthread 2> "$T/gcc.log" || { echo "BUILD FAILED"; cat "$T/gcc.log"; exit 1; }
-echo "build ok: $(stat -c%s "$FENCE") bytes, gcc warnings $(grep -c warning: "$T/gcc.log")"
+"$CC" -shared -fPIC -O2 -o "$FENCE" "$ROOT/platform/termux/src/main/cpp/fence.c" -ldl -lpthread 2> "$T/gcc.log" || { echo "BUILD FAILED"; cat "$T/gcc.log"; exit 1; }
+echo "build ok: $(stat -c%s "$FENCE") bytes, $CC warnings $(grep -c warning: "$T/gcc.log")"
 
 unset ADSH_FENCE_MODE ADSH_FENCE_ROOTS ADSH_FENCE_MARK ADSH_SHIM_DIAG LD_PRELOAD ADSH_TMP_REDIRECT
 
@@ -75,6 +79,17 @@ probe "E1 写工作区" deny "ADSH_FENCE_MODE=workspace-write ADSH_FENCE_ROOTS="
 
 echo "--- F 未给白名单时的 read-only（fenceEnv 的形状就是 MODE + 空 ROOTS）"
 probe "F1 写工作区" deny "ADSH_FENCE_MODE=read-only" 'echo f > "$WS/f1"'
+
+echo "--- P 内部 pid 标记：ADSH_PID_MARKER 单文件白名单（read-only 下也放行）"
+# App 的 spawn 先创建这个文件，再由子 shell 把 $$ 写进去（杀树根 pid 的来源）。read-only 的
+# 可写根是空的，所以 shim 必须按**单个文件**放行它；同目录的其他文件仍然被拒。
+: > "$T/pidmarker"
+PENV="ADSH_FENCE_MODE=read-only ADSH_FENCE_ROOTS= ADSH_PID_MARKER=$T/pidmarker"
+probe "P1 pid 标记可写（read-only）" allow "$PENV" 'printf %s 12345 > "$T/pidmarker"'
+[ "$(cat "$T/pidmarker" 2>/dev/null)" = 12345 ] && echo "PASS  P1b pid 标记内容真的写进去了" || echo "FAIL  P1b pid 标记内容不对"
+probe "P2 同目录非标记文件仍拒" deny "$PENV" 'echo p > "$T/not-pidmarker"'
+probe "P3 workspace-write 下也放行（白名单之外）" allow "ADSH_FENCE_MODE=workspace-write ADSH_FENCE_ROOTS=$WS ADSH_PID_MARKER=$T/pidmarker-w" 'printf %s 1 > "$T/pidmarker-w"'
+probe "P4 未给 ADSH_PID_MARKER 时（老调用形状）同文件被拒" deny "ADSH_FENCE_MODE=read-only ADSH_FENCE_ROOTS=" 'printf %s 1 > "$T/pidmarker"'
 echo "--- G bionic 自传播：env -u LD_PRELOAD 摘不掉围栏"
 INTERP="$(readelf -l /bin/sh 2>/dev/null | sed -n 's/.*interpreter: \(.*\)\]/\1/p' | head -1)"
 if [ -z "$INTERP" ]; then INTERP="/lib64/ld-linux-x86-64.so.2"; fi
@@ -95,10 +110,18 @@ cp /bin/sh "$T/glibc/sh"
 map_hits() { # map_hits <bionic-linker> <target>
   env ADSH_BIONIC_LINKER="$1" ADSH_FENCE_MODE=read-only ADSH_FENCE_ROOTS= LD_PRELOAD="$FENCE" ADSH_TMP_REDIRECT="$TMPMAP" "$2" -c 'grep -c libadshfence /proc/self/maps' 2>/dev/null
 }
-a=$(map_hits "/system/bin/linker64" "$T/glibc/sh")
 b=$(map_hits "$INTERP" "$(command -v sh)")
-echo "   /glibc/sh 命中=$a（应 0）  普通路径命中=$b（应 >0）"
-if [ "$a" = "0" ]; then echo "PASS  H1 glibc 前缀下的目标不再被塞 bionic preload"; else echo "FAIL  H1 glibc 前缀下仍然挂了 shim（=$a）"; fi
+# H1 需要一个**非 bionic** 的 ELF 来复制（桌面 Linux 的 /bin/sh 才是 glibc）；安卓的 /bin 指向
+# /system/bin、解释器是 linker64，复制出来的还是 bionic ELF，这条只能在桌面验证。
+H1_INTERP="$(readelf -l /bin/sh 2>/dev/null | sed -n 's/.*interpreter: \(.*\)\]/\1/p' | head -1)"
+case "$H1_INTERP" in
+  ""|/system/bin/linker*)
+    echo "SKIP  H1 没有可复制的 glibc ELF（无 readelf 或目标是 bionic 设备）";;
+  *)
+    a=$(map_hits "/system/bin/linker64" "$T/glibc/sh")
+    echo "   /glibc/sh 命中=$a（应 0）  普通路径命中=$b（应 >0）"
+    if [ "$a" = "0" ]; then echo "PASS  H1 glibc 前缀下的目标不再被塞 bionic preload"; else echo "FAIL  H1 glibc 前缀下仍然挂了 shim（=$a）"; fi;;
+esac
 if [ "$b" != "0" ]; then echo "PASS  H2 bionic 目标仍然挂着 shim（=$b）"; else echo "FAIL  H2 普通 bionic 目标的 shim 被摘掉了"; fi
 
 # H3（按真机 diag 补的）：**脚本**的 shebang 里写的是**解释器程序**，不是加载器 ——
@@ -134,7 +157,7 @@ int main(int argc, char **argv) {
   return 0;
 }
 JEOF
-gcc -O2 -o "$T/jinterp" "$T/jinterp.c" 2>/dev/null
+"$CC" -O2 -o "$T/jinterp" "$T/jinterp.c" 2>/dev/null
 
 J1="$T/j1.sh"; printf '#!/bin/sh\necho J1-OK "$@"\n' > "$J1"; chmod 755 "$J1"
 out=$(j_env "ADSH_SHEBANG_FORCE=1" "\"$J1\" a b" 2>&1)
@@ -170,6 +193,63 @@ grep -q '\[shebang\]' "$T/j8.log" 2>/dev/null && echo "FAIL  J8 空解释器也�
 
 j_env "ADSH_SHEBANG_FORCE=1 ADSH_SHIM_DIAG=$T/j9.log" "\"$J1\"" >/dev/null 2>&1
 grep -q '\[shebang\]' "$T/j9.log" 2>/dev/null && echo "PASS  J9 自愈留下诊断行" || echo "FAIL  J9 诊断里没有 [shebang] 行"
+
+echo "--- K 目录项删除 / 重命名：按父目录判决（指向只读根的软链不许变成删不掉的残留）"
+KENV="ADSH_FENCE_MODE=workspace-write ADSH_FENCE_ROOTS=$WS:$TMPMAP"
+rm -f "$T/outside/k4" "$T/outside/k5victim" "$T/outside/k7" "$WS/k5link" "$WS/k1" "$WS/k2" "$WS/k2.bak" "$WS/k6" "$WS/k7"
+rm -rf "$WS/k3"
+touch "$T/outside/k4" "$T/outside/k5victim" "$T/outside/k7"
+probe "K1 删指向工作区外的软链（删链接本身）" allow "$KENV" 'ln -s "$T/outside" "$WS/k1"; rm -f "$WS/k1"; [ ! -e "$WS/k1" ]'
+probe "K2 重命名指向工作区外的软链" allow "$KENV" 'ln -s "$T/outside" "$WS/k2"; mv "$WS/k2" "$WS/k2.bak"; [ -L "$WS/k2.bak" ]'
+probe "K3 rm -rf 含外出软链的目录" allow "$KENV" 'mkdir -p "$WS/k3"; ln -s "$T/outside" "$WS/k3/link"; rm -rf "$WS/k3"; [ ! -e "$WS/k3" ]'
+probe "K4 对照：删工作区外普通文件仍拒" deny "$KENV" 'rm -f "$T/outside/k4"'
+probe "K5 穿软链删目标文件仍拒" deny "$KENV" 'ln -s "$T/outside" "$WS/k5link"; rm -f "$WS/k5link/k5victim"'
+probe "K6 对照：把工作区文件移出去仍拒" deny "$KENV" 'touch "$WS/k6"; mv "$WS/k6" "$T/outside/k6"'
+probe "K7 对照：把工作区外文件移进来仍拒" deny "$KENV" 'mv "$T/outside/k7" "$WS/k7"'
+
+echo "--- M 符号链接 + /..：写判决必须先解析软链再回退 .."
+MENV="ADSH_FENCE_MODE=workspace-write ADSH_FENCE_ROOTS=$WS:$TMPMAP"
+rm -rf "$WS/m"
+mkdir -p "$WS/m"
+ln -s "$T/outside" "$WS/m/link"
+probe "M1 穿 link 再 /.. 写链接目标父目录" deny "$MENV" 'echo x > "$WS/m/link/../m1.txt"'
+probe "M2 穿 link 再 /.. 写回链接目标内" deny "$MENV" 'echo x > "$WS/m/link/../outside/m2.txt"'
+probe "M3 对照：直写工作区" allow "$MENV" 'echo x > "$WS/m/ok.txt"'
+probe "M4 对照：纯 .. 逃逸" deny "$MENV" 'echo x > "$WS/../outside/m4.txt"'
+probe "M5 删除同路径仍拒" deny "$MENV" 'rm -f "$WS/m/link/../m5.txt"'
+
+echo "--- N 时间戳写入：utime / utimes / futimes 也受围栏管辖"
+cat > "$T/nprobe.c" <<'NEOF'
+#include <stdio.h>
+#include <sys/time.h>
+#include <utime.h>
+/* bionic 只在 __ANDROID_API__ >= 26 时声明 futimes；设备上它一定存在（minSdk 26） */
+extern int futimes(int fd, const struct timeval times[2]);
+int main(int argc, char **argv) {
+    if (argc < 3) return 2;
+    struct timeval tv[2] = {{1000000000, 0}, {1000000000, 0}};
+    struct utimbuf ub = {1000000000, 1000000000};
+    if (argv[1][0] == 'u') return utime(argv[2], &ub) == 0 ? 0 : 1;
+    if (argv[1][0] == 's') return utimes(argv[2], tv) == 0 ? 0 : 1;
+    if (argv[1][0] == 'f') {
+        FILE *fp = fopen(argv[2], "r");
+        if (fp == NULL) return 2;
+        int rc = futimes(fileno(fp), tv);
+        fclose(fp);
+        return rc == 0 ? 0 : 1;
+    }
+    return 2;
+}
+NEOF
+"$CC" -O2 -o "$T/nprobe" "$T/nprobe.c" 2>/dev/null
+NENV="ADSH_FENCE_MODE=workspace-write ADSH_FENCE_ROOTS=$WS:$TMPMAP"
+touch "$T/outside/n1" "$T/outside/n2" "$T/outside/n3" "$T/outside/n6" "$WS/n4"
+probe "N1 utime 工作区外" deny "$NENV" '"$T/nprobe" u "$T/outside/n1"'
+probe "N2 utimes 工作区外" deny "$NENV" '"$T/nprobe" s "$T/outside/n2"'
+probe "N3 futimes 工作区外" deny "$NENV" '"$T/nprobe" f "$T/outside/n3"'
+probe "N4 utimes 工作区内" allow "$NENV" '"$T/nprobe" s "$WS/n4"'
+probe "N5 read-only：utime 工作区内" deny "ADSH_FENCE_MODE=read-only ADSH_FENCE_ROOTS=" '"$T/nprobe" u "$WS/n4"'
+probe "N6 对照：完全权限下 utime 工作区外" allow "ADSH_FENCE_MODE=danger-full-access ADSH_FENCE_ROOTS=" '"$T/nprobe" u "$T/outside/n6"'
 
 echo "--- L 模拟存储（FUSE）固有约束的提示（测试报告 3.1）"
 # L1 需要一条「路径在 /storage、/sdcard、/mnt、/media 下、且调用真的 EPERM/EACCES」的场景。

@@ -1,6 +1,6 @@
 package com.adsh.app.core.agent
 
-import com.adsh.app.core.tools.ToolConcurrency
+import com.adsh.app.core.tools.ToolRegistry
 import com.adsh.app.core.tools.ToolSdk
 import com.adsh.app.core.workspace.Workspace
 import com.adsh.app.core.workspace.WorkspaceForm
@@ -31,7 +31,6 @@ class PromptAssemblerTest {
             extraSuffix = "",
             filePolicy = mode,
             planMode = planMode,
-            previousWorkspacePath = null,
         )
 
     /** 系统提示词正文（稳定段：身份 / 规则 / SDK / 指令文件链 / 工作目录） */
@@ -92,7 +91,7 @@ class PromptAssemblerTest {
         }
     }
 
-    /** 工作区路径只在 `env:android-termux` 快照里出现一次（系统提示词是静态的，没有它） */
+    /** 工作区路径只在 `环境细则` 快照里出现一次（系统提示词是静态的，没有它） */
     @Test
     fun workspacePathLivesInTheEnvSnapshotOnly() {
         modes.forEach { mode ->
@@ -100,17 +99,12 @@ class PromptAssemblerTest {
             assertEquals("system prompt must not carry the cwd (" + mode + ")", 0, count(parts.system, cwd))
             val env = parts.injections.first { it.label == PromptAssembler.LABEL_ENV }.text
             assertEquals("workspace path once in the env snapshot (" + mode + ")", 1, count(env, cwd))
-            assertTrue(env.contains("The bound workspace is " + cwd + " ("))
+            assertTrue(env.contains("The bound workspace is " + cwd + "."))
         }
-        // 换过工作区：新的快照里补一句「从 X 到 Y」
-        val moved = PromptAssembler.buildParts(
-            workspace = Workspace(WorkspaceForm.REAL_PATH, root, "ws"),
-            extraSuffix = "",
-            filePolicy = "workspace-write",
-            planMode = false,
-            previousWorkspacePath = "/old/ws",
-        ).injections.first { it.label == PromptAssembler.LABEL_ENV }.text
-        assertTrue(moved.contains("The workspace moved from /old/ws to " + cwd + "."))
+        // 工作区变化通知已删除（用户点名）：快照只写当前工作区，不写「从哪来」——
+        // 数据源是全局设置、跨会话会造假叙述，且旧快照本来就有 supersedes 抬头。
+        val env = parts("workspace-write").injections.first { it.label == PromptAssembler.LABEL_ENV }.text
+        assertFalse(env.contains("workspace moved"))
     }
 
     @Test
@@ -161,6 +155,21 @@ class PromptAssemblerTest {
     }
 
     /**
+     * 随包预置的 glibc 运行时只能写进**环境细则**（静态段不许出现本机安装物）：
+     * 模型必须先知道外部 glibc 二进制要用 `grun` 起，否则它按常规 `./tool` 直接 exec，
+     * 拿到的是「required file not found」（PT_INTERP 指向 Android 上不存在的 /lib/ld-linux）。
+     */
+    @Test
+    fun envNamesTheBundledGlibcRunner() {
+        modes.forEach { mode ->
+            val env = injections(mode).getValue(PromptAssembler.LABEL_ENV)
+            assertTrue("grun must be named in the env snapshot (" + mode + ")", env.contains("`grun ./tool`"))
+            assertFalse("the static system prompt must stay free of host-local facts (" + mode + ")",
+                assemble(mode).contains("grun"))
+        }
+    }
+
+    /**
      * （审查报告 F1/F2）：**可写根与「装包能不能用」按当前策略说真话**。
      *
      * **只有一句「workspace-write 可以改工作区下的文件」不够**：真实可写集合是四个根
@@ -191,7 +200,8 @@ class PromptAssemblerTest {
 
         val full = injections("danger-full-access").getValue(PromptAssembler.LABEL_ENV)
         assertTrue("danger-full-access keeps the dsh sentence", full.contains("need no extra flags"))
-        assertTrue("danger-full-access says there is no fence list", full.contains("no \$ADSH_FENCE_ROOTS list is exported"))
+        // full-access 不再输出可写根 bullet（策略段已声明不围栏，OS 权限另说）；别再说「整机可写」
+        assertFalse("no writable-roots claim under full access", full.contains("Writable roots"))
 
         // 策略段也要点明「可写根不止工作区」（正文在紧跟着的 env 段里）
         assertTrue(
@@ -242,10 +252,10 @@ class PromptAssemblerTest {
         // T4：bash 的结果是字段，不是正文里的 [exit code: N]
         assertTrue("bash result fields are named", text.contains("read `exitCode`, `timedOut`, `stdout` and `stderr`"))
         assertFalse("the marker-in-the-stream claim must be gone", text.contains("A bash result ends with a status marker"))
-        // F9：只有两档更宽模式 —— 「最窄的更宽模式」这种粒度说法不许再回到提示词里
+        // 升级流程是策略事实，住在 runtime-context 的 file-policy 段（静态句只指过去）
         assertTrue(
-            "the escalation matches the shim wording",
-            text.contains("the narrowest wider mode that suffices"),
+            "the static rules point at the policy section for escalation",
+            text.contains("the runtime context's file-policy section says how to retry a denial once"),
         )
         assertFalse("no invented per-task escalation limit", text.contains("At most one escalation per task"))
         // 两档更宽模式由 SDK 声明点名（升级那句不再重复举例，见 escalationProcedureAppearsExactlyOnce）
@@ -256,7 +266,7 @@ class PromptAssemblerTest {
         // S9（测试报告 2.2）：没有 Node 内置，也**没有任何宿主 API** ——
         // 缺的全局对象必须点名，否则模型只能靠 ReferenceError 一个一个试出来
         assertTrue("Node built-ins are declared absent", text.contains("every Node.js built-in (`require`"))
-        assertTrue("timers are declared absent", text.contains("no timers at all (`setTimeout`"))
+        assertTrue("timers are declared absent", text.contains("no timers (`setTimeout`, `queueMicrotask`)"))
         assertTrue(
             "network and encoders are declared absent",
             text.contains("no encoders (`TextEncoder`, `TextDecoder`, `atob`, `btoa`)"),
@@ -285,8 +295,6 @@ class PromptAssemblerTest {
             text.contains("nothing there can be executed"),
         )
         assertTrue("the fs hint line is named", text.contains("`[fs: ...]` line"))
-        // 报告 3.4：网络偶发超时，重试一次再报失败
-        assertTrue("transient network failure is described", text.contains("retry once before reporting a failure"))
         // X3：数据边界
         // X3 + A6：绝对化只针对**无意泄露**，唯一允许的拷贝目标是用户点名的那一个
         assertTrue("credentials are off-limits by default", text.contains("may be checked for existence but is off-limits otherwise"))
@@ -317,7 +325,7 @@ class PromptAssemblerTest {
         // S4：safe / mutating 的清单从调度器生成，不是各写一份
         assertTrue(
             "every parallel-safe tool is named in the SDK section",
-            ToolConcurrency.safeToolList.all { text.contains("`" + it + "`") },
+            ToolRegistry.parallelSafeNames.all { text.contains("`" + it + "`") },
         )
         assertTrue("bash is named as exclusive", text.contains("Mutating, and therefore exclusive: `bash`, `write`, `edit`"))
         // S2：计划模式怎么判断（快照里有 plan 段 = 在计划模式里），且不许引用那段的原文
@@ -361,15 +369,9 @@ class PromptAssemblerTest {
         // （dsh-tool-present/lib/index.js 的描述与 {turn, files} 里都没有），ADSH 的回执也回到
         // dsh 的 Presented <path>。留下的这句只说事实：不拒绝，搬进工作区是模型自己的活。
         assertTrue(
-            "present's missing root check is stated",
-            fenced.contains("`present` does not reject a path outside the workspace") &&
-                fenced.contains("is your job, not the tool's") &&
-                !fenced.contains("warns when it is outside"),
-        )
-        assertTrue(
             "\$ADSH_WORKSPACE is tied to the bound workspace",
-            fenced.contains("exported as \$ADSH_WORKSPACE to commands that run in the workspace") &&
-                fenced.contains("a `workdir` override is exported instead"),
+            fenced.contains("\$ADSH_WORKSPACE is the working directory of each") &&
+                fenced.contains("its `workdir` override when one is set"),
         )
         // 硬链接两种结局都打 [fs:]（退化成复制 / 建不出来），所以这句从
         // 「静默退化」改成「平台没有硬链接，哪条路都点名」
@@ -406,14 +408,10 @@ class PromptAssemblerTest {
         // 这一句说的是 promote（超时转后台继续跑），不是「超时杀掉命令」——
         // 后者与 bash 工具说明里那句 "moves to the background as a job instead of being killed" 相反。
         assertTrue("the no-numbers line still states the promote semantics", fenced.contains("is **not killed**"))
-        assertTrue("it points at the up-front background lane", fenced.contains("run_in_background: true"))
-        // 被杀的命令**保留已经产出的输出**（timedOut=true, exitCode=null,
-        // stdout="MARKER_EARLY\n"）—— "输出丢失"是错的，还与 Working rules 冲突
         assertTrue(
-            "a killed command keeps what it already printed",
-            assembleAll("workspace-write").contains("whatever output the command already produced"),
+            "promote points at the job tools",
+            fenced.contains("tools.job_output") && fenced.contains("tools.job_kill"),
         )
-        assertFalse("the false \"output is lost\" claim is gone", fenced.contains("output is lost"))
         // marker 与退出码的关系在两处必须一致（可写根那条也曾写成"必然非零退出"）
         assertTrue(
             "the denial criterion is the path + exit code",
@@ -426,6 +424,30 @@ class PromptAssemblerTest {
         assertFalse(fenced.contains("the default here is"))
     }
 
+    /**
+     * 用户口径：`环境细则` 只留**平台事实与决策依据** —— 「工具装好了」「git 配好了」
+     * 「网络偶尔不稳、重试一次」这类非必有信息，以及同类环境轶事都不要写进去。
+     */
+    @Test
+    fun envDetailsKeepOnlyLoadBearingFacts() {
+        modes.forEach { mode ->
+            val env = injections(mode).getValue(PromptAssembler.LABEL_ENV)
+            assertTrue("段名是 Environment（" + mode + "）", env.startsWith("## Environment"))
+            listOf(
+                "Compilers and",
+                "ordinary Unix tooling",
+                "safe.directory",
+                "Network access works but is occasionally flaky",
+                "--max-time",
+                "retry once before reporting a failure",
+                "Workspace files are owned by Android's media provider",
+                "/data/local/tmp",
+            ).forEach { gone ->
+                assertFalse("环境细则里不该再有「" + gone + "」（" + mode + "）", env.contains(gone))
+            }
+        }
+    }
+
     /** 升级流程只写一遍（从 bash / edit / write 三处上移到跨工具规则段） */
     @Test
     fun escalationProcedureAppearsExactlyOnce() {
@@ -434,9 +456,9 @@ class PromptAssemblerTest {
             // 流程本身只写一次；这里数的是「那句话」而不是某个措辞 ——
             // 批准提示怎么被触发（同一次调用里带着 justification 重试）只有这一处说。
             assertEquals(
-                "escalation rule must appear exactly once (" + mode + ")",
+                "escalation pointer must appear exactly once (" + mode + ")",
                 1,
-                count(system, "the approval prompt it raises is how the user consents"),
+                count(system, "the runtime context's file-policy section says how to retry a denial once"),
             )
             // 这句话在两处出现，各说一件事：跨工具规则段给的是**判据**
             // （怎么和 FUSE 限制 / ENOENT 分开），策略段给的是**模式事实**；都不重复流程。
@@ -450,8 +472,8 @@ class PromptAssemblerTest {
         }
         assertFalse("bash description no longer carries the procedure", ToolSdk.BASH_DESCRIPTION.contains("sandbox_permissions"))
         assertFalse("bash description no longer carries the marker", ToolSdk.BASH_DESCRIPTION.contains("[sandbox:"))
-        assertFalse("edit description no longer carries the procedure", ToolSdk.description("edit").contains("sandbox_permissions"))
-        assertFalse("write description no longer carries the procedure", ToolSdk.description("write").contains("sandbox_permissions"))
+        assertFalse("edit description no longer carries the procedure", ToolSdk.specs.first { it.name == "edit" }.description.contains("sandbox_permissions"))
+        assertFalse("write description no longer carries the procedure", ToolSdk.specs.first { it.name == "write" }.description.contains("sandbox_permissions"))
         assertFalse(
             "the seven-line escalation paragraph must not come back",
             assemble("workspace-write").contains("Do not detour through chat to ask permission first"),
@@ -510,8 +532,8 @@ class PromptAssemblerTest {
      */
     @Test
     fun grepDoesNotClaimASmallerVisibleSet() {
-        assertFalse(ToolSdk.description("grep").contains("skips hidden and ignored paths"))
-        assertTrue(ToolSdk.description("glob").contains("hidden and ignored files"))
+        assertFalse(ToolSdk.specs.first { it.name == "grep" }.description.contains("skips hidden and ignored paths"))
+        assertTrue(ToolSdk.specs.first { it.name == "glob" }.description.contains("hidden and ignored files"))
     }
 
     /**
@@ -529,7 +551,7 @@ class PromptAssemblerTest {
             assertEquals(
                 "the workspace pointer must appear once only (" + mode + ")",
                 1,
-                count(system, "named in the runtime context"),
+                count(system, "the workspace, if one is bound, is named in the runtime context"),
             )
             assertEquals(
                 // 文案是 dsh 原文（Long output is truncated to its tail; …），仍然是「只讲一次」
@@ -538,9 +560,9 @@ class PromptAssemblerTest {
                 count(system.lowercase(), "truncated to its tail"),
             )
             assertEquals(
-                "the escalation note points at the rules instead of restating them (" + mode + ")",
+                "the escalation note points at the policy section instead of restating it (" + mode + ")",
                 1,
-                count(system, "their use is the one-shot retry described under Working rules"),
+                count(system, "the runtime context's file-policy section describes their use"),
             )
             assertFalse(
                 "the per-tool escalation doc comments must be gone (" + mode + ")",
@@ -632,7 +654,7 @@ class PromptAssemblerTest {
             // 跨工具规则段（「重活去 scratch」）必须能在稳定段里直接提到它。
             listOf(
                 "Current DSH file policy",
-                "Android / Termux environment",
+                "## Environment",
                 "You are in plan mode",
                 "Writable roots",
                 "Package installation into",
@@ -686,8 +708,8 @@ class PromptAssemblerTest {
         // 拼成一条：抬头一次、各段按顺序
         val combined = PromptAssembler.snapshotText(plan.values.joinToString("\n\n"))
         assertEquals(1, count(combined, PromptAssembler.RUNTIME_CONTEXT_PREAMBLE))
-        assertTrue(combined.indexOf("Current DSH file policy") < combined.indexOf("## Android / Termux environment"))
-        assertTrue(combined.indexOf("## Android / Termux environment") < combined.indexOf("You are in plan mode."))
+        assertTrue(combined.indexOf("Current DSH file policy") < combined.indexOf("## Environment"))
+        assertTrue(combined.indexOf("## Environment") < combined.indexOf("You are in plan mode."))
     }
 
     /** 注入的交付方式必须与「正文在不在系统提示词里」一致（错了就是重复注入或漏注入） */
@@ -696,7 +718,6 @@ class PromptAssemblerTest {
         val parts = PromptAssembler.buildParts(
             workspace = Workspace(WorkspaceForm.REAL_PATH, root, "ws"),
             extraSuffix = "自定义后缀",
-            previousWorkspacePath = null,
             filePolicy = "workspace-write",
             planMode = false,
         )
@@ -726,7 +747,6 @@ class PromptAssemblerTest {
             extraSuffix = "",
             filePolicy = "read-only",
             planMode = false,
-            previousWorkspacePath = null,
         )
         val unbound = PromptAssembler.buildParts(
             workspace = null,
@@ -761,12 +781,12 @@ class PromptAssemblerTest {
         assertFalse("私有工作区没有执行位限制", env.contains("no executable bit"))
     }
 
-    /** read-only 下围栏照样挂着：ADSH_FENCE_ROOTS 是「存在但为空」，不是 absent */
+    /** 可写根清单如实：workspace-write 导出，read-only 不导出（fence.c 只在 roots 非空时给这个变量） */
     @Test
-    fun readOnlyFenceRootsArePresentButEmpty() {
+    fun readOnlyDoesNotPretendToExportTheRootsVariable() {
         val env = injections("workspace-write").getValue(PromptAssembler.LABEL_ENV)
-        assertTrue("空可写根要说成「存在但为空」", env.contains("set but empty"))
-        assertFalse("不许说 read-only 下变量不存在", env.contains("absent** when there are no writable"))
+        assertTrue("workspace-write 要说清单是怎么导出的", env.contains("\$ADSH_FENCE_ROOTS (read-only exports none)"))
+        assertFalse("不许再写「存在但为空」", env.contains("set but empty"))
     }
 
     /** 换到没有 AGENTS.md 的工作区后，「无指令」基线只写一次（空 body 也要算 unchanged） */
@@ -791,14 +811,12 @@ class PromptAssemblerTest {
             extraSuffix = "",
             filePolicy = "read-only",
             planMode = false,
-            previousWorkspacePath = "/somewhere/else",
         )
         val b = PromptAssembler.buildParts(
             workspace = Workspace(WorkspaceForm.REAL_PATH, root, "ws"),
             extraSuffix = "",
             filePolicy = "danger-full-access",
             planMode = true,
-            previousWorkspacePath = null,
         )
         assertEquals("策略 / 计划 / 工作区历史都不许改变稳定段", a.system, b.system)
         listOf(

@@ -13,10 +13,7 @@ import org.junit.Test
  * 这一层是「信息动态注入」的判据所在，错了的表现很难在真机上复现：
  *  - 该追加却就地改 → 前缀缓存整段作废（系统提示词没变，历史却从中间被改写）；
  *  - 该就地改却追加 → 界面上同一条注入越堆越多；
- *  - 漏一条通知 → 模型拿着旧策略继续干活。
- *
- * （用户点名）：所有快照段拼成**一条**消息（dsh 的 joinContextSections），
- * 抬头 "Current runtime context. …" 只出现一次 —— 下面第一条测试就钉着这句话。
+ *  - 快照里混进叙述 → 与 dsh 的 `joinContextSections` 不一致（叙述是**独立 user 消息**）。
  */
 class ContextLedgerTest {
 
@@ -31,7 +28,7 @@ class ContextLedgerTest {
     private val env = PromptAssembler.Injection(
         label = PromptAssembler.LABEL_ENV,
         form = PromptAssembler.FORM_SNAPSHOT,
-        text = "## Android / Termux environment",
+        text = "## 环境细则",
         delivery = PromptAssembler.Delivery.MESSAGE,
     )
     private val plan = PromptAssembler.Injection(
@@ -41,23 +38,30 @@ class ContextLedgerTest {
         delivery = PromptAssembler.Delivery.MESSAGE,
     )
 
-    private val snapshotLabel = PromptAssembler.LABEL_SANDBOX_POLICY + "、" + PromptAssembler.LABEL_ENV
-    private val planSnapshotLabel = snapshotLabel + "、" + PromptAssembler.LABEL_PLAN_POLICY
+    private val snapshotLabel = PromptAssembler.LABEL_ENV
+    private val planSnapshotLabel = PromptAssembler.LABEL_ENV + "·plan"
 
-    /** 上一条快照行（name = 组合标签，正文 = 拼好的那一条消息） */
-    private fun snapshotRow(id: Long, mode: String, withPlan: Boolean = false, notes: List<String> = emptyList()): Row {
+    private fun snapshotText(mode: String, withPlan: Boolean = false): String {
         val sections = listOf(PromptAssembler.sandboxPolicyText(mode), env.text)
-        return Row(
-            id = id,
-            text = PromptAssembler.snapshotText(
-                section = (if (withPlan) sections + plan.text else sections).joinToString("\n\n"),
-                notes = notes,
-            ),
-            form = PromptAssembler.FORM_SNAPSHOT,
+        return PromptAssembler.snapshotText(
+            (if (withPlan) sections + plan.text else sections).joinToString("\n\n"),
         )
     }
 
-    private fun latestOf(rows: Map<String, Row>): (String) -> Row? = { rows[it] }
+    private fun snapshotRow(id: Long, mode: String, withPlan: Boolean = false): Row =
+        Row(id, snapshotText(mode, withPlan), PromptAssembler.FORM_SNAPSHOT)
+
+    private fun planNow(
+        previousSnapshot: Row? = null,
+        previousInstructions: Row? = null,
+        named: Map<String, Row> = emptyMap(),
+        injections: List<PromptAssembler.Injection>,
+    ): List<Write> = ContextLedger.plan(
+        previousSnapshot = previousSnapshot,
+        previousInstructions = previousInstructions,
+        previousDisplay = named,
+        injections = injections,
+    )
 
     private fun count(text: String, needle: String): Int {
         var index = 0
@@ -70,13 +74,10 @@ class ContextLedgerTest {
         }
     }
 
-    /**
-     * 会话第一次发送：**一条**快照，抬头只出现一次，各段按顺序都在里面
-     * （sandbox:policy 与 env 各一条会让同一句抬头重复两遍）。
-     */
+    /** 会话第一次发送：一条快照，抬头只出现一次，各段按顺序 */
     @Test
     fun firstSendWritesOneCombinedSnapshot() {
-        val writes = ContextLedger.plan(latestOf(emptyMap()), listOf(policy("workspace-write"), env))
+        val writes = planNow(injections = listOf(policy("workspace-write"), env))
         assertEquals(1, writes.size)
         val append = writes[0] as Write.Append
         assertEquals(snapshotLabel, append.label)
@@ -84,59 +85,49 @@ class ContextLedgerTest {
         assertEquals(PromptAssembler.RUNTIME_CONTEXT_PREAMBLE, append.text.substringBefore("\n\n"))
         assertEquals("抬头只出现一次", 1, count(append.text, PromptAssembler.RUNTIME_CONTEXT_PREAMBLE))
         assertTrue(append.text.contains("Current DSH file policy: workspace-write"))
-        assertTrue(append.text.contains("## Android / Termux environment"))
-        assertTrue("策略段在环境段之前", append.text.indexOf("Current DSH") < append.text.indexOf("## Android"))
+        assertTrue(append.text.contains("## 环境细则"))
+        assertTrue("策略段在环境段之前", append.text.indexOf("Current DSH") < append.text.indexOf("## 环境细则"))
     }
 
     /** 第二次发送内容没变：一个字都不写（不然每发一条消息就多一条注入） */
     @Test
     fun unchangedSnapshotsWriteNothing() {
-        val rows = mapOf(snapshotLabel to snapshotRow(1, "workspace-write"))
-        assertEquals(emptyList<Write>(), ContextLedger.plan(latestOf(rows), listOf(policy("workspace-write"), env)))
+        val rows = planNow(
+            previousSnapshot = snapshotRow(1, "workspace-write"),
+            injections = listOf(policy("workspace-write"), env),
+        )
+        assertEquals(emptyList<Write>(), rows)
     }
 
     /**
-     * 权限预设换了：**只写一条** —— dsh 那句「从 X 换成 Y」并进新快照的抬头下
-     * （「通知一行 + 快照一行」说的是同一件事，不许拆成两条）。
+     * 权限预设换了：**只追加一条新快照**，没有「从 X 换成 Y」的叙述 ——
+     * dsh 的沙箱策略段只有「当前策略」正文（packages/sandbox/sandbox-policy/src/index.ts:42-56），
+     * 变化就是 retained 文本不同 → 追加。
      */
     @Test
-    fun policySwitchWritesOneMergedSnapshot() {
-        val rows = mapOf(snapshotLabel to snapshotRow(7, "workspace-write"))
-        val writes = ContextLedger.plan(latestOf(rows), listOf(policy("danger-full-access"), env))
+    fun policyChangeAppendsNewSnapshotWithoutNarration() {
+        val writes = planNow(
+            previousSnapshot = snapshotRow(7, "workspace-write"),
+            injections = listOf(policy("danger-full-access"), env),
+        )
         assertEquals(1, writes.size)
         val append = writes[0] as Write.Append
-        assertEquals(snapshotLabel, append.label)
-        assertTrue(
-            "变化说明并进快照正文",
-            append.text.contains(
-                "The DSH file policy changed from \"workspace-write\" to \"danger-full-access\" (changed by the user).",
-            ),
-        )
         assertTrue(append.text.contains("Current DSH file policy: danger-full-access"))
-        assertTrue("说明在抬头之后、正文之前", append.text.indexOf("changed from") < append.text.indexOf("Current DSH"))
+        assertFalse(append.text.contains("changed from"))
         assertEquals("抬头仍然只有一次", 1, count(append.text, PromptAssembler.RUNTIME_CONTEXT_PREAMBLE))
     }
 
-    /**
-     * 带说明的那一条写完之后，下一轮内容没变就**一个字都不写**：说明只解释这一次变化，
-     * 它不是内容；拿整串去比的话，带说明的那一条每轮都会被再写一遍（老代码就有这个毛病）。
-     */
+    /** 快照身份按 form 找：上一轮有哪些段不影响「这是不是同一条快照」 */
     @Test
-    fun notedSnapshotIsNotRewrittenNextRound() {
-        val rows = mapOf(
-            snapshotLabel to snapshotRow(
-                id = 8,
-                mode = "danger-full-access",
-                notes = listOf(ContextLedger.policySwitchNotice("workspace-write", "danger-full-access")),
-            ),
+    fun previousSnapshotIsFoundByFormNotByLabel() {
+        val writes = planNow(
+            previousSnapshot = Row(11, snapshotText("workspace-write"), PromptAssembler.FORM_SNAPSHOT),
+            injections = listOf(policy("workspace-write"), env),
         )
-        assertEquals(
-            emptyList<Write>(),
-            ContextLedger.plan(latestOf(rows), listOf(policy("danger-full-access"), env)),
-        )
+        assertEquals(emptyList<Write>(), writes)
     }
 
-    /** 展示行（指令文件链 / 自定义后缀）内容变了就地换，不往时间线上堆 */
+    /** 展示行（自定义后缀）内容变了就地换，不往时间线上堆 */
     @Test
     fun displayRowsAreReplacedInPlace() {
         val injection = PromptAssembler.Injection(
@@ -145,9 +136,9 @@ class ContextLedgerTest {
             text = "新的后缀",
             delivery = PromptAssembler.Delivery.DISPLAY,
         )
-        val writes = ContextLedger.plan(
-            latestOf(mapOf("system-prompt-suffix" to Row(42, "旧的后缀", "notice"))),
-            listOf(injection),
+        val writes = planNow(
+            named = mapOf("system-prompt-suffix" to Row(42, "旧的后缀", "notice")),
+            injections = listOf(injection),
         )
         assertEquals(listOf(Write.Replace(42, "新的后缀")), writes)
     }
@@ -155,98 +146,64 @@ class ContextLedgerTest {
     /** 计划模式打开：快照多一段 plan（标签也跟着变成三段），没有叙述 */
     @Test
     fun enteringPlanModeReappendsTheSnapshotWithThePlanSection() {
-        val rows = mapOf(snapshotLabel to snapshotRow(1, "workspace-write"))
-        val writes = ContextLedger.plan(latestOf(rows), listOf(policy("workspace-write"), env, plan))
+        val writes = planNow(
+            previousSnapshot = snapshotRow(1, "workspace-write"),
+            injections = listOf(policy("workspace-write"), env, plan),
+        )
         assertEquals(1, writes.size)
         val append = writes[0] as Write.Append
         assertEquals(planSnapshotLabel, append.label)
         assertTrue(append.text.contains("You are in plan mode."))
-        assertFalse("进入计划模式不需要叙述", append.text.contains(PromptAssembler.PLAN_OFF_NARRATION))
+        assertFalse(append.text.contains(PromptAssembler.PLAN_OFF_NARRATION))
         assertEquals(1, count(append.text, PromptAssembler.RUNTIME_CONTEXT_PREAMBLE))
     }
 
-    /** 计划模式开着、内容没变：不写（不然每发一条消息都追加一条快照） */
+    /** 计划模式开着、内容没变：不写 */
     @Test
     fun planModeSnapshotIsWrittenOnce() {
-        val rows = mapOf(planSnapshotLabel to snapshotRow(3, "workspace-write", withPlan = true))
-        assertEquals(
-            emptyList<Write>(),
-            ContextLedger.plan(latestOf(rows), listOf(policy("workspace-write"), env, plan)),
+        val rows = planNow(
+            previousSnapshot = snapshotRow(3, "workspace-write", withPlan = true),
+            injections = listOf(policy("workspace-write"), env, plan),
         )
+        assertEquals(emptyList<Write>(), rows)
     }
 
     /**
-     * 计划模式关掉：补一条 dsh 的叙述（模型据此知道计划模式结束了），
-     * 且**并进同一条快照**的抬头下 —— 不再单发一行 plan:policy。
+     * 计划模式关掉：快照因为少了 plan 段而追加一条，但**叙述不在快照里** ——
+     * dsh 的 narration 是独立的 user 消息（AgentLoop 写 [com.adsh.app.core.data.ConversationRepository.PLAN_MODE_NARRATION]）。
      */
     @Test
-    fun leavingPlanModeNarratesInTheSameSnapshot() {
-        val rows = mapOf(planSnapshotLabel to snapshotRow(3, "workspace-write", withPlan = true))
-        val writes = ContextLedger.plan(latestOf(rows), listOf(policy("workspace-write"), env))
+    fun leavingPlanModeKeepsTheNarrationOutOfTheSnapshot() {
+        val writes = planNow(
+            previousSnapshot = snapshotRow(3, "workspace-write", withPlan = true),
+            injections = listOf(policy("workspace-write"), env),
+        )
         assertEquals(1, writes.size)
         val append = writes[0] as Write.Append
         assertEquals(snapshotLabel, append.label)
-        assertTrue(append.text.contains(PromptAssembler.PLAN_OFF_NARRATION))
-        assertTrue("叙述在抬头之后、正文之前", append.text.indexOf(PromptAssembler.PLAN_OFF_NARRATION) < append.text.indexOf("Current DSH"))
+        assertFalse(append.text.contains(PromptAssembler.PLAN_OFF_NARRATION))
         assertFalse(append.text.contains("You are in plan mode."))
     }
 
-    /** 已经叙述过了：不再重复（否则每发一条消息都要说一遍「你退出了计划模式」） */
+    /** 指令文件链：内容变了追加一条新基线；没变不写 */
     @Test
-    fun leavingPlanModeNarratesOnce() {
-        val rows = mapOf(
-            snapshotLabel to snapshotRow(
-                id = 4,
-                mode = "workspace-write",
-                notes = listOf(PromptAssembler.PLAN_OFF_NARRATION),
-            ),
+    fun instructionBaselineAppendsOnlyWhenItChanges() {
+        val first = PromptAssembler.Injection(
+            label = "/ws/AGENTS.md",
+            form = PromptAssembler.FORM_INSTRUCTIONS,
+            text = "do things",
+            delivery = PromptAssembler.Delivery.INSTRUCTIONS,
         )
-        assertEquals(emptyList<Write>(), ContextLedger.plan(latestOf(rows), listOf(policy("workspace-write"), env)))
-    }
+        val appended = planNow(injections = listOf(first))
+        assertEquals(1, appended.size)
+        val row = appended[0] as Write.Append
+        assertEquals(PromptAssembler.FORM_INSTRUCTIONS, row.form)
+        assertTrue(row.text.contains(PromptAssembler.INSTRUCTIONS_INTRO))
 
-    /** 退出又开回来：上一条快照的形状是「没有 plan」，也要认出「现在开着」并重写一条 */
-    @Test
-    fun reenteringPlanModeReappendsTheSnapshot() {
-        val rows = mapOf(
-            snapshotLabel to snapshotRow(
-                id = 4,
-                mode = "workspace-write",
-                notes = listOf(PromptAssembler.PLAN_OFF_NARRATION),
-            ),
+        val unchanged = planNow(
+            previousInstructions = Row(5, row.text, PromptAssembler.FORM_INSTRUCTIONS),
+            injections = listOf(first),
         )
-        val writes = ContextLedger.plan(latestOf(rows), listOf(policy("workspace-write"), env, plan))
-        assertEquals(1, writes.size)
-        assertEquals(planSnapshotLabel, (writes[0] as Write.Append).label)
-        assertTrue(writes[0].let { (it as Write.Append).text.contains("You are in plan mode.") })
-    }
-
-    /** 老会话（升级前写下的、label 还是逐段名的旧快照）：查不到组合标签 → 追加一条新的 */
-    @Test
-    fun legacyPerSectionRowsGetASupersedingAppend() {
-        val rows = mapOf(
-            PromptAssembler.LABEL_SANDBOX_POLICY to Row(9, "Current DSH file policy: workspace-write. ...", "snapshot"),
-            PromptAssembler.LABEL_ENV to Row(10, "## Android / Termux environment", "snapshot"),
-        )
-        val writes = ContextLedger.plan(latestOf(rows), listOf(policy("workspace-write"), env))
-        assertEquals(1, writes.size)
-        val append = writes[0] as Write.Append
-        assertEquals(snapshotLabel, append.label)
-        assertTrue(append.text.startsWith(PromptAssembler.RUNTIME_CONTEXT_PREAMBLE))
-        // 模式没变 → 快照正文里不出现「changed from」
-        assertFalse(append.text.contains("changed from"))
-    }
-
-    /** snapshotLabels：两种组合都列出来（找上一条快照时计划模式开/关各查一次） */
-    @Test
-    fun snapshotLabelsCoverBothPlanModes() {
-        assertEquals(
-            listOf(snapshotLabel, planSnapshotLabel),
-            ContextLedger.snapshotLabels(listOf(policy("read-only"), env)),
-        )
-        assertEquals(
-            listOf(planSnapshotLabel, snapshotLabel),
-            ContextLedger.snapshotLabels(listOf(policy("read-only"), env, plan)),
-        )
-        assertEquals(emptyList<String>(), ContextLedger.snapshotLabels(emptyList()))
+        assertEquals(emptyList<Write>(), unchanged)
     }
 }

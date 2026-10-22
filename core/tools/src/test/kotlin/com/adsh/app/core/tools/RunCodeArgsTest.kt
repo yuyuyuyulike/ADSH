@@ -145,11 +145,11 @@ class RunCodeArgsTest {
     @Test
     fun aValidCallReachesTheRuntimeSetup() {
         assertEquals(
-            "run_code 需要应用上下文才能把程序放进独立进程（ToolContext.appContext 为空）",
+            "run_code requires an application context to run the program in a separate process (ToolContext.appContext is null)",
             failureMessage("""{"code":"return 1","description":"run it"}"""),
         )
         assertEquals(
-            "run_code 需要应用上下文才能把程序放进独立进程（ToolContext.appContext 为空）",
+            "run_code requires an application context to run the program in a separate process (ToolContext.appContext is null)",
             failureMessage("""{"program":"return 1","description":"run it"}"""),
         )
     }

@@ -196,6 +196,35 @@ class TermuxEnvTest {
         assertEquals(p, e["PREFIX"])
     }
 
+    // ------------------------------------------------------- 交互 / 一次性命令的终端口径
+
+    @Test
+    fun `一次性命令用 dsh 的非交互口径`() {
+        val e = env()
+        assertEquals("dumb", e["TERM"])
+        assertEquals("1", e["NO_COLOR"])
+        assertEquals("cat", e["PAGER"])
+        assertEquals("cat", e["GIT_PAGER"])
+        assertFalse(e.containsKey("COLORTERM"))
+    }
+
+    @Test
+    fun `终端会话保留 xterm 与颜色、不接分页覆盖`() {
+        val e = env(facts().copy(interactive = true))
+        assertEquals("xterm-256color", e["TERM"])
+        assertEquals("truecolor", e["COLORTERM"])
+        assertFalse(e.containsKey("NO_COLOR"))
+        assertFalse(e.containsKey("PAGER"))
+        assertFalse(e.containsKey("GIT_PAGER"))
+    }
+
+    @Test
+    fun `终端会话的 PWD 是家目录、工作区仍在 ADSH_WORKSPACE`() {
+        val e = env(facts().copy(interactive = true))
+        assertEquals(home, e["PWD"])
+        assertEquals("/storage/emulated/0/ws", e["ADSH_WORKSPACE"])
+    }
+
     // ------------------------------------------------------------------ 形态
 
     /** [TermuxRuntime.envInto] 按第一个 `=` 拆键值：重复的键会让后者静默胜出 */

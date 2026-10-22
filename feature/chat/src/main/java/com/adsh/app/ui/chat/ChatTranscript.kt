@@ -66,13 +66,12 @@ internal fun ChatTranscript(
     items: List<ChatItem>,
     scrollState: ScrollState,
     scroll: ChatScrollState,
-    lastTurnKey: Long,
     foldOpen: SnapshotStateMap<Long, Boolean>,
     /** 哪些思考行的正文展开着（键见 [reasoningKey]）：写它 = 读者动作，先交出自动跟随 */
     reasoningOpen: SnapshotStateMap<String, Boolean>,
-    /** 读者动作（展开 / 收起会话里的任何一行、打开任务列表）：先把跟随交出去，见 AutoScroll.kt ⑤ */
+    /** 读者动作（展开 / 收起会话里的任何一行、打开任务列表）：先把跟随交出去（口径见 AutoScroll.kt） */
     readerAction: () -> Unit,
-    /** dsh 的 `followTail()`：把视口钉到内容末端（本帧测量之前生效） */
+    /** 把视口钉到内容末端（本帧测量之前生效） */
     pinToBottom: () -> Unit,
     onBranch: (Long) -> Unit,
     onOpenDeliverable: (String) -> Unit,
@@ -83,19 +82,16 @@ internal fun ChatTranscript(
     val focusManager = LocalFocusManager.current
     val hasConversation = items.isNotEmpty()
     val contentFontSize = state.contentFontSize
-    val scrollbarHitWidthPx = with(LocalDensity.current) { SCROLLBAR_HIT_WIDTH.toPx() }
-    var scrollbarDragging by remember(scrollState) { mutableStateOf(false) }
-    val transcriptDensity = LocalDensity.current
     /**
-     * 滚动条可见性：滚动中（拖拽 / 惯性 / 拖 thumb）恒显示；停止滚动满 [SCROLLBAR_HIDE_DELAY_MS]
-     * 后隐藏，再滚又出现。进会话时先显示，没有滚动操作三秒后自动隐藏。
+     * 滚动条可见性：读者滚动中（拖拽 / 惯性）恒显示；停止滚动满 [SCROLLBAR_HIDE_DELAY_MS]
+     * 后隐藏，再滚又出现。进会话时先显示，没有滚动操作一秒后自动隐藏。
      *
-     * 程序自动贴底（流式跟随）不算「滚动操作」—— dsh 那边这是浏览器原生滚动条的行为，
-     * 手机上本来就会自动消失；这里只是把它做成显式的计时。
+     * 程序自动贴底（流式跟随）不算「滚动操作」—— 它只跟内容变化走，不是读者在动；
+     * 滚动条只对读者的滚动手势计时。
      */
     var scrollbarVisible by remember(scrollState) { mutableStateOf(true) }
     LaunchedEffect(scrollState) {
-        snapshotFlow { scrollState.isScrollInProgress || scrollbarDragging }
+        snapshotFlow { scrollState.isScrollInProgress }
             .collectLatest { scrolling ->
                 if (scrolling) {
                     scrollbarVisible = true
@@ -110,9 +106,8 @@ internal fun ChatTranscript(
     /** 滚动内容总高度（px，含底内边距）：同帧贴底修正读它 */
     var contentHeightPx by remember { mutableIntStateOf(0) }
     /**
-     * 同帧贴底修正（px）：dsh 的 followTail 在 DOM 变更之后、绘制之前同步把 scrollTop 设到
-     * scrollHeight；Compose 的 ScrollState 只能等下一帧生效，于是「内容刚长高」的那一帧会先露出
-     * 旧位置（新行在视口下沿被切 / 闪一下）再跳过去。
+     * 同帧贴底修正（px）：Compose 的 ScrollState 只能等下一帧生效，于是「内容刚长高」的那一帧会先
+     * 露出旧位置（新行在视口下沿被切 / 闪一下）再跳过去。
      *
      * 这里在绘制阶段给内容整体补一个位移：**这一帧就已经贴到底**，下一帧 KeepPinnedEffect 把
      * ScrollState 拨到真值，位移随之归零 —— 两帧之间没有任何视觉变化。只有「跟随中、手指不在屏上、
@@ -163,84 +158,39 @@ internal fun ChatTranscript(
             }
     }
 
-    // 手指按在消息区期间一下都不贴底（[touching]，= dsh 的 `pending`：读者输入还没采样完
-    // 就不动视口）。**手势本身不改跟随意图** —— 意图由上面那次位置采样按「读者到底移动没移动」
-    // 决定（dsh 的 `movedByReader`），所以点一下、按住不动都不会把跟随关掉。
+    // 手指按在消息区期间一下都不贴底（[ChatScrollState.touching]）。**手势本身不改跟随状态** ——
+    // 它由位置采样按「读者到底移动没移动」决定，所以点一下、按住不动都不会把跟随关掉。
     Box(
         modifier
             .fillMaxSize()
             .onSizeChanged { viewportHeightPx = it.height }
             // 键用 scrollState：换会话时滚动状态会重建，这里跟着重启
-            .pointerInput(scrollState, scrollbarHitWidthPx) {
+            .pointerInput(scrollState) {
                 awaitEachGesture {
                     val down = awaitFirstDown(pass = PointerEventPass.Initial)
                     val startY = down.position.y
-                    // 按在 thumb 命中区才吃这一根手指；其余位置一律不消费，列表滚动照常。
-                    // 几何在**按下的这一刻现算**：滚动条本身不再每帧把几何写进状态。
-                    val thumb = scrollbarThumbGeometry(
-                        scrollState = scrollState,
-                        viewportPx = (viewportHeightPx - footerHeightPx).coerceAtLeast(0),
-                        density = transcriptDensity,
-                    )
-                    val onThumb = thumb != null && isOnScrollbarThumb(
-                        x = down.position.x,
-                        y = down.position.y,
-                        viewportWidthPx = size.width.toFloat(),
-                        hitWidthPx = scrollbarHitWidthPx,
-                        topPx = thumb.topPx,
-                        lengthPx = thumb.lengthPx,
-                    )
-                    if (onThumb) {
-                        down.consume()
-                        // 显式导航 = dsh 的 pauseFollowing()：先把跟随交出去
-                        scroll.pause()
-                        scrollbarDragging = true
-                    }
                     // 这一次手势是不是真的把内容滑走了（超过 touch slop）
                     var dragged = false
-                    var lastY = startY
                     scroll.touch(true)
                     try {
                         // 等这一套手势彻底结束（松手或取消）
                         do {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             val change = event.changes.firstOrNull { it.id == down.id }
-                            if (change != null) {
-                                if (onThumb) {
-                                    // 拖动 thumb：按 thumb/轨道比例换成列表滚动（消费掉，列表不再自己滚）
-                                    change.consume()
-                                    val dy = change.position.y - lastY
-                                    if (dy != 0f) {
-                                        lastY = change.position.y
-                                        val g = scrollbarThumbGeometry(
-                                            scrollState = scrollState,
-                                            viewportPx = (viewportHeightPx - footerHeightPx).coerceAtLeast(0),
-                                            density = transcriptDensity,
-                                        )
-                                        if (g != null) {
-                                            scrollState.dispatchRawDelta(
-                                                thumbDragScrollDelta(dy, g.viewportPx - g.lengthPx, g.maxScrollPx),
-                                            )
-                                        }
-                                    }
-                                }
-                                if (!dragged &&
-                                    kotlin.math.abs(change.position.y - startY) > viewConfiguration.touchSlop
-                                ) {
-                                    dragged = true
-                                }
+                            if (change != null &&
+                                !dragged &&
+                                kotlin.math.abs(change.position.y - startY) > viewConfiguration.touchSlop
+                            ) {
+                                dragged = true
                             }
                         } while (event.changes.any { it.pressed })
                     } finally {
                         // finally 而不是顺序执行：手势被取消（节点回收）时手指状态也必须复位。
                         scroll.touch(false)
-                        if (onThumb) scrollbarDragging = false
                         // 点在消息区（没滑动的那一下）= 离开输入状态：收起光标与键盘。滑动不算 ——
-                        // 滑历史的时候键盘不该自己收起来。长按与拖 thumb 也不算（判据见 shouldClearComposerFocus）。
+                        // 滑历史的时候键盘不该自己收起来。长按也不算（判据见 shouldClearComposerFocus）。
                         val heldMillis = android.os.SystemClock.uptimeMillis() - down.uptimeMillis
-                        if (!onThumb &&
-                            shouldClearComposerFocus(dragged, heldMillis, viewConfiguration.longPressTimeoutMillis)
-                        ) {
+                        if (shouldClearComposerFocus(dragged, heldMillis, viewConfiguration.longPressTimeoutMillis)) {
                             focusManager.clearFocus()
                         }
                     }
@@ -374,6 +324,7 @@ internal fun ChatTranscript(
                                 text = item.text,
                                 before = item.before,
                                 after = item.after,
+                                streaming = item.streaming,
                             )
                             // 长回答切成的一块（见 ChatItem.TurnAnswer）：块与块之间的边距由
                             // MarkdownBody 的块间距自己带（hasPreceding / hasFollowing），
@@ -390,10 +341,10 @@ internal fun ChatTranscript(
                             is ChatItem.Running -> Box(Modifier.padding(top = item.gap)) {
                                 TurnStatusRow(startedAt = item.startedAt)
                             }
-                            // 轮尾：只有最后一轮可以从轮尾分叉（dsh 的 branchUnavailable = 后面还有节点）
+                            // 轮尾：**每个已结束轮次**都挂动作行；能不能分支由 TurnView 的
+                            // branchVisible / branchEnabled 判（dsh 的 TurnTailNodeView，判据见 TurnModel.kt）
                             is ChatItem.TurnTail -> TurnTailRow(
                                 view = item.view,
-                                branchable = item.view.closed && item.view.key == lastTurnKey && !state.sending,
                                 onBranch = onBranch,
                                 modifier = Modifier.padding(top = item.gap),
                                 workspacePath = state.workspacePath,
@@ -410,17 +361,16 @@ internal fun ChatTranscript(
             }
         }
         // 右侧贴边 overlay 滚动条（dsh 是占 5px 布局的原生条，ADSH 有意改成不占布局）：
-        // 只有 thumb 可拖，其余区域不消费事件。
+        // 只做位置指示，不吃任何手势。
         if (hasConversation) {
             TranscriptScrollbar(
                 scrollState = scrollState,
-                dragging = scrollbarDragging,
                 bottomInsetPx = footerHeightPx,
                 visible = scrollbarVisible,
             )
         }
-        // dsh 的 toBottomSlot：**只要不在跟随就浮出来**（判据 `!scroll.followingTail`），与「离底部多少
-        // 像素」无关，所以内容长高不会让它闪。
+        // 「回到底部」：不在跟随状态就浮出来（读者上滑 / 跳转到别处）；跟随中不显示，
+        // 所以内容长高不会让它闪。
         if (hasConversation && !scroll.following) {
             Box(
                 Modifier
@@ -431,7 +381,7 @@ internal fun ChatTranscript(
                     ),
             ) {
                 BackToBottomButton {
-                    // dsh 的 `returnToBottom()`：无条件贴底（`toBottom()` 自己会把跟随打开）
+                    // 无条件贴底：恢复跟随后再滚（不等 KeepPinnedEffect 下一帧补）
                     scroll.resume()
                     pinToBottom()
                 }

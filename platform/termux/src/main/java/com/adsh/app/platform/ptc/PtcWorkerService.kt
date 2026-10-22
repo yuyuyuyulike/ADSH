@@ -36,7 +36,7 @@ class PtcWorkerService : Service() {
     override fun onBind(intent: Intent?): IBinder {
         val channelName = intent?.getStringExtra(EXTRA_CHANNEL)
         if (channelName == null) {
-            Log.w(TAG, "绑定没带通道名，worker 不启动")
+            Log.w(TAG, "bind intent carried no channel name; worker not started")
             return Binder()
         }
         Thread({ Worker(channelName).serve() }, WORKER_THREAD_NAME).apply { isDaemon = true }.start()
@@ -46,8 +46,8 @@ class PtcWorkerService : Service() {
     /** 一次绑定的会话：连通道 → 收 boot → 跑程序 → 回信封 */
     private inner class Worker(private val channelName: String) {
 
-        /** 已经到达、还没被泵循环取走的回执（id → wire）；写的是收帧线程，读的是引擎线程 */
-        private val replies = java.util.concurrent.ConcurrentLinkedQueue<Pair<Int, String>>()
+        /** 已经到达、还没被泵循环取走的回执（id → wire）；收帧线程放、引擎线程取 */
+        private val replies = ReplyQueue()
 
         fun serve() {
             var channel: PtcChannel? = null
@@ -71,7 +71,7 @@ class PtcWorkerService : Service() {
                     if (!deliver(frame)) break
                 }
             } catch (t: Throwable) {
-                Log.w(TAG, "PTC 通道结束", t)
+                Log.w(TAG, "PTC channel ended", t)
             } finally {
                 runCatching { channel?.close() }
             }
@@ -86,19 +86,12 @@ class PtcWorkerService : Service() {
         private fun deliver(frame: JsonObject): Boolean {
             if (PtcProtocol.typeOf(frame) != PtcProtocol.TYPE_REPLY) return false
             val id = PtcProtocol.int(frame, PtcProtocol.FIELD_ID) ?: return false
-            replies += id to (PtcProtocol.text(frame, PtcProtocol.FIELD_WIRE) ?: "null")
+            replies.put(id, PtcProtocol.text(frame, PtcProtocol.FIELD_WIRE) ?: "null")
             return true
         }
 
-        /** 已经到达、还没兑现的回执（引擎线程的泵循环按 tick 取走） */
-        private fun takeReplies(): List<Pair<Int, String>> {
-            val out = ArrayList<Pair<Int, String>>()
-            while (true) {
-                val next = replies.poll() ?: break
-                out += next
-            }
-            return out
-        }
+        /** 已经到达、还没兑现的回执（引擎线程一次取走；没有时泵循环睡在 [ReplyQueue.await] 上） */
+        private fun takeReplies(): List<Pair<Int, String>> = replies.drain()
 
         private fun startEngine(channel: PtcChannel, boot: JsonObject) {
             val program = PtcProtocol.text(boot, PtcProtocol.FIELD_PROGRAM) ?: return
@@ -124,6 +117,8 @@ class PtcWorkerService : Service() {
                     toolNames = names,
                     postCall = { id, name, args -> postCall(channel, id, name, args) },
                     takeReplies = { takeReplies() },
+                    // 有在途调用时睡在队列上等回执，而不是每毫秒求值一次空表达式（见 QuickJsRuntime）
+                    awaitReply = { timeoutMs -> replies.await(timeoutMs) },
                     timeoutMs = timeoutMs,
                     onLog = { line -> sendLog(channel, line) },
                 )

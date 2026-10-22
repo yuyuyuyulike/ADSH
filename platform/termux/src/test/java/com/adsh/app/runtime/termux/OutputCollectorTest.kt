@@ -93,4 +93,35 @@ class OutputCollectorTest {
         val out = collected("A".repeat(50) + "B".repeat(50), 20)
         assertEquals("B".repeat(20), out.text)
     }
+
+    /** 孙进程继承了写端时管道永远不 EOF：收尾必须还能安全读出内存尾部，且最终只收一次 */
+    @Test
+    fun `收尾不被永不关闭的管道卡住（读线程还阻塞着）`() {
+        val writer = java.io.PipedOutputStream()
+        val piped = java.io.PipedInputStream(writer)
+        val collector = OutputCollector(piped, 8)
+        writer.write("0123456789".toByteArray())
+        writer.flush()
+        // 给读线程一点时间吃完这 10 个字节（之后它会一直阻塞在 read 上）
+        Thread.sleep(100)
+        val out = collector.finalize()
+        assertEquals("只留最后 8 字节", "23456789", out.text)
+        assertTrue("10 字节 > 8 字节上限：确实丢过字节", out.truncated)
+        writer.close()
+    }
+
+    @Test
+    fun `totalBytes 记的是整条流而不是保留下来的尾巴`() {
+        val collector = OutputCollector(ByteArrayInputStream("0123456789".toByteArray()), 4)
+        collector.join(5_000)
+        assertEquals(10L, collector.totalBytes)
+        assertEquals("6789", collector.finalize().text)
+    }
+
+    @Test
+    fun `finalize 可以重复调用`() {
+        val collector = OutputCollector(ByteArrayInputStream("hello".toByteArray()), 1024)
+        collector.join(5_000)
+        assertEquals(collector.finalize(), collector.finalize())
+    }
 }

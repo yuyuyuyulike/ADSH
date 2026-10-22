@@ -4,17 +4,20 @@ import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.adsh.app.core.agent.AgentLoop
+import com.adsh.app.core.agent.PromptAssembler
+import com.adsh.app.core.agent.compaction.CompactionHooks
+import com.adsh.app.core.agent.compaction.CompactionService
 import com.adsh.app.core.data.AdshDatabase
 import com.adsh.app.core.data.ConversationRepository
 import com.adsh.app.core.data.SettingsStore
 import com.adsh.app.core.llm.LlmClient
 import com.adsh.app.core.llm.ProviderConfig
 import com.adsh.app.core.workspace.WorkspaceManager
+import com.adsh.app.seam.exec.filePolicyOf
 import com.adsh.app.host.ToolingHost
 import com.adsh.app.island.IslandBus
 import com.adsh.app.island.IslandController
 import com.adsh.app.runtime.termux.TermuxRuntime
-import com.adsh.app.seam.exec.Spill
 import com.adsh.app.ui.chat.ChatViewModel
 
 /**
@@ -30,20 +33,45 @@ class AppContainer(private val application: Application) {
 
     val runtime: TermuxRuntime = TermuxRuntime(application)
 
-    init {
-        // 必须声明在 runtime 之后：Kotlin 按声明顺序初始化，提前访问 runtime 会是 null
-        runCatching { Spill.sweepStale(runtime.tmpDir()) }
-    }
-
     val repository: ConversationRepository = ConversationRepository(AdshDatabase.get(application))
 
     val workspaces: WorkspaceManager = WorkspaceManager(application, runtime)
 
-    /** 主循环：LLM 通道每次现取 `settings.providerConfig()`，设置里换模型 / Key 立刻生效 */
-    val agent: AgentLoop = AgentLoop(LlmClient(configProvider = { settings.providerConfig() }, logDebug = com.adsh.app.BuildConfig.DEBUG), repository, settings, logDebug = com.adsh.app.BuildConfig.DEBUG)
-
-    /** `/compact` 单独一条 LLM 通道（不经过 AgentLoop 的工具循环） */
+    /** 标题与 `/compact` 等一次性小调用单独一条 LLM 通道（不经过 AgentLoop 的工具循环） */
     val compactLlm: LlmClient = LlmClient(configProvider = { settings.providerConfig() }, logDebug = com.adsh.app.BuildConfig.DEBUG)
+
+    /**
+     * 压缩服务（dsh 的 compaction-basic）：区间选择 / 工具结果剪枝 / 摘要请求 / 历史替换都在
+     * :core:agent；组合根只提供摘要请求的系统提示词（口径与迁移前的 ChatViewModel.summarize 一致）。
+     */
+    val compactor: CompactionService = CompactionService(
+        store = repository,
+        settings = settings,
+        summaryLlm = compactLlm,
+        systemPrompt = { planMode ->
+            runCatching {
+                PromptAssembler.buildParts(
+                    workspace = workspaces.current(),
+                    extraSuffix = settings.systemPromptSuffix,
+                    filePolicy = filePolicyOf(settings.permission),
+                    planMode = planMode,
+                ).system
+            }.getOrDefault("")
+        },
+    )
+
+    /**
+     * 主循环：LLM 通道每次现取 `settings.providerConfig()`，设置里换模型 / Key 立刻生效。
+     * 自动压缩挂在两个决策点上（请求装配前的 pressure、请求失败后的 overflow）；
+     * `AgentHooks.None` 时主循环行为与没有决策点时逐字一致。
+     */
+    val agent: AgentLoop = AgentLoop(
+        LlmClient(configProvider = { settings.providerConfig() }, logDebug = com.adsh.app.BuildConfig.DEBUG),
+        repository,
+        settings,
+        logDebug = com.adsh.app.BuildConfig.DEBUG,
+        hooks = CompactionHooks(compactor),
+    )
 
     /**
      * 工具上下文的装配点：全局项（运行时 / 14 项设置 / PTC 提供者实现）在这里读，
@@ -83,6 +111,7 @@ class ChatViewModelFactory(
             workspaces = container.workspaces,
             agent = container.agent,
             compactLlm = container.compactLlm,
+            compactor = container.compactor,
             tooling = container.tooling,
             onIslandFrame = { work -> IslandController.sync(application, work) },
             islandStopRequests = IslandBus.stopRequests,

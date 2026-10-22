@@ -40,7 +40,7 @@ class TodoPresentCardTest {
     @Test
     fun todoWithoutBaselineShowsThePlainList() {
         val (summary, card) = todoDiffOf(todoItemsOf(todos("a" to "pending", "b" to "completed"))!!, null)
-        assertEquals("旧清单不可用", card.caption)
+        assertEquals("previous list unavailable", card.caption)
         assertEquals("", summary)
         assertEquals(listOf("a" to "pending", "b" to "completed"), card.items.map { it.content to it.status })
         assertTrue(card.items.all { it.change == null })
@@ -125,7 +125,7 @@ class TodoPresentCardTest {
             "\"description\":\"结论\"},{\"path\":\"/storage/emulated/0/1/App/tool-selftest.txt\"}]}"
         assertEquals("已交付 · 工具自测报告.md, tool-selftest.txt", presentRowSummary(args, false, false))
         assertEquals("正在交付 · 工具自测报告.md, tool-selftest.txt", presentRowSummary(args, true, false))
-        assertEquals("交付失败 · 工具自测报告.md, tool-selftest.txt", presentRowSummary(args, false, true))
+        assertEquals("delivery failed · 工具自测报告.md, tool-selftest.txt", presentRowSummary(args, false, true))
     }
 
     /**

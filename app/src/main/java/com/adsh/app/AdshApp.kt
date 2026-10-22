@@ -1,19 +1,27 @@
 package com.adsh.app
 
 import android.app.Application
-import com.adsh.app.core.llm.watchNetwork
+import androidx.compose.foundation.ComposeFoundationFlags
+import androidx.compose.foundation.ExperimentalFoundationApi
 import com.adsh.app.runtime.phone.PhoneChannel
 import com.whl.quickjs.android.QuickJSLoader
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 
+@OptIn(ExperimentalFoundationApi::class)
 class AdshApp : Application() {
 
     /** 组合根：设置 / 数据库 / LLM / 运行环境 / AgentLoop 的唯一创建点（见 [AppContainer]） */
     val container: AppContainer by lazy { AppContainer(this) }
 
     override fun onCreate() {
+        // Compose 1.12 起 Android 默认走新的 context-menu 路径；它**不经过** LocalTextToolbar，
+        // 于是 ui:blocks 的「没有选中内容就不弹」过滤器整体失效 —— 长按正文松手后闪一下只有
+        // 「全选」的浮动栏。官方把这条 flag 定位为「新路径回归时的开关」，关掉回到旧 TextToolbar
+        // 路径（过滤器在那边生效）。必须在 Compose 库代码被加载前设置，所以放在 super.onCreate() 之前。
+        // 与 ui:blocks 的 SelectionToolbar.kt 是一对，改一处要同时改另一处。
+        ComposeFoundationFlags.isNewContextMenuEnabled = false
         super.onCreate()
         // QuickJS 原生库在每个进程都要初始化：PTC 程序跑在 :ptc 进程里（见 platform/ptc/PtcWorkerService）
         QuickJSLoader.init()
@@ -22,9 +30,6 @@ class AdshApp : Application() {
         if (!isMainProcess()) return
         // 诊断开关交给 UI 层只读使用：库模块不许读自己的 BuildConfig（side 变体里它是 true）
         com.adsh.app.ui.chat.ChatDebug.enabled = BuildConfig.DEBUG
-        // 网络状态 → 掉线重连策略（dsh 的 setNetworkAvailable）：断网时暂停自动重试、
-        // 网络回来立刻重来，界面显示「断开」而不是「正在重连」。
-        watchNetwork(this)
         // phone 通道（T1）：把 phone 脚本放进前缀的 bin，并起一个轮询线程处理请求。
         // 为什么由应用自己做：bash 的 app UID 下 am/input/screencap 全被系统拒绝（见 PhoneChannel 的 KDoc）。
         PhoneChannel.ensureScript(this)

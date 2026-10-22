@@ -149,52 +149,6 @@ data class ToolContext(
     val attachmentDir: File? = null,
 )
 
-sealed interface ToolResult {
-    /**
-     * 成功结果：
-     *  - [text] 是「展示/日志」用的正文（对话里那一行工具的输出）；
-     *  - [value] 是程序里 await tools.x() **真正拿到**的结构化值（dsh 的 output.schema）。
-     *    为 null 时退化成 { result: text }（老工具/老会话兼容）。
-     */
-    data class Ok(
-        val text: String,
-        val value: kotlinx.serialization.json.JsonElement? = null,
-        /**
-         * 这次调用读到/产出的图片（dsh 的输出内容块里的 image 块）。
-         *
-         * PTC 里它是**子调用**的产物：run_code 的程序拿到结构化值，图片本身由 AgentLoop
-         * 收走（SubCallTrace → 落库 → 装配时作为一条 deferred user 消息回灌模型，dsh 的
-         * tools-ptc deferContext 就是这么做的），界面则在那一行下面渲染画廊。
-         */
-        val images: List<com.adsh.app.seam.tool.ToolImage> = emptyList(),
-        /**
-         * 这次调用声明的交付物（只有 present 会产出）—— dsh 的 `deliverables/presented`：
-         * 成功的最终结果追加一条会话事件，界面按轮把文件卡片画在轮尾、点开进文件预览。
-         * 与 [images] 走同一条传递路径（SubCall → SubCallTrace → 工具行落库）。
-         */
-        val deliverables: List<com.adsh.app.seam.tool.PresentedFile> = emptyList(),
-    ) : ToolResult
-
-    /**
-     * 失败结果。
-     * @param message 人可读的原文（dsh 的 WebError.message / 工具自身报错），**不带** Error: 前缀
-     * @param retryable ADSH 自己的提示：同样的调用重试一次可能成功
-     * @param code 可机读的原因码（dsh 的 WebError.code，如 WEB_BLOCKED_URL / WEB_PROVIDER_ERROR），
-     *   由执行层以结构化错误字段暴露（dsh 的 "Tool execution exposes the code in structured error metadata"）
-     */
-    data class Error(
-        val message: String,
-        val retryable: Boolean = false,
-        val code: String? = null,
-    ) : ToolResult
-}
-
-interface Tool {
-    val name: String
-    val description: String
-    suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult
-}
-
 /**
  * 工具入参的读取口。**只管「模型传进来的工具入参」。**
  *
@@ -205,14 +159,39 @@ interface Tool {
  * 不把解码异常与 kotlinx 的实现类名交给程序。bool 读**字符串** "true"/"false"
  * （模型写 JSON 参数时会写成字符串），供应商响应里的原生 bool 走 `booleanOrNull`。
  */
+/** [Args.intArg] 的结果：present = 这个键在参数对象里存在 */
+internal data class IntArg(val present: Boolean, val value: Int?)
+
 internal object Args {
     /** dsh 的 file_path：新名字；老的 path 继续认，老会话的历史调用不会失效 */
     fun filePath(args: JsonObject): String? = str(args, "file_path") ?: str(args, "path")
 
-    fun str(args: JsonObject, key: String): String? = (args[key] as? JsonPrimitive)?.contentOrNull
+    /**
+     * 字符串参数：**只接受 JSON 字符串**（dsh 的注册层类型校验）。
+     *
+     * 不吃数字/布尔原语的重字符串化：write 的 content=42 曾静默写成 "42"，拼装错误不暴露。
+     * 缺省（没有这个键）与 JsonNull 都返回 null，由调用方按「没给」处理。
+     */
+    fun str(args: JsonObject, key: String): String? =
+        (args[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
     fun int(args: JsonObject, key: String): Int? = (args[key] as? JsonPrimitive)?.intOrNull
     fun bool(args: JsonObject, key: String): Boolean? =
         (args[key] as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull()
+
+    /**
+     * 严格整数参数（dsh 的 read 参数校验）：[IntArg.present] = 模型给没给这个键；
+     * 给了但不是 JSON 整数（字符串 "2" / 浮点 1.5 / null / 对象）时 [IntArg.value] 为 null，
+     * 由调用方回参数错误 —— 不能静默退化成「没给、用默认值」。
+     */
+    fun intArg(args: JsonObject, key: String): IntArg {
+        if (!args.containsKey(key)) return IntArg(present = false, value = null)
+        val element = args[key]
+        val value = (element as? JsonPrimitive)
+            ?.takeIf { !it.isString && it !is kotlinx.serialization.json.JsonNull }
+            ?.intOrNull
+        return IntArg(present = true, value = value)
+    }
 
     /**
      * 把工具入参路径解析成绝对路径（相对路径相对工作区）。
@@ -224,7 +203,7 @@ internal object Args {
      */
     fun resolve(ctx: ToolContext, path: String?): File {
         val root = ctx.workspace.shellRoot
-            ?: throw IllegalArgumentException("当前工作区为 SAF 引用形态，shell 类工具不可用")
+            ?: throw IllegalArgumentException("shell tools are unavailable with a SAF-reference workspace")
         if (path.isNullOrBlank()) return root
         val mapped = mapTmp(ctx, path)
         val file = File(mapped)
@@ -403,10 +382,88 @@ internal fun echoText(text: String, limit: Int = MAX_ECHO_BYTES): EchoText {
     )
 }
 
+/**
+ * dsh-tool-bash 的 bashDescription(backgroundEnabled = true, escalationModes = 非空)。
+ * 两处**有意收紧**：去掉本客户端不存在的 DSH_* 环境变量那句；拒绝标记 / 升级流程 /
+ * 「试着跑一下是安全的」那句上移到跨工具规则段（PromptAssembler.workingRules）—— dsh 在
+ * bash / edit / write 三处复制同一段规则，这里只留「这个工具是什么、返回什么」。
+ *
+ * 输出那一句与 dsh **逐字一致**：只留尾部、全文落盘、路径回给模型（OutputCollector + Spill）。
+ */
+private const val BASH_DESCRIPTION: String =
+    "Execute a bash command (`bash -c`) and return its stdout/stderr. Each call runs in a fresh " +
+        "shell: no state (cwd, variables, functions) persists between calls — pass `workdir` " +
+        "instead of using `cd`. Provide `description` before `command` in the arguments. Before any " +
+        "delete or move, verify that the resolved absolute target path is the one intended; never " +
+        "run it against a computed path you have not checked. An unset variable expands to an empty " +
+        "string, so guard variables in such paths with `\${VAR:?}`. Long output is truncated to its " +
+        "tail; the full output is saved to a file whose path is reported when available."
+
 /** bash：在工作区执行命令。正文渲染逐字对齐 dsh-tool-bash 的 renderResult。 */
 object BashTool : Tool {
-    override val name = "bash"
-    override val description: String get() = ToolSdk.description("bash")
+    override val spec = ToolSpec(
+        name = "bash",
+        description = BASH_DESCRIPTION,
+        args = """
+            {
+                /** Short description of this command for the UI. */
+                description: string;
+                /** The bash command to execute. */
+                command: string;
+                /** Timeout in milliseconds. The executor applies its configured default and cap; on expiry the command is promoted to a background job instead of being killed. Nested tool and approval waits still consume the program's own elapsed-time budget, so raise timeoutMs only when the command is expected to be slow. */
+                timeoutMs?: number;
+                /** Run in the background and return a job id immediately (collect with `tools.job_output`, stop with `tools.job_kill`). No timeout applies. */
+                run_in_background?: boolean;
+                /** Working directory for this command. Defaults to the workspace. */
+                workdir?: string;
+                sandbox_permissions?: "workspace-write" | "danger-full-access";
+                justification?: string;
+              }
+        """.trimIndent(),
+        // dsh 的 bash 输出是一个三选一的联合（后台句柄 / 超时转后台 / 普通前台结果）：
+        // cwd 三臂都 required，前台另有可选 stopped（外部停止原因）；截断时给 spillPath。
+        // ADSH 没有结构化 sandbox —— 沙箱事实走 stderr 的围栏标记（平台机制不同）。
+        output = """
+            {
+                kind: "background";
+                jobId: string;
+                cwd: string;
+              } | {
+                kind: "promoted";
+                cwd: string;
+                jobId: string;
+                timeoutMs: number;
+                output: string;
+              } | {
+                kind: "foreground";
+                cwd: string;
+                exitCode: number | null;
+                /** Always null on Android: the Process API exposes no wait status, so a signal-terminated child reports exit code 128+n instead. */
+                signal: string | null;
+                timedOut: boolean;
+                aborted: boolean;
+                /** Present only when something outside the call stopped the command. */
+                stopped?: string;
+                timeoutMs: number;
+                stdout: {
+                  text: string;
+                  /** True only when bytes were actually dropped; `text` then holds the tail of the stream. */
+                  truncated: boolean;
+                  /** Bytes dropped from the start of this stream; `text` starts at this byte offset. Present only when truncated. */
+                  omittedBytes?: number;
+                  spillPath?: string;
+                };
+                stderr: {
+                  text: string;
+                  /** True only when bytes were actually dropped; `text` then holds the tail of the stream. */
+                  truncated: boolean;
+                  /** Bytes dropped from the start of this stream; `text` starts at this byte offset. Present only when truncated. */
+                  omittedBytes?: number;
+                  spillPath?: string;
+                };
+              }
+        """.trimIndent(),
+    )
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         val command = Args.str(args, "command") ?: ""
@@ -425,6 +482,8 @@ object BashTool : Tool {
                 args,
                 ctx,
                 EscalationAsk(toolName = "bash", callId = ctx.callId, subject = "command", detail = command),
+                // dsh-tool-bash 的 validateBashArgs：重复当前模式不校验、没模式时空白 reason 视同缺省
+                bashRules = true,
             )
         } catch (cancel: kotlinx.coroutines.CancellationException) {
             throw cancel
@@ -437,7 +496,7 @@ object BashTool : Tool {
         // 「可以提权」—— 噪音，而且与 dsh-sandbox-local 的 read-only（只是不放行写）不一致。
         val shellRoot = ctx.workspace.shellRoot
         if (shellRoot == null) {
-            return ToolResult.Error("当前工作区为 SAF 引用形态，bash 不可用（请绑定真实路径工作区）")
+            return ToolResult.Error("bash is unavailable with a SAF-reference workspace (bind a real-path workspace)")
         }
         // dsh 的 clampTimeout：模型没给 timeoutMs 就用设置里的默认值，给了就夹在 (0, maxTimeoutMs]
         val ceiling = ctx.bashMaxTimeoutMs.coerceAtLeast(1L)
@@ -488,7 +547,7 @@ object BashTool : Tool {
             // 不能因为环境坏了就把 bash 整个拒掉（终端页、apt 这些本来也不挂围栏）。
             android.util.Log.w(
                 "ADSH",
-                "写围栏未挂载：可写根为空或 " + Shell.FENCE_LIB + " 缺失，这次命令不受围栏约束",
+                "write fence not mounted: no writable roots or " + Shell.FENCE_LIB + " is missing; this command is not fenced",
             )
         }
         // dsh 的 bash 缝：**每条命令一开始就注册成任务**，前台只是对同一个任务的有界 wait ——
@@ -504,7 +563,7 @@ object BashTool : Tool {
             // 围栏哨兵：shim 一加载就写这个文件。任务在**开始时**就注册，所以「启动之后、等待之前」
             // 是唯一能确认这次 LD_PRELOAD 真的生效的窗口（read-only 拿不到就失败关闭，与老路径一致）。
             if (fence.isNotEmpty() && !fenceLoaded(fenceMark, started.id, ctx.conversationId)) {
-                android.util.Log.w("ADSH", "写围栏未生效：LD_PRELOAD 没有加载 " + Shell.FENCE_LIB)
+                android.util.Log.w("ADSH", "write fence not active: LD_PRELOAD did not load " + Shell.FENCE_LIB)
                 if (mode == Escalation.READ_ONLY) {
                     // 失败关闭：杀掉刚起的命令，等它结算（这次结算算 awaited，不会发通知），再丢记录
                     kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
@@ -553,7 +612,7 @@ object BashTool : Tool {
             //    那会让 workspace-write 下的 bash 完全不可用（终端页、apt 这些本来也不挂围栏）。
             //  - read-only：**失败关闭**（dsh 的 SandboxUnavailableError：「refusing to run the
             //    command unconfined」）。放它跑等于在只读预设下给了完整写权限 —— 比拒绝危险得多。
-            android.util.Log.w("ADSH", "写围栏未生效：LD_PRELOAD 没有加载 " + Shell.FENCE_LIB)
+            android.util.Log.w("ADSH", "write fence not active: LD_PRELOAD did not load " + Shell.FENCE_LIB)
             if (mode == Escalation.READ_ONLY) {
                 return ToolResult.Error(
                     "sandbox mode \"read-only\" cannot be enforced on this device: the file-access " +
@@ -562,9 +621,13 @@ object BashTool : Tool {
                 )
             }
         }
-        // 与注册表那条路同一份渲染：只留尾部，丢过字节就补 dsh 那行「全文在哪」
-        val stdout = streamText(clean(result.output, ctx), result.truncated, result.spillPath)
-        val stderr = streamText(clean(result.stderr, ctx), result.stderrTruncated, result.stderrSpillPath)
+        // value 里放**纯文本尾部**（dsh 的 canonicalBashResult），「全文在哪」那行只进正文渲染
+        // （dsh-tool-bash 的 render.ts）：程序拿到的结构值不能被展示提示污染。
+        // 截断后的首行是字节切出来的半行，丢掉它才是完整行（见 [wholeLineTail]）。
+        val rawOut = wholeLineTail(clean(result.output, ctx), result.truncated)
+        val rawErr = wholeLineTail(clean(result.stderr, ctx), result.stderrTruncated)
+        val stdout = streamText(rawOut, result.truncated, result.spillPath)
+        val stderr = streamText(rawErr, result.stderrTruncated, result.stderrSpillPath)
         val value = buildJsonObject {
             put("kind", "foreground")
             put("cwd", workdir.absolutePath)
@@ -573,8 +636,16 @@ object BashTool : Tool {
             put("timedOut", result.timedOut)
             put("aborted", false)
             put("timeoutMs", timeout)
-            put("stdout", streamValue(stdout, result.truncated, result.spillPath))
-            put("stderr", streamValue(stderr, result.stderrTruncated, result.stderrSpillPath))
+            put(
+                "stdout",
+                streamValue(rawOut, result.truncated, result.spillPath,
+                    omittedBytesOf(result.outputBytes, rawOut, result.truncated)),
+            )
+            put(
+                "stderr",
+                streamValue(rawErr, result.stderrTruncated, result.stderrSpillPath,
+                    omittedBytesOf(result.stderrBytes, rawErr, result.stderrTruncated)),
+            )
         }
         // dsh 的 bash：非零退出**不是**工具错误（isError = false），模型自己看 [exit code: N] 决定怎么办
         // 正文渲染（含状态标记的互斥规则）在 BashRender.kt
@@ -641,7 +712,7 @@ private fun startBashJob(
         val shell = spawned.getOrNull()
         if (shell == null) {
             val why = spawned.exceptionOrNull() ?: RuntimeException("spawn failed")
-            android.util.Log.w("ADSH", "bash: 起进程失败", why)
+            android.util.Log.w("ADSH", "bash: failed to start the process", why)
             object : Jobs.Hooks {
                 override fun cancel(reason: String?) = Unit
                 override val done = kotlinx.coroutines.CompletableDeferred(
@@ -744,7 +815,7 @@ private suspend fun waitForeground(ctx: ToolContext, started: StartedBash, timeo
     val shell = started.process()
         ?: run {
             // 进程压根没起来（起不来 / 起完就没）：终局原因就是模型该看到的错误
-            android.util.Log.w("ADSH", "bash: 任务 " + started.id + " 没有进程，detail=" + view.detail)
+            android.util.Log.w("ADSH", "bash: job " + started.id + " has no process, detail=" + view.detail)
             return ToolResult.Error(view.detail ?: "command failed to start")
         }
     val exitCode = runCatching { shell.exitValue() }.getOrDefault(-1)
@@ -771,8 +842,12 @@ private fun foregroundResult(
     // 每一路各自判「有没有丢过字节」：环里被淘汰的（droppedOf）或这一步截掉的（capped）
     val outTruncated = outCapped || Jobs.Channel.STDOUT in read.droppedChannels
     val errTruncated = errCapped || Jobs.Channel.STDERR in read.droppedChannels
-    val stdout = streamText(outTail, outTruncated, read.job.stdoutSpillPath)
-    val stderr = streamText(errTail, errTruncated, read.job.stderrSpillPath)
+    // value 用纯文本尾部；正文渲染才补 dsh 的「全文在哪」提示（render.ts 与 canonicalBashResult 的分工）。
+    // 截断后的首行是字节切出来的半行，丢掉它才是完整行（见 [wholeLineTail]）。
+    val out = wholeLineTail(outTail, outTruncated)
+    val err = wholeLineTail(errTail, errTruncated)
+    val stdout = streamText(out, outTruncated, read.job.stdoutSpillPath)
+    val stderr = streamText(err, errTruncated, read.job.stderrSpillPath)
     val result = ExecResult(
         exitCode = exitCode,
         output = stdout,
@@ -792,8 +867,16 @@ private fun foregroundResult(
         put("aborted", false)
         if (stopped != null) put("stopped", stopped)
         put("timeoutMs", timeoutMs)
-        put("stdout", streamValue(stdout, outTruncated, read.job.stdoutSpillPath))
-        put("stderr", streamValue(stderr, errTruncated, read.job.stderrSpillPath))
+        put(
+            "stdout",
+            streamValue(out, outTruncated, read.job.stdoutSpillPath,
+                omittedBytesOf(read.stdoutTotalBytes.toLong(), out, outTruncated)),
+        )
+        put(
+            "stderr",
+            streamValue(err, errTruncated, read.job.stderrSpillPath,
+                omittedBytesOf(read.stderrTotalBytes.toLong(), err, errTruncated)),
+        )
     }
     return ToolResult.Ok(renderBash(result, stdout, stderr, stopped), value)
 }
@@ -806,12 +889,51 @@ private fun foregroundResult(
 private fun clean(text: String, ctx: ToolContext): String = text.replace(ctx.runtime.bashPath, "bash")
 
 /**
+ * 截断后这一路被丢掉的头部字节数（保留文本从完整流的这个偏移开始）。
+ *
+ * 公开给程序的是「[streamValue] 的 `omittedBytes`」，不是一段解释性正文：只留尾部、行对齐丢掉
+ * 半截首行、超长单行只能保留尾巴 —— 这三件事都要能从结果字段读出来。总字节数未知（0）或没截断
+ * 时返回 null（不写这个字段）；算出来 <= 0 说明调用方给的总数偏小，也按未知处理。
+ */
+private fun omittedBytesOf(totalBytes: Long, kept: String, truncated: Boolean): Long? {
+    if (!truncated || totalBytes <= 0) return null
+    val keptBytes = kept.toByteArray(Charsets.UTF_8).size.toLong()
+    return (totalBytes - keptBytes).takeIf { it > 0 }
+}
+
+/**
  * read：带行号读取文本。
  * 正文是 dsh 的 formatReadOutput：<path>/<type>/<content> 信封 + 「行号: 内容」+ 续读页脚。
  */
 object ReadTool : Tool {
-    override val name = "read"
-    override val description: String get() = ToolSdk.description("read")
+    override val spec = ToolSpec(
+        name = "read",
+        description = "Read a UTF-8 text file and return line-numbered content. Lines are normalized " +
+            "for display (a CRLF's `\\r` is dropped, a final newline adds no empty line); use " +
+            "`tools.bash` for byte-exact checks.",
+        args = """
+            {
+                /** Path to read. */
+                file_path: string;
+                /** 1-based first line to return. Defaults to 1. */
+                offset?: number;
+                /** Maximum number of lines to return. Defaults to 2000, which is also the cap; the window also stops at 50 KiB of selected lines, so fewer lines may come back. The structured value has no truncation flag: compare `lines.length` with `totalLines` to detect it, and continue with offset. */
+                limit?: number;
+              }
+        """.trimIndent(),
+        output = """
+            {
+                path: string;
+                offset: number;
+                lines: {
+                  number: number;
+                  text: string;
+                }[];
+                totalLines: number;
+              }
+        """.trimIndent(),
+    )
+    override val parallelSafe = true
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         val raw = Args.filePath(args)
@@ -824,9 +946,19 @@ object ReadTool : Tool {
         val display = Args.display(ctx, file)
         if (!file.exists()) return ToolResult.Error("cannot read \"" + display + "\": not found")
         if (!file.isFile) return ToolResult.Error("cannot read \"" + display + "\": not a regular file")
-        val offsetArg = Args.int(args, "offset")
+        // dsh 的参数校验在注册层：offset / limit 必须是 JSON 整数（"2"、1.5、null 都拒），
+        // 不能静默把 1.5 当 1、把 "2" 当字符串丢掉。
+        val offsetInput = Args.intArg(args, "offset")
+        if (offsetInput.present && offsetInput.value == null) {
+            return ToolResult.Error("offset must be a positive integer")
+        }
+        val offsetArg = offsetInput.value
         if (offsetArg != null && offsetArg < 1) return ToolResult.Error("offset must be a positive integer")
-        val limitArg = Args.int(args, "limit")
+        val limitInput = Args.intArg(args, "limit")
+        if (limitInput.present && limitInput.value == null) {
+            return ToolResult.Error("limit must be a positive integer")
+        }
+        val limitArg = limitInput.value
         if (limitArg != null && limitArg < 1) return ToolResult.Error("limit must be a positive integer")
         if (limitArg != null && limitArg > READ_MAX_LINES) {
             return ToolResult.Error("limit must be less than or equal to " + READ_MAX_LINES)
@@ -1023,7 +1155,12 @@ internal fun openReadText(file: File): ReadText {
             .onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT)
         val stream = SequenceInputStream(ByteArrayInputStream(sample, 0, read), input)
-        ReadText.Open(InputStreamReader(stream, decoder))
+        // dsh 的 TextDecoder('utf-8') 默认吞掉开头的 BOM；ADSH 的 InputStreamReader 不会，
+        // 不跳的话带 BOM 的文件首行会多一个不可见 U+FEFF（模型看到、编辑时还可能写回去）。
+        val reader = java.io.PushbackReader(InputStreamReader(stream, decoder), 1)
+        val first = reader.read()
+        if (first != -1 && first != 0xFEFF) reader.unread(first)
+        ReadText.Open(reader)
     } catch (t: Throwable) {
         runCatching { input.close() }
         throw t
@@ -1034,16 +1171,44 @@ internal fun openReadText(file: File): ReadText {
  * read_image：把一张图片交给模型（dsh-tool-fs 的 read_image）。
  *
  * 与 dsh 的差别（有意，写在报告里）：
- *  - dsh 的图片由 attachments 服务归一化（16-bit PNG → 8-bit sRGB、超限则缩放）；ADSH 落的是
- *    **逐字节相同的副本**（不做格式归一化），请求装配时再按 dsh 的预算缩到 640k 像素 / 1 MiB；
- *  - dsh 的副本存在自己的附件仓库里；ADSH 存在 `<工作区>/.adsh/attachments/<会话 id>/`，
- *    与用户附件同一个位置（随会话删除）。
+ *  - 用户**导入**的图片现在也走 dsh 的准入 + 归一化（[com.adsh.app.core.data.AttachmentStore]）；
+ *    但 `read_image` 读到的图片仍是**逐字节副本**（不归一化），请求装配时按 2048² 像素 / 1 MiB 缩；
+ *  - dsh 的工具图片存在全局附件仓库里；ADSH 仍存在 `<工作区>/.adsh/attachments/<会话 id>/`
+ *    （随会话删除）。
  * 其余同形：扩展名白名单、魔数嗅探、字节/边长/像素上限的报错文案、信封格式与
  * 「模型必须声明 image 输入」的闸门。
  */
 object ReadImageTool : Tool {
-    override val name = "read_image"
-    override val description: String get() = ToolSdk.description("read_image")
+    override val spec = ToolSpec(
+        name = "read_image",
+        // description 按 ADSH 的附件机制（不做格式归一化、请求期降采样）改写；dsh 0.2.1 原句更短
+        description = "Read a PNG/JPEG/WebP/GIF file and return the image itself. A path without a file " +
+            "extension is accepted; the format is detected from the file content, so normalized " +
+            "attachment paths can be passed directly without copying or renaming. Harness validates and " +
+            "downscales large supported images before the next model request, so use this tool directly " +
+            "instead of installing image libraries or creating thumbnails merely to inspect an image. " +
+            "Requires the current model to accept image input.",
+        args = """
+            {
+                /** Path to the image file. */
+                file_path: string;
+              }
+        """.trimIndent(),
+        output = """
+            {
+                path: string;
+                image: {
+                  attachmentId: string;
+                  mediaType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+                  bytes: number;
+                  width: number;
+                  height: number;
+                  name?: string;
+                };
+              }
+        """.trimIndent(),
+    )
+    override val parallelSafe = true
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         val raw = Args.filePath(args)
@@ -1203,8 +1368,34 @@ internal fun sniffSupportedImage(data: ByteArray): String? {
 
 /** write：创建或整体替换文件（正文是 dsh 的 formatWriteOutput 信封） */
 object WriteTool : Tool {
-    override val name = "write"
-    override val description: String get() = ToolSdk.description("write")
+    override val spec = ToolSpec(
+        name = "write",
+        description = "Create or fully replace a UTF-8 text file. Missing parent directories are created.",
+        args = """
+            {
+                /** Path to write. */
+                file_path: string;
+                /** Full UTF-8 text content to write. */
+                content: string;
+                sandbox_permissions?: "workspace-write" | "danger-full-access";
+                justification?: string;
+              }
+        """.trimIndent(),
+        output = """
+            {
+                path: string;
+                operation: "create" | "update";
+                /** Original text; null when the file did not exist. Capped at 256 KiB in the value only — the write itself is complete. */
+                before: string | null;
+                /** Written text; capped at 256 KiB in the value only — the file on disk holds all of it. */
+                after: string;
+                /** UTF-8 byte length of the original text (0 when the file did not exist). */
+                beforeBytes: number;
+                /** UTF-8 byte length of the written text. */
+                afterBytes: number;
+              }
+        """.trimIndent(),
+    )
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         val raw = Args.filePath(args)
@@ -1257,8 +1448,38 @@ object WriteTool : Tool {
 
 /** edit：字面量替换。校验、报错与成功文案逐字取自 dsh-tool-fs 的 edit + dsh-fs-local。 */
 object EditTool : Tool {
-    override val name = "edit"
-    override val description: String get() = ToolSdk.description("edit")
+    override val spec = ToolSpec(
+        name = "edit",
+        description = "Edit an existing UTF-8 text file by replacing literal text. CRLF line endings " +
+            "are normalized for matching and restored on write, so write \\n in old_string.",
+        args = """
+            {
+                /** Path to edit. */
+                file_path: string;
+                /** Literal text to replace. Must match exactly. */
+                old_string: string;
+                /** Literal replacement text. Use an empty string to delete the match. */
+                new_string: string;
+                /** Replace all matches. Defaults to false; when false, old_string must appear exactly once. */
+                replace_all?: boolean;
+                sandbox_permissions?: "workspace-write" | "danger-full-access";
+                justification?: string;
+              }
+        """.trimIndent(),
+        output = """
+            {
+                path: string;
+                /** File text before the edit; capped at 256 KiB in the value only — the file on disk is updated in full. */
+                before: string;
+                /** File text after the edit; capped at 256 KiB in the value only — the file on disk is updated in full. */
+                after: string;
+                /** UTF-8 byte length of the pre-edit text. */
+                beforeBytes: number;
+                /** UTF-8 byte length of the post-edit text. */
+                afterBytes: number;
+              }
+        """.trimIndent(),
+    )
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         val raw = Args.filePath(args)
@@ -1402,8 +1623,39 @@ internal fun hasUnpairedSurrogate(text: String): Boolean {
  * 排除版本库元数据目录；路径相对搜索根。
  */
 object GlobTool : Tool {
-    override val name = "glob"
-    override val description: String get() = ToolSdk.description("glob")
+    override val spec = ToolSpec(
+        name = "glob",
+        // 与 dsh 的两处有意差异：
+        //  - 连目录一起返回（dsh: "Returns matching file paths — never directories"）；
+        //  - 顺序是**字典序**（dsh 用 rg 的 --sort=modified，两次调用之间不稳定）。
+        // glob 不落 spill，所以页脚不写 dsh 的「完整结果已存到 <路径>」。
+        description = "Find paths that match a glob pattern. Returns matching paths in lexicographic order, " +
+            "plus hidden and ignored files (VCS metadata directories are excluded). Up to 100 paths come " +
+            "back; a larger result returns the first 100 in that order and sets `truncated` with the true " +
+            "`totalPaths` — narrow the pattern or path to see more, because the complete list is not saved. " +
+            "Paths come back relative to the workspace; a path outside it is returned absolute.",
+        args = """
+            {
+                /** Glob pattern to match paths against (e.g. "**/*.ts", "src/**/*.test.js"). A pattern with no "/" matches the basename at any depth, so "*" and "*.ts" both search the whole tree; include a separator to anchor the depth. A pattern containing "/" is anchored to the workspace root — not to the `path` argument — so match files outside the workspace with a basename pattern or a leading "**/". */
+                pattern: string;
+                /** Directory to search in. Defaults to the workspace; the scratch directory is outside that default root, so searching it needs its absolute path here. */
+                path?: string;
+                /** Include directories whose paths match. Defaults to true; set false to list files only. */
+                directories?: boolean;
+              }
+        """.trimIndent(),
+        output = """
+            {
+                root: string;
+                paths: string[];
+                /** True when the cap dropped matches: paths holds only the first 100. */
+                truncated: boolean;
+                /** How many paths matched in total, before the cap. */
+                totalPaths: number;
+              }
+        """.trimIndent(),
+    )
+    override val parallelSafe = true
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         val pattern = Args.str(args, "pattern") ?: ""
@@ -1472,14 +1724,22 @@ private const val GLOB_MAX_WALK = 20_000
 internal fun collectMatchingDirectories(base: File, cwd: File, pattern: String): List<String> {
     val out = ArrayList<String>()
     val queue = ArrayDeque<File>()
+    val seen = HashSet<String>()
     queue.add(base)
     var visited = 0
     while (queue.isNotEmpty() && visited < GLOB_MAX_WALK) {
         val dir = queue.removeFirst()
+        // 同一棵真实目录只走一次：符号链接可以指回父目录（sym/up 这类），不设限时
+        // 会把同一棵树反复枚举直到 GLOB_MAX_WALK 耗尽。
+        val real = runCatching { dir.canonicalPath }.getOrNull()
+        if (real != null && !seen.add(real)) continue
         visited++
         val children = runCatching { dir.listFiles() }.getOrNull() ?: continue
         for (child in children) {
             if (!child.isDirectory || child.name in VCS_EXCLUDES) continue
+            // **不跟随符号链接目录**（rg --files 默认也不跟随）：跟着走会把链接目标的名字
+            // 当成目录名列出来，还可能把任意路径带进结果。
+            if (runCatching { java.nio.file.Files.isSymbolicLink(child.toPath()) }.getOrDefault(false)) continue
             queue.add(child)
             val shown = relativeTo(cwd, child.absolutePath)
             if (matchesGlob(pattern, shown)) out += shown
@@ -1636,8 +1896,41 @@ internal fun includeProblem(include: String): String? {
  * 用 --json 而不是靠冒号切分，路径里带冒号也不会解析错。
  */
 object GrepTool : Tool {
-    override val name = "grep"
-    override val description: String get() = ToolSdk.description("grep")
+    override val spec = ToolSpec(
+        name = "grep",
+        // 与 dsh 的差异：250 条上限在**结构化值**上也生效（dsh 的 execute 返回 { matches: all }，
+        // 只在 render 里截）。PTC 模式下正文不进模型上下文，上限只写在正文上等于没有上限；
+        // grep 不落 spill，超出的部分本来也取不回来（见 Tools.kt 的 grepResult）。
+        description = "Search file contents with a ripgrep regular expression. Returns matching lines " +
+            "with line numbers — the text view groups them by file, the value is a flat `matches` array. " +
+            "Returns at most the first 250 matches and sets `truncated` with the true " +
+            "`totalMatches` when it stopped early; the complete list is not saved, so narrow the pattern, " +
+            "path, or include to see more. Use `tools.read` on a matched file for surrounding context.",
+        args = """
+            {
+                /** Regular expression to search for (ripgrep syntax). */
+                pattern: string;
+                /** File or directory to search. Defaults to the workspace; the scratch directory is outside that default root, so searching it needs its absolute path here. */
+                path?: string;
+                /** One glob filter for which files to search (e.g. "*.ts", "*.{js,jsx}"). Not a list; negation is not supported. */
+                include?: string;
+              }
+        """.trimIndent(),
+        output = """
+            {
+                matches: {
+                  path: string;
+                  lineNumber: number;
+                  line: string;
+                }[];
+                /** True when the 250 cap dropped matches. */
+                truncated: boolean;
+                /** How many lines matched in total, before the cap. */
+                totalMatches: number;
+              }
+        """.trimIndent(),
+    )
+    override val parallelSafe = true
 
     override suspend fun execute(args: JsonObject, ctx: ToolContext): ToolResult {
         val pattern = Args.str(args, "pattern") ?: ""
@@ -1810,13 +2103,16 @@ internal fun runRipgrep(toolName: String, cmd: List<String>, workdir: File): Rip
     // （Cannot run program …: Not a directory），看着像 rg 起不来（searchLaunchFailed）。
     // 落到父目录即可，被搜的路径本身仍然是那个文件。
     val cwd = if (workdir.isDirectory) workdir else (workdir.parentFile ?: workdir)
+    // --no-config：不读 RIPGREP_CONFIG_PATH 指向的配置文件（否则用户配置里的 --pre 之类会改变
+    // 工具的搜索语义，dsh 的 search argv 也固定带这一项）。放在二进制名之后、其余参数之前。
+    val argv = listOf(cmd.first(), "--no-config") + cmd.drop(1)
     val process = try {
         // stdin = /dev/null：rg 没给路径时会去读 stdin，接上 App 那根永不关闭的管道就是 30s 超时
-        ProcessBuilder(cmd).directory(cwd).redirectErrorStream(false)
+        ProcessBuilder(argv).directory(cwd).redirectErrorStream(false)
             .redirectInput(ProcessBuilder.Redirect.from(File("/dev/null")))
             .start()
     } catch (e: Exception) {
-        android.util.Log.w("ADSH", "rg 启动失败（" + toolName + "）：" + e::class.java.simpleName + "：" + (e.message ?: "unknown"))
+        android.util.Log.w("ADSH", "rg failed to start (" + toolName + "): " + e::class.java.simpleName + "：" + (e.message ?: "unknown"))
         return RipgrepRun("", searchLaunchFailed(toolName))
     }
     // stdout 边读边记账（dsh 的 RAW_OUTPUT_MAX_BYTES = 20_000_000）：超了整次失败，不截断 ——
@@ -1877,6 +2173,12 @@ internal fun relativeTo(root: File, raw: String): String {
     return rel.replace(File.separatorChar, '/')
 }
 
+/**
+ * 单 App 的静态工具组合：唯一的工具清单。
+ *
+ * [specs] / [parallelSafeNames] 都是从各 [Tool] 的定义投影出来的派生事实 —— 加一个工具只改
+ * 它自己的对象与这里的一行注册，不许再出现第二张手写清单（工具目录手抄两份就是漂移来源）。
+ */
 object ToolRegistry {
     val all: List<Tool> = listOf(
         BashTool, ReadTool, ReadImageTool, WriteTool, EditTool, GlobTool, GrepTool,
@@ -1887,7 +2189,11 @@ object ToolRegistry {
     )
 
     /** run_code 程序内可调用的工具（不含 run_code 自身，避免递归） */
-    val bindings: List<Tool> by lazy { all.filter { it.name != "run_code" } }
+    val bindings: List<Tool> by lazy { all.filter { it.name != RunCodeTool.name } }
 
-    fun byName(name: String): Tool? = all.firstOrNull { it.name == name }
+    /** 每个工具的全部静态事实（含 run_code；SDK 段只投影 [bindings] 的 spec） */
+    val specs: List<ToolSpec> = all.map { it.spec }
+
+    /** 可与其它调用重叠执行的工具名（排序）：调度器与 tools:sdk 的 safe 清单共用这一份 */
+    val parallelSafeNames: List<String> = all.filter { it.parallelSafe }.map { it.name }.sorted()
 }

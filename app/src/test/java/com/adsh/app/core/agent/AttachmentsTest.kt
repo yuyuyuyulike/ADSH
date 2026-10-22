@@ -127,8 +127,8 @@ class AttachmentsTest {
         assertFalse("只有文件的这一轮不该提示识图能力", hasImageAttachment(encodeAttachments(listOf(file("a.txt")))))
         assertFalse(hasImageAttachment(null))
         assertFalse(hasImageAttachment("not json"))
-        assertTrue(imageRouteHintText("qwen3.8-flash").contains("设置 → 模型 → qwen3.8-flash → 展开"))
-        assertTrue(imageRouteHintText("qwen3.8-flash").contains("可识别图片"))
+        assertTrue(imageRouteHintText("qwen3.8-flash").contains("Settings > Models > qwen3.8-flash"))
+        assertTrue(imageRouteHintText("qwen3.8-flash").contains("Accepts images"))
     }
 
     /** dsh 的 requestImageDimensions：等比缩到像素预算内，小图不放大 */

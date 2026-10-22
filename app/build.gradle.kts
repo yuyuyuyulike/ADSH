@@ -34,8 +34,8 @@ android {
         targetSdk = 28
         // versionCode 只往前加：手机上的 0.1.3（code 5）不能降级安装
         // （release 不可 debuggable，-d 也不放行），退回就是「卸载重装 = 丢数据」。
-        versionCode = 16
-        versionName = "0.2.4"
+        versionCode = 25
+        versionName = "0.2.6"
     }
 
     signingConfigs {
@@ -119,6 +119,8 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
+    // ComposeFoundationFlags 在 foundation 里：关掉 1.12 默认开的新 context-menu 路径（见 AdshApp）
+    implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons)
 
@@ -128,8 +130,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
 
     implementation(libs.quickjs.android)
-
-    // 抽屉拉开时主内容逐渐变糊（同窗口内 Haze 背景模糊）
 
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
